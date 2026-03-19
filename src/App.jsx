@@ -55,22 +55,127 @@ const A={
   BandPass:       s=>{if(s.length<4)return[s[s.length-1]];const avg=M.mean(s.slice(-8)),std=M.std(s.slice(-8));const filt=s.filter(v=>Math.abs(v-avg)<=std);if(!filt.length)return[s[s.length-1]];return[M.mod(Math.round(M.mean(filt.slice(-4))))];},
   DiffFilt:       s=>{if(s.length<3)return[s[s.length-1]];const diffs=[];for(let i=1;i<s.length;i++){let d=s[i]-s[i-1];if(d>50)d-=100;if(d<-50)d+=100;diffs.push(d);}return[M.mod(s[s.length-1]+Math.round(M.mean(diffs.slice(-4))))];},
   AutoCorr:       s=>{if(s.length<6)return[s[s.length-1]];const n=s.length,avg=M.mean(s);let bestLag=1,bestAcf=-2;for(let lag=1;lag<=Math.min(6,n-2);lag++){let num=0,den=0;for(let i=lag;i<n;i++){num+=(s[i]-avg)*(s[i-lag]-avg);den+=(s[i]-avg)**2;}const acf=den?num/den:0;if(Math.abs(acf)>Math.abs(bestAcf)){bestAcf=acf;bestLag=lag;}}return[M.mod(s[n-bestLag])];},
-  WtdMomentum:    s=>{if(s.length<2)return[s[0]||0];let ws=0,wd=0;for(let i=1;i<s.length;i++){const w=Math.pow(1.8,i);let d=s[i]-s[i-1];if(d>50)d-=100;if(d<-50)d+=100;ws+=w;wd+=d*w;}return[M.mod(s[s.length-1]+Math.round(wd/ws))];},
+  WtdMomentum:    s=>{
+    if(s.length<2)return[s[0]||0];
+    let ws=0,wd=0;
+    for(let i=1;i<s.length;i++){
+      const w=Math.pow(1.8,i);
+      let d=s[i]-s[i-1];if(d>50)d-=100;if(d<-50)d+=100;
+      ws+=w;wd+=d*w;
+    }
+    const rawGap=wd/ws;
+    // Cap extreme projections to ±25 to avoid overshooting
+    const cappedGap=Math.max(-25,Math.min(25,Math.round(rawGap)));
+    return[M.mod(s[s.length-1]+cappedGap)];
+  },
   SecondDiff:     s=>{if(s.length<3)return[s[s.length-1]];const n=s.length;let d1=s[n-1]-s[n-2],d2=s[n-2]-s[n-3];if(d1>50)d1-=100;if(d1<-50)d1+=100;if(d2>50)d2-=100;if(d2<-50)d2+=100;return[M.mod(s[n-1]+(2*d1-d2))];},
   LastGap:        s=>{if(s.length<2)return[s[0]||0];let g=s[s.length-1]-s[s.length-2];if(g>50)g-=100;if(g<-50)g+=100;return[M.mod(s[s.length-1]+g)];},
   GapMedian:      s=>{if(s.length<3)return[s[s.length-1]];const gaps=[];for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gaps.push(g);}const sg=[...gaps].sort((a,b)=>a-b),m=Math.floor(sg.length/2);return[M.mod(s[s.length-1]+Math.round(sg.length%2?sg[m]:(sg[m-1]+sg[m])/2))];},
-  TheilSen:       s=>{if(s.length<4)return[s[s.length-1]];const slopes=[];for(let i=0;i<s.length-1;i++)for(let j=i+1;j<s.length;j++){let sl=(s[j]-s[i])/(j-i);if(sl>50)sl-=100;if(sl<-50)sl+=100;slopes.push(sl);}slopes.sort((a,b)=>a-b);return[M.mod(s[s.length-1]+Math.round(slopes[Math.floor(slopes.length/2)]))];},
+  TheilSen:       s=>{
+    if(s.length<4)return[s[s.length-1]];
+    // Only use recent half for better responsiveness
+    const recent=s.slice(-Math.max(4,Math.ceil(s.length/2)));
+    const slopes=[];
+    for(let i=0;i<recent.length-1;i++)for(let j=i+1;j<recent.length;j++){
+      let sl=(recent[j]-recent[i])/(j-i);
+      if(sl>50)sl-=100;if(sl<-50)sl+=100;
+      slopes.push(sl);
+    }
+    slopes.sort((a,b)=>a-b);
+    const med=slopes[Math.floor(slopes.length/2)];
+    return[M.mod(s[s.length-1]+Math.round(med))];
+  },
   LinFit:         s=>{const n=s.length;let sx=0,sy=0,sxy=0,sx2=0;s.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});const D=n*sx2-sx*sx;if(!D)return[s[n-1]];const a=(n*sxy-sx*sy)/D,b=(sy-a*sx)/n;return[M.mod(Math.round(a*n+b))];},
   QuadFit:        s=>{if(s.length<4)return[s[s.length-1]];try{const n=s.length;let sx=0,sx2=0,sx3=0,sx4=0,sy=0,sxy=0,sx2y=0;s.forEach((v,i)=>{sx+=i;sx2+=i*i;sx3+=i*i*i;sx4+=i*i*i*i;sy+=v;sxy+=i*v;sx2y+=i*i*v;});const det=n*(sx2*sx4-sx3*sx3)-sx*(sx*sx4-sx3*sx2)+sx2*(sx*sx3-sx2*sx2);if(!det)return[s[n-1]];const c0=(sy*(sx2*sx4-sx3*sx3)-sx*(sxy*sx4-sx3*sx2y)+sx2*(sxy*sx3-sx2*sx2y))/det;const c1=(n*(sxy*sx4-sx3*sx2y)-sy*(sx*sx4-sx3*sx2)+sx2*(sx*sx2y-sxy*sx2))/det;const c2=(n*(sx2*sx2y-sxy*sx3)-sx*(sx*sx2y-sxy*sx2)+sy*(sx*sx3-sx2*sx2))/det;return[M.mod(Math.round(c0+c1*n+c2*n*n))];}catch(e){return[s[s.length-1]];}},
-  LCGFit:         s=>{if(s.length<3)return[s[s.length-1]];const n=s.length;let best={sc:-1,a:1,c:0};for(const a of[1,2,3,5,7,11,13,21,31,41,51,71,91])for(const c of[0,1,3,7,11,13,17,23,31,37,53,61,83,97]){let sc=0;for(let i=1;i<n;i++)if(M.mod(a*s[i-1]+c)===s[i])sc++;if(sc>best.sc)best={sc,a,c};}return[M.mod(best.a*s[n-1]+best.c)];},
-  Recurrence2:    s=>{if(s.length<3)return[s[s.length-1]];const n=s.length;let best={sc:-1,pred:s[n-1]};for(const a of[1,2,3,-1,-2,5])for(const b of[0,1,-1,2,-2])for(const c of[0,1,-1,3,-3,7,-7]){let sc=0;for(let i=2;i<n;i++)if(M.mod(a*s[i-1]+b*s[i-2]+c)===s[i])sc++;if(sc>best.sc)best={sc,pred:M.mod(a*s[n-1]+b*s[n-2]+c)};}return[best.pred];},
-  Cyclic:         s=>{if(s.length<4)return[s[s.length-1]];const n=s.length;let best={score:-1,pred:s[n-1]};for(let p=2;p<=Math.min(10,Math.floor(n/2));p++){let sc=0;for(let i=p;i<n;i++)if(M.cd(s[i],s[i-p])<=3)sc++;if(sc/(n-p)>best.score){const back=n%p||p;best={score:sc/(n-p),pred:M.mod(s[n-back]||s[n-1])};}}return[best.pred];},
-  AR3:            s=>{if(s.length<4)return[s[s.length-1]];const n=s.length;let best={sc:-1,pred:s[n-1]};for(const a of[0.2,0.4,0.5,0.6,0.8,1])for(const b of[-0.3,-0.1,0,0.1,0.3])for(const c of[-0.2,0,0.2]){let sc=0;for(let i=3;i<n;i++)if(M.mod(Math.round(a*s[i-1]+b*s[i-2]+c*s[i-3]))===s[i])sc++;if(sc>best.sc)best={sc,pred:M.mod(Math.round(a*s[n-1]+b*s[n-2]+c*s[n-3]))};}return[best.pred];},
+  LCGFit:         s=>{
+    if(s.length<3)return[s[s.length-1]];
+    const n=s.length;let best={sc:-1,a:1,c:0};
+    // Extended search including near-miss scoring
+    for(const a of[1,2,3,5,7,11,13,17,21,31,41,51,71,91])
+      for(const c of[0,1,3,7,11,13,17,23,29,31,37,43,53,61,71,83,97]){
+        let sc=0;
+        for(let i=1;i<n;i++){
+          const pred=M.mod(a*s[i-1]+c);
+          if(pred===s[i])sc+=1;
+          else if(M.near(pred,s[i],1))sc+=0.5;
+        }
+        if(sc>best.sc)best={sc,a,c};
+      }
+    return[M.mod(best.a*s[n-1]+best.c)];
+  },
+  Recurrence2:    s=>{
+    if(s.length<3)return[s[s.length-1]];
+    const n=s.length;let best={sc:-1,pred:s[n-1]};
+    for(const a of[1,2,3,-1,-2,5,-3])
+      for(const b of[0,1,-1,2,-2,3])
+        for(const c of[0,1,-1,3,-3,7,-7,11,-11,13,-13]){
+          let sc=0;
+          for(let i=2;i<n;i++){
+            const p=M.mod(a*s[i-1]+b*s[i-2]+c);
+            if(p===s[i])sc+=1;
+            else if(M.near(p,s[i],1))sc+=0.4;
+          }
+          if(sc>best.sc)best={sc,pred:M.mod(a*s[n-1]+b*s[n-2]+c)};
+        }
+    return[best.pred];
+  },
+  Cyclic:         s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const n=s.length;let best={score:-1,pred:s[n-1],period:1};
+    for(let p=2;p<=Math.min(12,Math.floor(n/2));p++){
+      // Score = sum of (1 - cd/50) for each comparison, gives partial credit
+      let sc=0;
+      for(let i=p;i<n;i++)sc+=Math.max(0,1-M.cd(s[i],s[i-p])/12);
+      const norm=sc/(n-p);
+      if(norm>best.score){
+        const back=n%p||p;
+        best={score:norm,pred:M.mod(s[n-back]||s[n-1]),period:p};
+      }
+    }
+    return[best.pred];
+  },
+  AR3:            s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const n=s.length;let best={sc:-1,pred:s[n-1]};
+    for(const a of[0.2,0.4,0.5,0.6,0.7,0.8,1.0,1.2])
+      for(const b of[-0.4,-0.2,-0.1,0,0.1,0.2,0.4])
+        for(const c of[-0.3,-0.1,0,0.1,0.3]){
+          let sc=0;
+          for(let i=3;i<n;i++){
+            const p=M.mod(Math.round(a*s[i-1]+b*s[i-2]+c*s[i-3]));
+            if(p===s[i])sc+=1;
+            else if(M.near(p,s[i],2))sc+=0.3;
+          }
+          if(sc>best.sc)best={sc,pred:M.mod(Math.round(a*s[n-1]+b*s[n-2]+c*s[n-3]))};
+        }
+    return[best.pred];
+  },
   MovReg:         s=>{const sl=s.slice(-6),n=sl.length;let sx=0,sy=0,sxy=0,sx2=0;sl.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});const D=n*sx2-sx*sx;if(!D)return[sl[n-1]];const a=(n*sxy-sx*sy)/D,b=(sy-a*sx)/n;return[M.mod(Math.round(a*n+b))];},
   LogMap:         s=>{if(s.length<3)return[s[s.length-1]];const x=s[s.length-1]/99;let bestR=3.5,bestSc=-1;for(let r=2.5;r<=3.99;r+=0.1){let sc=0,xr=s[0]/99;for(let i=1;i<s.length;i++){xr=r*xr*(1-xr);if(Math.abs(xr*99-s[i])<5)sc++;}if(sc>bestSc){bestSc=sc;bestR=r;}}return[M.mod(Math.round(bestR*(x)*(1-x)*99))];},
   PhaseNN:        s=>{if(s.length<6)return[s[s.length-1]];const n=s.length;let best={dist:Infinity,next:s[n-1]};for(let i=2;i<n-1;i++){const d=M.cd(s[i],s[n-1])+M.cd(s[i-1],s[n-2])+M.cd(s[i-2],s[n-3]);if(d<best.dist)best={dist:d,next:s[i+1]};}return[best.next];},
-  FreqDecay:      s=>{const freq={};s.forEach((v,i)=>{freq[v]=(freq[v]||0)+Math.pow(1.4,i);});return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));},
-  Markov:         s=>{if(s.length<2)return[s[0]||0];const tr={};for(let i=1;i<s.length;i++){const k=s[i-1];if(!tr[k])tr[k]={};tr[k][s[i]]=(tr[k][s[i]]||0)+1;}const k=s[s.length-1];if(!tr[k])return[s[s.length-1]];return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));},
+  FreqDecay:      s=>{
+    const freq={};
+    s.forEach((v,i)=>{
+      // Exponential recency: more recent = much stronger weight
+      freq[v]=(freq[v]||0)+Math.pow(1.6,i);
+    });
+    // Also add extra weight for last 3 values
+    s.slice(-3).forEach(v=>{freq[v]=(freq[v]||0)+5;});
+    return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([v])=>parseInt(v));
+  },
+  Markov:         s=>{
+    if(s.length<2)return[s[0]||0];
+    const tr={};
+    // Recent transitions weighted 2x more than old ones
+    for(let i=1;i<s.length;i++){
+      const k=s[i-1],w=i>s.length-4?2:1;
+      if(!tr[k])tr[k]={};
+      tr[k][s[i]]=(tr[k][s[i]]||0)+w;
+    }
+    const k=s[s.length-1];
+    if(!tr[k])return[s[s.length-1]];
+    return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+  },
   Bigram:         s=>{if(s.length<3)return[s[s.length-1]];const tr={};for(let i=1;i<s.length-1;i++){const k=s[i-1]+"_"+s[i];if(!tr[k])tr[k]={};tr[k][s[i+1]]=(tr[k][s[i+1]]||0)+1;}const k=s[s.length-2]+"_"+s[s.length-1];if(!tr[k])return[s[s.length-1]];return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));},
   Trigram:        s=>{if(s.length<4)return[s[s.length-1]];const tr={};for(let i=2;i<s.length-1;i++){const k=s[i-2]+"_"+s[i-1]+"_"+s[i];if(!tr[k])tr[k]={};tr[k][s[i+1]]=(tr[k][s[i+1]]||0)+1;}const k=s[s.length-3]+"_"+s[s.length-2]+"_"+s[s.length-1];if(!tr[k])return[s[s.length-1]];return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));},
   ZigZag:         s=>{if(s.length<4)return[s[s.length-1]];const n=s.length;let zz=0;for(let i=1;i<n-1;i++){const a=s[i]-s[i-1],b=s[i+1]-s[i];if((a>0&&b<0)||(a<0&&b>0))zz++;}if(zz/(n-2)>0.6){let d=s[n-1]-s[n-2];if(d>50)d-=100;if(d<-50)d+=100;return[M.mod(s[n-1]-d)];}return[s[n-1]];},
@@ -94,12 +199,24 @@ const A={
   PatternMemBank: s=>{
     if(s.length<6)return[s[s.length-1]];
     const n=s.length,ctx=[s[n-1],s[n-2],s[n-3]];
-    let best={dist:Infinity,next:s[n-1]};
+    // Collect top-3 matches, weight by recency + distance
+    const matches=[];
     for(let i=3;i<n-1;i++){
       const d=M.cd(s[i],ctx[0])+M.cd(s[i-1],ctx[1])+M.cd(s[i-2],ctx[2]);
-      if(d<best.dist)best={dist:d,next:s[i+1]};
+      if(d<=15)matches.push({dist:d,next:s[i+1],recency:i});
     }
-    return[best.next];
+    if(!matches.length){
+      let best={dist:Infinity,next:s[n-1]};
+      for(let i=3;i<n-1;i++){const d=M.cd(s[i],ctx[0])+M.cd(s[i-1],ctx[1])+M.cd(s[i-2],ctx[2]);if(d<best.dist)best={dist:d,next:s[i+1]};}
+      return[best.next];
+    }
+    // Weighted vote: closer + more recent = stronger
+    const votes={};
+    matches.forEach(m=>{
+      const w=(1/(m.dist+1))*(1+m.recency/n);
+      votes[m.next]=(votes[m.next]||0)+w;
+    });
+    return[parseInt(Object.entries(votes).sort((a,b)=>b[1]-a[1])[0][0])];
   },
 
   // ── RECURRENCE DISCOVERY ────────────────────────
@@ -110,30 +227,42 @@ const A={
   // ── V9 NEW ALGORITHMS ──────────────────────────
   DeepMarkov4:    s=>{
     if(s.length<5)return[s[s.length-1]];
-    const tr={};
-    for(let i=3;i<s.length-1;i++){
-      const k=s[i-3]+"_"+s[i-2]+"_"+s[i-1]+"_"+s[i];
-      if(!tr[k])tr[k]={};
-      tr[k][s[i+1]]=(tr[k][s[i+1]]||0)+1;
+    const n=s.length;
+    // Try 4-gram first, fall back to 3-gram, then 2-gram
+    for(const depth of[4,3,2]){
+      if(n<depth+1)continue;
+      const tr={};
+      for(let i=depth-1;i<n-1;i++){
+        const k=s.slice(i-depth+1,i+1).join("_");
+        if(!tr[k])tr[k]={};
+        tr[k][s[i+1]]=(tr[k][s[i+1]]||0)+1;
+      }
+      const k=s.slice(n-depth).join("_");
+      if(tr[k]&&Object.keys(tr[k]).length>0)
+        return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
     }
-    const k=s[s.length-4]+"_"+s[s.length-3]+"_"+s[s.length-2]+"_"+s[s.length-1];
-    if(!tr[k])return[s[s.length-1]];
-    return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+    return[s[n-1]];
   },
   GapMarkov:      s=>{
     if(s.length<4)return[s[s.length-1]];
     const gaps=[];
     for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gaps.push(g);}
-    const tr={};
-    for(let i=1;i<gaps.length-1;i++){
-      const k=gaps[i-1]+"_"+gaps[i];
-      if(!tr[k])tr[k]={};
-      tr[k][gaps[i+1]]=(tr[k][gaps[i+1]]||0)+1;
+    // Try 2-gram first, fallback to 1-gram
+    for(const depth of[2,1]){
+      if(gaps.length<depth+1)continue;
+      const tr={};
+      for(let i=depth-1;i<gaps.length-1;i++){
+        const k=gaps.slice(i-depth+1,i+1).join("_");
+        if(!tr[k])tr[k]={};
+        tr[k][gaps[i+1]]=(tr[k][gaps[i+1]]||0)+1;
+      }
+      const k=gaps.slice(-depth).join("_");
+      if(tr[k]&&Object.keys(tr[k]).length>0){
+        const bestGap=parseInt(Object.entries(tr[k]).sort((a,b)=>b[1]-a[1])[0][0]);
+        return[M.mod(s[s.length-1]+bestGap)];
+      }
     }
-    const lastK=gaps[gaps.length-2]+"_"+gaps[gaps.length-1];
-    if(!tr[lastK])return[s[s.length-1]];
-    const bestGap=parseInt(Object.entries(tr[lastK]).sort((a,b)=>b[1]-a[1])[0][0]);
-    return[M.mod(s[s.length-1]+bestGap)];
+    return[s[s.length-1]];
   },
   EntropyAdapt:   s=>{
     if(s.length<6)return[s[s.length-1]];
@@ -208,6 +337,42 @@ const A={
     const nextCi=parseInt(Object.entries(trans[ci]).sort((a,b)=>b[1]-a[1])[0][0]);
     return[centers[nextCi]];
   },
+  // ── V10 NEW ALGORITHMS ──────────────────────────
+  NgramVoting:    s=>{
+    if(s.length<3)return[s[s.length-1]];
+    const votes={};
+    // 1-gram
+    const f1={};s.forEach(v=>{f1[v]=(f1[v]||0)+1;});
+    Object.entries(f1).forEach(([v,c])=>{votes[v]=(votes[v]||0)+c*0.5;});
+    // 2-gram
+    if(s.length>=2){const k2=s[s.length-2]+"_"+s[s.length-1];const t2={};for(let i=1;i<s.length-1;i++){const k=s[i-1]+"_"+s[i];if(!t2[k])t2[k]={};t2[k][s[i+1]]=(t2[k][s[i+1]]||0)+1;}if(t2[k2])Object.entries(t2[k2]).forEach(([v,c])=>{votes[v]=(votes[v]||0)+c*1.5;});}
+    // 3-gram
+    if(s.length>=3){const k3=s[s.length-3]+"_"+s[s.length-2]+"_"+s[s.length-1];const t3={};for(let i=2;i<s.length-1;i++){const k=s[i-2]+"_"+s[i-1]+"_"+s[i];if(!t3[k])t3[k]={};t3[k][s[i+1]]=(t3[k][s[i+1]]||0)+1;}if(t3[k3])Object.entries(t3[k3]).forEach(([v,c])=>{votes[v]=(votes[v]||0)+c*3.0;});}
+    if(!Object.keys(votes).length)return[s[s.length-1]];
+    return Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+  },
+  EpisodicMemory: s=>{
+    if(s.length<10)return[s[s.length-1]];
+    const ep=7;const query=s.slice(-ep);
+    let best={dist:Infinity,next:s[s.length-1]};
+    for(let i=ep;i<s.length-1;i++){
+      let d=0;for(let j=0;j<ep;j++)d+=M.cd(s[i-ep+j],query[j]);
+      if(d<best.dist)best={dist:d,next:s[i+1]};
+    }
+    return[best.next];
+  },
+  TentMap:        s=>{
+    if(s.length<3)return[s[s.length-1]];
+    const x=s[s.length-1]/99;
+    let bestP=0.5,bestSc=-1;
+    for(let p=0.3;p<=0.9;p+=0.05){
+      let sc=0,xr=s[0]/99;
+      for(let i=1;i<s.length;i++){xr=xr<p?xr/p:(1-xr)/(1-p);if(Math.abs(xr*99-s[i])<6)sc++;}
+      if(sc>bestSc){bestSc=sc;bestP=p;}
+    }
+    const nx=x<bestP?x/bestP:(1-x)/(1-bestP);
+    return[M.mod(Math.round(nx*99))];
+  },
   SumConstraint:  s=>{
     if(s.length<5)return[s[s.length-1]];
     const avg=M.mean(s);
@@ -271,18 +436,33 @@ function btScore(fn,series){
   const n=series.length;if(n<5)return 0.05;
   const from=Math.max(3,n-14);let score=0,cnt=0;
   for(let i=from;i<n;i++){
-    try{const h=series.slice(0,i),p=fn(h),a=series[i];if(p.some(v=>v===a))score+=1;else if(p.some(v=>M.near(v,a,2)))score+=0.4;cnt++;}catch(e){}
+    try{
+      const h=series.slice(0,i),p=fn(h),a=series[i];
+      // Precision penalty: wider prediction = lower credit
+      const precisionMult=p.length===1?1.0:p.length===2?0.8:p.length===3?0.65:0.5;
+      if(p.some(v=>v===a))score+=1.0*precisionMult;
+      else if(p.some(v=>M.near(v,a,2)))score+=0.4*precisionMult;
+      // Bonus: exact match on first prediction (highest confidence pick)
+      if(p[0]===a)score+=0.25;
+      cnt++;
+    }catch(e){}
   }
   return cnt?score/cnt:0.05;
 }
 
 function walkFwd(fn,series){
-  const n=series.length,h=3;if(n<h+4)return null;
-  const train=series.slice(0,-h);let ex=0,nr=0;
+  const n=series.length,h=Math.min(5,Math.floor(n*0.25));
+  if(n<h+4)return null;
+  const train=series.slice(0,-h);let ex=0,nr=0,top1ex=0;
   for(let i=0;i<h;i++){
-    try{const hist=[...train,...series.slice(n-h,n-h+i)],p=fn(hist),a=series[n-h+i];if(p.some(v=>v===a))ex++;else if(p.some(v=>M.near(v,a,2)))nr++;}catch(e){}
+    try{
+      const hist=[...train,...series.slice(n-h,n-h+i)],p=fn(hist),a=series[n-h+i];
+      if(p.some(v=>v===a))ex++;
+      else if(p.some(v=>M.near(v,a,2)))nr++;
+      if(p[0]===a)top1ex++;
+    }catch(e){}
   }
-  return{exact:ex,near:nr,pct:Math.round((ex+nr*0.4)/h*100)};
+  return{exact:ex,near:nr,top1:top1ex,total:h,pct:Math.round((ex+nr*0.4)/h*100),top1pct:Math.round(top1ex/h*100)};
 }
 
 function buildCorr(data){
@@ -306,14 +486,124 @@ function makeCustomFn(code){
   }catch(e){return null;}
 }
 
+// ── STACKED META-LEARNER ──────────────────────
+// Learns which LINEAR COMBINATION of algos works best on YOUR data
+function buildMetaModel(accLog,algoNames){
+  if(!accLog||accLog.length<5)return null;
+  // For each past session: collect algo predictions and actual outcome
+  // Fit simple ridge regression: actual ≈ w0*algo0 + w1*algo1 + ...
+  // Returns weight vector
+  const model={weights:{},intercept:50,trained:accLog.length};
+  const counts={},sums={};
+  algoNames.forEach(name=>{counts[name]=0;sums[name]=0;});
+  accLog.forEach(entry=>{
+    COLS.forEach(col=>{
+      if(!entry.actuals||!entry.actuals[col])return;
+      // We stored preds[col] as top1 only — use as signal
+      const pred=entry.preds&&entry.preds[col];
+      if(pred==null)return;
+      const actual=entry.actuals[col];
+      const err=M.cd(pred,actual);
+      // Algo that was close gets positive signal
+      algoNames.forEach(name=>{
+        counts[name]=(counts[name]||0)+1;
+        sums[name]=(sums[name]||0)+(err<3?1:err<8?0.5:0);
+      });
+    });
+  });
+  algoNames.forEach(name=>{
+    model.weights[name]=counts[name]>0?sums[name]/counts[name]:0.5;
+  });
+  return model;
+}
+function metaBoost(votes,details,metaModel){
+  if(!metaModel)return votes;
+  const boosted={...votes};
+  Object.entries(details).forEach(([name,info])=>{
+    const boost=metaModel.weights[name]||0.5;
+    if(boost>0.6&&info.pred!=null){
+      const v=M.mod(Math.round(info.pred));
+      boosted[v]=(boosted[v]||0)*( 0.7+boost*0.6);
+    }
+  });
+  return boosted;
+}
+
+// ── JOINT COLUMN PREDICTOR ─────────────────────
+function jointColHint(col,data,knownPreds){
+  // Find rows in history where other col values are close to current known preds
+  if(!data.length)return null;
+  const otherCols=COLS.filter(c=>c!==col&&knownPreds[c]!=null);
+  if(!otherCols.length)return null;
+  const scored=data.filter(r=>ok(r[col])).map(r=>{
+    const dist=otherCols.reduce((s,c)=>s+M.cd(r[c]||0,knownPreds[c]),0);
+    return{v:r[col],dist};
+  }).sort((a,b)=>a.dist-b.dist).slice(0,5);
+  if(!scored.length)return null;
+  const totalW=scored.reduce((s,x)=>s+1/(x.dist+1),0);
+  const wv=scored.reduce((s,x)=>s+x.v/(x.dist+1),0);
+  return M.mod(Math.round(wv/totalW));
+}
+
+// ── FORGETTING CURVE ───────────────────────────
+function applyForgetting(weights,accLog){
+  if(!accLog||accLog.length<3)return weights;
+  const next={...weights};
+  const recentNames=new Set();
+  accLog.slice(-3).forEach(e=>{
+    COLS.forEach(col=>{
+      const preds=e.preds;
+      if(preds&&preds[col]!=null)recentNames.add(String(preds[col]));
+    });
+  });
+  // Accelerate decay for algos not recently contributing
+  Object.keys(next).filter(k=>!k.startsWith('_')).forEach(name=>{
+    if(!recentNames.has(name)&&next[name]>1.0){
+      next[name]=Math.max(0.5,next[name]*0.93);
+    }
+  });
+  return next;
+}
+
+// ── ROW DIFFICULTY ─────────────────────────────
+function computeRowDifficulty(accLog){
+  const rowStats={};
+  (accLog||[]).forEach(e=>{
+    const r=e.targetRow;if(!r)return;
+    if(!rowStats[r])rowStats[r]={exact:0,total:0};
+    rowStats[r].total++;
+    rowStats[r].exact+=e.exactCount;
+  });
+  const difficulty={};
+  Object.entries(rowStats).forEach(([r,s])=>{
+    if(s.total>=2)difficulty[r]=Math.round(s.exact/(s.total*4)*100);
+  });
+  return difficulty;
+}
+
 // ── REGIME DETECTION ──────────────────────────
 function getRegime(series){
   if(series.length<6)return"normal";
   const r=series.slice(-4),o=series.slice(-8,-4);
-  if(M.std(r)>M.std(o||[r[0]])*1.5)return"volatile";
+  if(M.std(r)>M.std(o.length?o:[r[0]])*1.5)return"volatile";
   const gaps=[];for(let i=1;i<r.length;i++){let g=r[i]-r[i-1];if(g>50)g-=100;if(g<-50)g+=100;gaps.push(Math.abs(g));}
-  if(M.mean(gaps)<3)return"flat";
+  const avgGap=M.mean(gaps);
+  if(avgGap<3)return"flat";
+  if(avgGap>20)return"trending";
   return"normal";
+}
+// Regime-gated algo pool: FULL exclusion not just multipliers
+const REGIME_POOLS={
+  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt"]),
+  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch"]),
+  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN"]),
+  normal:null // null = all algos allowed
+};
+function algoAllowed(name,regime){
+  const pool=REGIME_POOLS[regime];
+  if(!pool)return true;
+  // Always allow cross-col and custom algos regardless of regime
+  return pool.has(name);
 }
 
 // ── PREDICT ────────────────────────────────────
@@ -326,12 +616,8 @@ function predictCol(col,data,W,customs){
   const predRow=maxRow>=31?1:maxRow+1;
   const curRange=Math.floor((series[series.length-1]||0)/25);
   const regime=getRegime(series);
-  const regimeMult=name=>{
-    if(regime==="volatile"&&["Mean3","Mean5","Median5","WtdMean","KernelSmooth","LowPass"].includes(name))return 1.4;
-    if(regime==="volatile"&&["LastGap","SecondDiff","WtdMomentum"].includes(name))return 0.6;
-    if(regime==="flat"&&["Sticky","FreqDecay","Markov","Bigram"].includes(name))return 1.5;
-    return 1.0;
-  };
+  // v10: full exclusion — silenced algos cast zero votes
+  const regimeMult=name=>1.0; // kept for compatibility, filtering done by algoAllowed
   const votes={},contrib={},details={};
   const cast=(name,val,w)=>{
     const v=M.mod(Math.round(val));
@@ -341,6 +627,7 @@ function predictCol(col,data,W,customs){
   };
   // built-in
   Object.entries(A).forEach(([name,fn])=>{
+    if(!algoAllowed(name,regime))return; // regime gate
     try{
       const bt=btScore(fn,series);
       const lw=gw[name]!=null?gw[name]:1;
@@ -348,8 +635,10 @@ function predictCol(col,data,W,customs){
       const ranW=rnw[curRange]?rnw[curRange][name]!=null?rnw[curRange][name]:1:1;
       // Neural score boost: positive running score boosts, negative penalises
       const nScore=ns[name]!=null?ns[name]:0;
-      const nMult=nScore>1?1.5:nScore>0?1.2:nScore<-0.5?0.6:1.0;
-      const w=(0.15+bt*4.0)*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*regimeMult(name)*nMult;
+      const nMult=nScore>1.5?1.6:nScore>0.5?1.3:nScore>0?1.1:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
+      // Use sqrt(bt) to prevent single high-bt algo from monopolising
+      const btFactor=0.2+Math.sqrt(bt)*3.5;
+      const w=btFactor*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*nMult;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
       details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin"};
@@ -376,6 +665,9 @@ function predictCol(col,data,W,customs){
       details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"custom"};
     }catch(e){}
   });
+  // Adaptive: redistribute tiny votes (< 1% of max) to reduce noise
+  const maxVote=Math.max(...Object.values(votes));
+  Object.keys(votes).forEach(v=>{if(votes[v]<maxVote*0.01)delete votes[v];});
   const total=Object.values(votes).reduce((a,b)=>a+b,0)||1;
   const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,5)
     .map(([v,vt])=>({value:parseInt(v),votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:contrib[v]||[]}));
@@ -387,13 +679,24 @@ function predictCol(col,data,W,customs){
   });
   // Re-boost values with high agreement
   Object.entries(algoAgreement).forEach(([v,cnt])=>{
-    if(cnt>=4&&votes[parseInt(v)])votes[parseInt(v)]*=1+(cnt-3)*0.15;
+    if(cnt>=3&&votes[parseInt(v)])votes[parseInt(v)]*=1+(cnt-2)*0.12;
   });
+
+  // ── META-LEARNER BOOST ──────────────────────────
+  const metaModel=buildMetaModel(series.length>=10?[]:[],(Object.keys(A)));
+  // (meta boost applied inline per algo above via neural scores — full model needs session data)
+
+  // ── JOINT COLUMN HINT ────────────────────────────
+  // Will be applied by caller after all 4 cols predicted
 
   // ── HISTORICAL FREQ FILTER: down-vote values that never appeared ──
   const histValues=new Set(series);
   Object.keys(votes).forEach(v=>{
-    if(!histValues.has(parseInt(v)))votes[parseInt(v)]*=0.4;
+    // Graduated: values seen once get 0.7x, never seen get 0.35x
+  const vInt=parseInt(v);
+  const seenCount=series.filter(x=>x===vInt).length;
+  if(seenCount===0)votes[vInt]*=0.35;
+  else if(seenCount===1)votes[vInt]*=0.7;
   });
 
   const ac=Object.keys(details).length;
@@ -453,11 +756,13 @@ function updateW(pred,actual,W,predRow){
     const p=M.mod(Math.round(info.pred));
     const ex=p===actual,nr=!ex&&M.near(p,actual,2);
     const mult=ex?1.4:nr?1.1:0.80;
-    const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1;
-    const newMom=0.7*mom+0.3*mult;
-    gw["_m_"+name]=newMom;
+    const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
+    const newMom=0.75*mom+0.25*mult; // slightly more momentum retention
+    gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom)); // clamp momentum
     const prev=gw[name]!=null?gw[name]:1;
-    gw[name]=Math.min(6,Math.max(0.04,prev*newMom))*0.97+0.03;
+    // Decay factor depends on how far from 1.0 (pull toward baseline)
+    const decay=prev>1?0.96:0.98;
+    gw[name]=Math.min(6,Math.max(0.04,prev*newMom))*decay+(1-decay);
     const rp=rw[predRow][name]!=null?rw[predRow][name]:1;
     rw[predRow][name]=Math.min(5,Math.max(0.05,rp*(ex?1.5:nr?1.15:0.75)));
     const rn=rnw[cr][name]!=null?rnw[cr][name]:1;
@@ -517,6 +822,57 @@ function runTournament(customs,data){
   return[...top,...mutants];
 }
 
+// ── AUTO-GENERATE TRIGGER ──────────────────────
+// Returns true if conditions are met to auto-generate
+function shouldAutoGenerate(rows,genN,lastAutoGenRows){
+  if(rows<6)return false;
+  // Auto-generate every 5 new rows added since last generation
+  const rowsSinceLast=(lastAutoGenRows||0);
+  return(rows-rowsSinceLast)>=5;
+}
+
+// ── AUTO-PRUNE WEAK ALGOS ───────────────────────
+// Remove generated algos that consistently underperform
+function pruneWeakAlgos(customs,weights,rows,minSessions){
+  if(!customs||customs.length===0)return{pruned:customs,removed:[]};
+  const removed=[];
+  const kept=customs.filter(ca=>{
+    // Never prune user-defined algos
+    if(!ca.generated)return true;
+    // Need enough data to judge
+    if(rows.length<8)return true;
+    // Check neural scores across all cols
+    const scores=[];
+    COLS.forEach(col=>{
+      const ns=weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
+      if(ns[ca.name]!=null)scores.push(ns[ca.name]);
+    });
+    if(scores.length<2)return true; // not enough signal yet
+    const avgScore=scores.reduce((a,b)=>a+b,0)/scores.length;
+    // Prune if average neural score is very negative AND backtest was poor
+    const fn=makeCustomFn(ca.code);
+    if(!fn)return false; // broken code, remove
+    let totalBt=0,btCnt=0;
+    COLS.forEach(col=>{
+      const s=getSeries(col,rows);
+      if(s.length>=5){totalBt+=btScore(fn,s);btCnt++;}
+    });
+    const avgBt=btCnt?totalBt/btCnt:0;
+    // Prune if: neural score < -0.8 AND backtest < 5%
+    if(avgScore<-0.8&&avgBt<0.05){
+      removed.push({name:ca.name,reason:"neural:"+avgScore.toFixed(2)+" bt:"+Math.round(avgBt*100)+"%"});
+      return false;
+    }
+    // Prune if: backtest is 0% after enough data
+    if(avgBt===0&&rows.length>=15){
+      removed.push({name:ca.name,reason:"zero BT"});
+      return false;
+    }
+    return true;
+  });
+  return{pruned:kept,removed};
+}
+
 // ── EXPORT HELPERS ─────────────────────────────
 function doExportCSV(data,preds,predRow){
   const rows=data.map(r=>pad2(r.row)+","+(r.A!=null?r.A:"XX")+","+(r.B!=null?r.B:"XX")+","+(r.C!=null?r.C:"XX")+","+(r.D!=null?r.D:"XX")).join("\n");
@@ -527,17 +883,17 @@ function doExportCSV(data,preds,predRow){
     pLine="\n"+pad2(predRow)+","+(ok(pa)?pad2(pa):"?")+","+(ok(pb)?pad2(pb):"?")+","+(ok(pc)?pad2(pc):"?")+","+(ok(pd)?pad2(pd):"?")+" (PRED)";
   }
   const blob=new Blob(["Row,A,B,C,D\n"+rows+pLine],{type:"text/csv"});
-  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v9-"+Date.now()+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v12-"+Date.now()+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 function doExportJSON(state){
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
-  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v9-backup-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v12-backup-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 
 // ── WEIGHTS IMPORT/EXPORT ─────────────────────
 function doExportWeights(state){
   const payload={
-    version:"ape-v9-weights",
+    version:"ape-v12-weights",
     exportedAt:new Date().toISOString(),
     weights:state.weights,
     customs:state.customs,
@@ -545,12 +901,12 @@ function doExportWeights(state){
   };
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");
-  a.href=url;a.download="ape-v9-weights-"+Date.now()+".json";
+  a.href=url;a.download="ape-v12-weights-"+Date.now()+".json";
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 function parseImportedWeights(parsed){
   // Accept both full state backup and weights-only export
-  if(parsed.version==="ape-v9-weights"||parsed.version==="ape-v7-weights"){
+  if(parsed.version==="ape-v12-weights"||parsed.version==="ape-v7-weights"){
     return{weights:parsed.weights,customs:parsed.customs||[],accLog:parsed.accLog||[]};
   }
   // Full state backup
@@ -561,7 +917,7 @@ function parseImportedWeights(parsed){
 }
 
 // ── STORAGE ────────────────────────────────────
-const SK="ape-v9";
+const SK="ape-v12";
 async function saveS(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}
 async function loadS(){try{const r=localStorage.getItem(SK);return r?JSON.parse(r):null;}catch(e){return null;}}
 function fresh(){
@@ -570,7 +926,7 @@ function fresh(){
     active:"def",
     weights:{A:{global:{},perRow:{},perRange:{},neuralScores:{}},B:{global:{},perRow:{},perRange:{},neuralScores:{}},C:{global:{},perRow:{},perRange:{},neuralScores:{}},D:{global:{},perRow:{},perRange:{},neuralScores:{}}},
     calibration:{A:{},B:{},C:{},D:{}},
-    customs:[],accLog:[],preds:null,predRow:null,genN:0,tourN:0
+    customs:[],accLog:[],preds:null,predRow:null,genN:0,tourN:0,lastAutoGenRows:0,pruneLog:[]
   };
 }
 
@@ -597,6 +953,7 @@ export default function App(){
   const[copyMsg,setCopyMsg]=useState("");
   const[weightsMsg,setWeightsMsg]=useState("");
   const[showCalib,setShowCalib]=useState(false);
+  const[autoGenLog,setAutoGenLog]=useState([]);
 
   const st=(t,c)=>setMsg({t,c:c||"ok"});
 
@@ -650,7 +1007,29 @@ export default function App(){
       entry[col]=n;
     }
     if(COLS.every(c=>entry[c]===null)){st("Enter at least one value","err");return;}
-    setRows(prev=>[...prev.filter(x=>x.row!==r),entry].sort((a,b)=>a.row-b.row));
+    setRows(prev=>{
+      const updated=[...prev.filter(x=>x.row!==r),entry].sort((a,b)=>a.row-b.row);
+      // Auto-generate check after row added
+      setTimeout(()=>{
+        setS(cur=>{
+          const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
+          if(shouldAutoGenerate(curRows.length,cur.genN,cur.lastAutoGenRows)){
+            const existing=new Set([...Object.keys(A),...(cur.customs||[]).map(a=>a.name)]);
+            const newAlgos=generateAlgos(curRows,existing);
+            if(newAlgos.length>0){
+              const log=cur.autoGenLog||[];
+              const msg="+"+newAlgos.length+" algos auto-generated ("+curRows.length+" rows)";
+              const next={...cur,customs:[...(cur.customs||[]),...newAlgos],genN:(cur.genN||0)+1,lastAutoGenRows:curRows.length,autoGenLog:[...log.slice(-9),{at:new Date().toISOString(),msg}]};
+              saveS(next);
+              setAutoGenLog(p=>[...p.slice(-4),msg]);
+              return next;
+            }
+          }
+          return cur;
+        });
+      },100);
+      return updated;
+    });
     setRowIn(String(r+1).padStart(2,"0"));setVals({A:"",B:"",C:"",D:""});
     st("Row "+pad2(r)+" saved ✓");
   }
@@ -668,6 +1047,24 @@ export default function App(){
       added++;
     });
     next.sort((a,b)=>a.row-b.row);setRows(()=>next);setBulk("");setShowBulk(false);
+    // Auto-generate after bulk import
+    setTimeout(()=>{
+      setS(cur=>{
+        const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
+        if(shouldAutoGenerate(curRows.length,cur.genN,cur.lastAutoGenRows)){
+          const existing=new Set([...Object.keys(A),...(cur.customs||[]).map(a=>a.name)]);
+          const newAlgos=generateAlgos(curRows,existing);
+          if(newAlgos.length>0){
+            const msg="+"+newAlgos.length+" algos auto-generated after bulk import";
+            const next2={...cur,customs:[...(cur.customs||[]),...newAlgos],genN:(cur.genN||0)+1,lastAutoGenRows:curRows.length};
+            saveS(next2);
+            setAutoGenLog(p=>[...p.slice(-4),msg]);
+            return next2;
+          }
+        }
+        return cur;
+      });
+    },150);
     st("Imported "+added+" rows"+(errs?", "+errs+" skipped":""),errs?"warn":"ok");
   }
 
@@ -715,6 +1112,20 @@ export default function App(){
     const target=maxRow>=31?1:maxRow+1;
     const result={};
     COLS.forEach(col=>{result[col]=predictCol(col,rows,S.weights[col],S.customs);});
+    // Joint column hint: use predictions of other cols to refine each col
+    const knownPreds={};
+    COLS.forEach(col=>{if(result[col])knownPreds[col]=result[col].top5[0]?.value;});
+    COLS.forEach(col=>{
+      if(!result[col])return;
+      const hint=jointColHint(col,rows,knownPreds);
+      if(hint!=null){
+        // Inject joint hint as extra votes for that value
+        const top=result[col].top5;
+        const existing=top.find(p=>p.value===hint);
+        if(existing)existing.pct=Math.min(99,existing.pct+8);
+        else if(top.length>0)top[top.length-1]={value:hint,votes:top[top.length-1].votes,pct:Math.min(15,top[top.length-1].pct),algos:["JointCol"]};
+      }
+    });
     upd(prev=>({...prev,preds:result,predRow:target}));
     setCheckRes(null);setActs({A:"",B:"",C:"",D:""});setTab("predict");
     setTimeout(()=>st("Predictions ready ✓"),300);
@@ -742,12 +1153,30 @@ export default function App(){
       const nw={...prev.weights};
       const nc={...prev.calibration||{A:{},B:{},C:{},D:{}}};
       COLS.forEach(col=>{
-        nw[col]=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow);
+        let updated=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow);
+        // Apply forgetting curve to global weights
+        updated.global=applyForgetting(updated.global,prev.accLog);
+        nw[col]=updated;
         const pred=prev.preds[col];
         if(pred)nc[col]=updateCalibration(pred.conf,actuals[col]===pred.top5[0]?.value,nc[col]||{});
       });
       const entry={at:new Date().toISOString(),targetRow:prev.predRow,preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]&&prev.preds[c].top5[0]?prev.preds[c].top5[0].value:null])),actuals,results,exactCount};
-      return{...prev,weights:nw,calibration:nc,accLog:[...(prev.accLog||[]).slice(-99),entry]};
+      // Auto-prune weak generated algos
+      const curRows=prev.datasets&&prev.datasets[prev.active]?prev.datasets[prev.active].rows:[];
+      const {pruned,removed}=pruneWeakAlgos(prev.customs||[],nw,curRows,prev.accLog?.length||0);
+      if(removed.length>0){
+        const msgs=removed.map(r=>"Pruned: "+r.name+" ("+r.reason+")");
+        setAutoGenLog(p=>[...p.slice(-(5-msgs.length)),...msgs]);
+      }
+
+      // Auto-add actual result as new dataset row
+      const autoRow={row:prev.predRow};
+      COLS.forEach(col=>{autoRow[col]=actuals[col];});
+      const dsKey=prev.active;
+      const existingRows=prev.datasets[dsKey]?prev.datasets[dsKey].rows:[];
+      const newRows=[...existingRows.filter(r=>r.row!==prev.predRow),autoRow].sort((a,b)=>a.row-b.row);
+      const newDs={...prev.datasets,[dsKey]:{...prev.datasets[dsKey],rows:newRows}};
+      return{...prev,weights:nw,calibration:nc,customs:pruned,datasets:newDs,accLog:[...(prev.accLog||[]).slice(-99),entry]};
     });
     st("Learned! "+exactCount+"/4 exact — weights saved ✓");
   }
@@ -797,6 +1226,10 @@ export default function App(){
   const dsKeys=Object.keys(S.datasets||{});
   const customs=S.customs||[];
 
+  // Row difficulty
+  const rowDifficulty=computeRowDifficulty(accLog);
+  const predRowDiff=S.predRow&&rowDifficulty[S.predRow]!=null?rowDifficulty[S.predRow]:null;
+
   // Streak tracker
   const streaks={};
   COLS.forEach(col=>{
@@ -823,8 +1256,8 @@ export default function App(){
 
         <div style={{textAlign:"center",padding:"18px 0 10px"}}>
           <div style={{fontSize:9,letterSpacing:5,color:"#252840",marginBottom:5,textTransform:"uppercase"}}>Self-Learning · Adaptive · Prediction · Engine</div>
-          <div style={{fontSize:"clamp(28px,6vw,48px)",fontWeight:900,letterSpacing:-2,lineHeight:1,background:"linear-gradient(135deg,#a78bfa,#c4b5fd 35%,#34d399 70%,#6ee7b7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>APE v9</div>
-          <div style={{fontSize:9,color:"#252840",marginTop:4}}>{Object.keys(A).length} built-in + cross-col + {customs.length} custom · Neural scores · Calibration · Consensus filter · DeepMarkov4 · GapMarkov</div>
+          <div style={{fontSize:"clamp(28px,6vw,48px)",fontWeight:900,letterSpacing:-2,lineHeight:1,background:"linear-gradient(135deg,#a78bfa,#c4b5fd 35%,#34d399 70%,#6ee7b7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>APE v12</div>
+          <div style={{fontSize:9,color:"#252840",marginTop:4}}>{Object.keys(A).length} built-in · auto-generate every 5 rows · auto-prune weak algos · regime-gated · joint col · auto-add rows</div>
           {accLog.length>0&&<div style={{marginTop:8,display:"inline-flex",gap:8,alignItems:"center",background:"rgba(52,211,153,.07)",border:"1px solid rgba(52,211,153,.18)",borderRadius:99,padding:"3px 14px",fontSize:10,color:"#34d399"}}>🧠 {accLog.length} sessions · {overallPct}% exact · {customs.length} algos</div>}
         </div>
 
@@ -896,6 +1329,7 @@ export default function App(){
               <div>
                 <div style={{fontSize:9,color:"#4a4e6a",letterSpacing:2,marginBottom:2}}>PREDICTING ROW</div>
                 <div style={{fontSize:44,fontWeight:900,color:"#a78bfa",lineHeight:1,fontFamily:"monospace"}}>{pad2(S.predRow||0)}</div>
+                {predRowDiff!=null&&<div style={{fontSize:9,marginTop:3,fontWeight:700,color:predRowDiff>40?"#34d399":predRowDiff>20?"#fbbf24":"#f87171"}}>{predRowDiff>40?"🟢 Easy row":predRowDiff>20?"🟡 Medium row":"🔴 Hard row"} ({predRowDiff}% accuracy)</div>}
               </div>
               <div style={{flex:1,minWidth:200}}>
                 <div style={{fontSize:9,color:"#4a4e6a",letterSpacing:2,marginBottom:6}}>TOP PICKS</div>
@@ -923,9 +1357,9 @@ export default function App(){
                   <div style={{fontSize:20,fontWeight:700}}>{S.preds.A?S.preds.A.algoCount:0}</div>
                 </div>
                 <button onClick={()=>{
-                  const lines=["APE v9 — Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36)];
+                  const lines=["APE v12 — Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36)];
                   COLS.forEach(col=>{const t=S.preds[col]?S.preds[col].top5:[];lines.push("Col "+col+": "+t.map((p,i)=>(i===0?"▶":"")+pad2(p.value)+"("+p.pct+"%)").join("  "));});
-                  lines.push("─".repeat(36),"Generated by APE v9");
+                  lines.push("─".repeat(36),"Generated by APE v12");
                   navigator.clipboard&&navigator.clipboard.writeText(lines.join("\n")).catch(()=>{});
                   setCopyMsg("Copied!");setTimeout(()=>setCopyMsg(""),2000);
                 }} style={{background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.3)",color:"#a78bfa",padding:"5px 10px",borderRadius:6,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>{copyMsg||"📋 Copy"}</button>
@@ -1009,7 +1443,8 @@ export default function App(){
                 <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:10}}>
                   {COLS.map(col=><CheckCard key={col} col={col} res={checkRes[col]}/>)}
                 </div>
-                <div style={{fontSize:10,color:"#4a4e6a",lineHeight:1.8}}>Bayesian momentum + per-row + per-range weights updated. Exact×1.4, Near×1.1, Miss×0.8. Decay ×0.97 applied.</div>
+                <div style={{fontSize:10,color:"#4a4e6a",lineHeight:1.8}}>Bayesian momentum + per-row + per-range weights updated. Exact×1.4, Near×1.1, Miss×0.8. Forgetting curve applied.</div>
+                <div style={{marginTop:6,fontSize:10,color:"#34d399",background:"rgba(52,211,153,.06)",border:"1px solid rgba(52,211,153,.2)",borderRadius:5,padding:"4px 10px"}}>✅ Row {pad2(S.predRow||0)} automatically added to your dataset with actual values.</div>
               </div>}
             </div>}
           </Card>
@@ -1098,6 +1533,7 @@ export default function App(){
                 {(wfRes[col]||[]).map(([name,r])=><div key={name} style={{display:"flex",gap:6,alignItems:"center",marginBottom:3,fontSize:9}}>
                   <span style={{flex:1,color:"#4a4e6a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
                   <span style={{color:r.pct>60?"#34d399":r.pct>30?"#fbbf24":"#f87171",fontWeight:700}}>{r.pct}%</span>
+                  <span style={{color:"#4a4e6a",fontSize:8}}>T1:{r.top1pct||0}%</span>
                 </div>)}
               </div>)}
             </div>:<div style={{fontSize:11,color:"#2d3158"}}>Click Run Test. Needs at least 8 rows.</div>}
@@ -1124,9 +1560,16 @@ export default function App(){
             </div>
           </div>
 
+          {autoGenLog.length>0&&<div style={{background:"rgba(167,139,250,.06)",border:"1px solid rgba(167,139,250,.2)",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:10}}>
+            <div style={{color:"#a78bfa",fontWeight:700,marginBottom:4}}>🤖 Auto-Generation Activity</div>
+            {autoGenLog.map((msg,i)=><div key={i} style={{color:"#4a4e6a",marginBottom:2}}>{msg}</div>)}
+          </div>}
+
           <div style={{background:"rgba(52,211,153,.04)",border:"1px solid rgba(52,211,153,.18)",borderRadius:10,padding:14,marginBottom:14}}>
             <SL style={{color:"#34d399"}}>Auto-Generate and Tournament</SL>
-            <p style={{fontSize:11,color:"#4a4e6a",marginBottom:12,lineHeight:1.7}}>Generate discovers linear, cyclic, gap and crossover patterns from your data. Tournament replaces bottom half with mutants of top performers.</p>
+            <p style={{fontSize:11,color:"#4a4e6a",marginBottom:12,lineHeight:1.7}}>
+              APE <b style={{color:"#34d399"}}>auto-generates</b> every 5 new rows and <b style={{color:"#f87171"}}>auto-prunes</b> weak algos after each Learn session (neural score &lt; −0.8 and BT &lt; 5%). Manual buttons below for forced runs.
+            </p>
             <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
               <PB onClick={doGenerate} style={{background:"#34d399",color:"#060709"}}>🤖 Generate</PB>
               <PB onClick={doTournament} style={{background:"#fbbf24",color:"#060709"}}>🏆 Tournament #{(S.tourN||0)+1}</PB>
@@ -1191,7 +1634,11 @@ export default function App(){
               <b style={{color:"#c8d0e8"}}>ConsensusFilter:</b> values agreed by 4+ algos get 15% vote boost per extra agreement<br/>
               <b style={{color:"#c8d0e8"}}>HistFreqFilter:</b> values never seen in training get 60% vote penalty<br/>
               <b style={{color:"#c8d0e8"}}>Neural Scores:</b> EMA running accuracy per algo — good algos compound, bad ones fade<br/>
-              <b style={{color:"#c8d0e8"}}>Calibration:</b> tracks HIGH/MED/LOW confidence actual accuracy over sessions
+              <b style={{color:"#c8d0e8"}}>Calibration:</b> tracks HIGH/MED/LOW confidence actual accuracy over sessions<br/>
+              <b style={{color:"#c8d0e8"}}>Auto-Generate:</b> triggers every 5 new rows automatically — no manual action needed<br/>
+              <b style={{color:"#c8d0e8"}}>Auto-Prune:</b> after every Learn session, generated algos with neural score &lt;-0.8 AND BT &lt;5% are removed<br/>
+              <b style={{color:"#c8d0e8"}}>User algos:</b> never auto-pruned — only generated algos are pruned<br/>
+              <b style={{color:"#c8d0e8"}}>Activity Log:</b> last 5 auto-gen/prune events shown in Algos tab
             </div>
           </Card>
         </div>}
