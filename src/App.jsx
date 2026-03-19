@@ -183,17 +183,149 @@ const A={
   XorHeur:        s=>{if(s.length<2)return[s[0]||0];const l=s[s.length-1],p=s[s.length-2];return[(M.d1(l)^M.d1(p))*10+(M.d2(l)^M.d2(p))];},
   RevLag2:        s=>s.length>=3?[M.rev(s[s.length-3])]:[s[s.length-1]],
 
-  // ── PSEUDO-RANDOM STRUCTURE ALGOS ──────────────
-  Xorshift:       s=>{let x=s[s.length-1]||1;x^=(x<<7)&0xFF;x^=(x>>5)&0xFF;x^=(x<<3)&0xFF;return[M.mod(Math.abs(x))];},
-  MiddleSquare:   s=>{const v=s[s.length-1];const sq=String(v*v).padStart(4,"0");return[parseInt(sq.slice(1,3))];},
-  LFSR7:          s=>{const v=s[s.length-1];const bit=((v>>6)^(v>>5))&1;return[M.mod(((v<<1)|bit)&0x7F)];},
-  QuadCong:       s=>{const v=s[s.length-1];return[M.mod(3*v*v+7*v+11)];},
-  ParkMiller:     s=>{const v=s[s.length-1]||42;return[M.mod((16807*v)%97)];},
-  LagFib:         s=>{if(s.length<8)return[s[s.length-1]];return[M.mod(s[s.length-7]^s[s.length-3])];},
-  Rule30:         s=>{const v=s[s.length-1];let out=0;for(let i=0;i<7;i++){const l=(v>>(i+1))&1,c=(v>>i)&1,r=i>0?(v>>(i-1))&1:0,rule=(l<<2)|(c<<1)|r;if([4,3,2,1].includes(rule))out|=(1<<i);}return[M.mod(out)];},
-  WichmannHill:   s=>{const n=s.length,a=s[n-1]||1,b=n>=2?s[n-2]:1,c=n>=3?s[n-3]:1;const x=(171*a)%30269,y=(172*b)%30307,z=(170*c)%30323;return[M.mod(Math.floor(((x/30269+y/30307+z/30323)%1)*100))];},
-  BBS:            s=>{const v=s[s.length-1]||7;return[M.mod((v*v)%87)];},
-  MersenneMod:    s=>{if(s.length<3)return[s[s.length-1]];const v=s[s.length-1],p=s[s.length-2],q=s[s.length-3];const y=(v&0x40)|((p)&0x3F);return[M.mod((y>>1)^(y&1?0x39:0)^(q&0x1F))];},
+  // ── PSEUDO-RANDOM STRUCTURE ALGOS (v13 enhanced) ──
+  // All now FITTED to data - best parameters found via brute-force search
+
+  // Xorshift: find best shift params via backtest
+  Xorshift:       s=>{
+    if(s.length<3)return[M.mod(s[s.length-1]^(s[s.length-1]<<3))];
+    const n=s.length;let best={sc:-1,a:3,b:5,c:2};
+    for(const a of[1,3,5,7])for(const b of[3,5,7,9])for(const c of[1,2,3]){
+      let sc=0;
+      for(let i=1;i<n;i++){let x=s[i-1]||1;x^=(x<<a)&0xFF;x^=(x>>b)&0xFF;x^=(x<<c)&0xFF;if(M.mod(Math.abs(x))===s[i])sc++;}
+      if(sc>best.sc)best={sc,a,b,c};
+    }
+    let x=s[n-1]||1;x^=(x<<best.a)&0xFF;x^=(x>>best.b)&0xFF;x^=(x<<best.c)&0xFF;
+    return[M.mod(Math.abs(x))];
+  },
+
+  // MiddleSquare: fit best multiplier
+  MiddleSquare:   s=>{
+    if(s.length<3)return[parseInt(String(s[s.length-1]*s[s.length-1]).padStart(4,"0").slice(1,3))];
+    const n=s.length;let best={sc:-1,m:1};
+    for(const m of[1,2,3,5,7,11,13]){
+      let sc=0;for(let i=1;i<n;i++){const sq=String((s[i-1]*m)*(s[i-1]*m)).padStart(4,"0");if(parseInt(sq.slice(1,3))===s[i])sc++;}
+      if(sc>best.sc)best={sc,m};
+    }
+    const sq=String((s[n-1]*best.m)*(s[n-1]*best.m)).padStart(4,"0");
+    return[M.mod(parseInt(sq.slice(1,3)))];
+  },
+
+  // LFSR: try multiple tap positions
+  LFSR7:          s=>{
+    if(s.length<3)return[M.mod(((s[s.length-1]<<1)|((s[s.length-1]>>6)^(s[s.length-1]>>5))&1)&0x7F)];
+    const n=s.length;let best={sc:-1,t1:6,t2:5};
+    for(const t1 of[6,5,4])for(const t2 of[5,4,3,2]){
+      if(t1<=t2)continue;
+      let sc=0;for(let i=1;i<n;i++){const v=s[i-1],bit=((v>>t1)^(v>>t2))&1;if(M.mod(((v<<1)|bit)&0x7F)===s[i])sc++;}
+      if(sc>best.sc)best={sc,t1,t2};
+    }
+    const v=s[n-1],bit=((v>>best.t1)^(v>>best.t2))&1;
+    return[M.mod(((v<<1)|bit)&0x7F)];
+  },
+
+  // QuadCong: fit best (a,b,c) coefficients
+  QuadCong:       s=>{
+    if(s.length<3)return[M.mod(3*s[s.length-1]*s[s.length-1]+7*s[s.length-1]+11)];
+    const n=s.length;let best={sc:-1,a:3,b:7,c:11};
+    for(const a of[1,2,3,5,7])for(const b of[1,3,5,7,11])for(const c of[1,3,7,11,13,17]){
+      let sc=0;for(let i=1;i<n;i++)if(M.mod(a*s[i-1]*s[i-1]+b*s[i-1]+c)===s[i])sc++;
+      if(sc>best.sc)best={sc,a,b,c};
+    }
+    return[M.mod(best.a*s[n-1]*s[n-1]+best.b*s[n-1]+best.c)];
+  },
+
+  // ParkMiller: fit best multiplier and modulus
+  ParkMiller:     s=>{
+    if(s.length<3)return[M.mod((16807*s[s.length-1])%97)];
+    const n=s.length;let best={sc:-1,a:16807,m:97};
+    for(const a of[16807,48271,69621])for(const m of[97,89,83,79,73,67]){
+      let sc=0;for(let i=1;i<n;i++)if(M.mod((a*s[i-1])%m)===s[i])sc++;
+      if(sc>best.sc)best={sc,a,m};
+    }
+    return[M.mod((best.a*s[n-1])%best.m)];
+  },
+
+  // LagFib: fit best lag offsets (j,k) 
+  LagFib:         s=>{
+    if(s.length<8)return[s[s.length-1]];
+    const n=s.length;let best={sc:-1,j:7,k:3,op:"xor"};
+    for(const j of[7,5,4,3])for(const k of[3,2,1])for(const op of["xor","add","sub"]){
+      if(j<=k||j>=n)continue;
+      let sc=0;
+      for(let i=j;i<n;i++){
+        let v;
+        if(op==="xor")v=s[i-j]^s[i-k];
+        else if(op==="add")v=M.mod(s[i-j]+s[i-k]);
+        else v=M.mod(s[i-j]-s[i-k]);
+        if(v===s[i])sc++;
+      }
+      if(sc>best.sc)best={sc,j,k,op};
+    }
+    const sj=s[n-best.j]||0,sk=s[n-best.k]||0;
+    const v=best.op==="xor"?sj^sk:best.op==="add"?M.mod(sj+sk):M.mod(sj-sk);
+    return[M.mod(v)];
+  },
+
+  // Rule30: try rules 30,90,110,150 and pick best fitting
+  Rule30:         s=>{
+    if(s.length<3)return[s[s.length-1]];
+    const rules={30:[4,3,2,1],90:[6,3],110:[6,5,3,2,1],150:[6,5,4,1]};
+    const n=s.length;let best={sc:-1,ruleName:"30",activeRules:[4,3,2,1]};
+    for(const[rname,active]of Object.entries(rules)){
+      let sc=0;
+      for(let i=1;i<n;i++){const v=s[i-1];let out=0;for(let b=0;b<7;b++){const l=(v>>(b+1))&1,c=(v>>b)&1,r=b>0?(v>>(b-1))&1:0,rule=(l<<2)|(c<<1)|r;if(active.includes(rule))out|=(1<<b);}if(M.mod(out)===s[i])sc++;}
+      if(sc>best.sc)best={sc,ruleName:rname,activeRules:active};
+    }
+    const v=s[n-1];let out=0;
+    for(let b=0;b<7;b++){const l=(v>>(b+1))&1,c=(v>>b)&1,r=b>0?(v>>(b-1))&1:0,rule=(l<<2)|(c<<1)|r;if(best.activeRules.includes(rule))out|=(1<<b);}
+    return[M.mod(out)];
+  },
+
+  // WichmannHill: fit best multipliers
+  WichmannHill:   s=>{
+    const n=s.length,a=s[n-1]||1,b=n>=2?s[n-2]:1,c=n>=3?s[n-3]:1;
+    if(n<4)return[M.mod(Math.floor(((171*a%30269+172*b%30307+170*c%30323)/3%1)*100))];
+    let best={sc:-1,ma:171,mb:172,mc:170};
+    for(const ma of[171,172,170])for(const mb of[172,171,170])for(const mc of[170,171,172]){
+      let sc=0;
+      for(let i=3;i<n;i++){
+        const ai=s[i-3]||1,bi=s[i-2]||1,ci=s[i-1]||1;
+        const x=(ma*ai)%30269,y=(mb*bi)%30307,z=(mc*ci)%30323;
+        if(M.mod(Math.floor(((x/30269+y/30307+z/30323)%1)*100))===s[i])sc++;
+      }
+      if(sc>best.sc)best={sc,ma,mb,mc};
+    }
+    const x=(best.ma*a)%30269,y=(best.mb*b)%30307,z=(best.mc*c)%30323;
+    return[M.mod(Math.floor(((x/30269+y/30307+z/30323)%1)*100))];
+  },
+
+  // BBS: fit best semi-prime modulus
+  BBS:            s=>{
+    if(s.length<3)return[M.mod((s[s.length-1]*s[s.length-1])%87)];
+    const n=s.length;
+    // Semi-primes (p×q, both ≡ 3 mod 4)
+    const mods=[87,91,77,143,209,323];
+    let best={sc:-1,mod:87};
+    for(const mod of mods){
+      let sc=0;for(let i=1;i<n;i++)if(M.mod((s[i-1]*s[i-1])%mod)===s[i])sc++;
+      if(sc>best.sc)best={sc,mod};
+    }
+    return[M.mod((s[n-1]*s[n-1])%best.mod)];
+  },
+
+  // MersenneMod: fit best twist parameters
+  MersenneMod:    s=>{
+    if(s.length<3)return[s[s.length-1]];
+    const n=s.length;let best={sc:-1,m1:0x40,m2:0x3F,xv:0x39,mask:0x1F};
+    for(const m1 of[0x40,0x20,0x60])for(const xv of[0x39,0x2C,0x15,0x4A]){
+      let sc=0;
+      for(let i=2;i<n;i++){const v=s[i-1],p=s[i-2];const y=(v&m1)|((p)&(~m1&0x7F));const pred=M.mod((y>>1)^(y&1?xv:0));if(pred===s[i])sc++;}
+      if(sc>best.sc)best={sc,m1,xv};
+    }
+    const v=s[n-1],p=s[n-2];const y=(v&best.m1)|((p)&(~best.m1&0x7F));
+    return[M.mod((y>>1)^(y&1?best.xv:0))];
+  },
 
   // ── PATTERN MEMORY BANK ─────────────────────────
   PatternMemBank: s=>{
@@ -337,6 +469,196 @@ const A={
     const nextCi=parseInt(Object.entries(trans[ci]).sort((a,b)=>b[1]-a[1])[0][0]);
     return[centers[nextCi]];
   },
+  // ── V14 REVERSE & SEQUENTIAL PATTERN ALGOS ────────
+
+  // Mirror: reflect value around midpoint 50 (50→50, 30→70, 20→80)
+  MirrorAt50:     s=>[M.mod(100-s[s.length-1])],
+
+  // StepDown1: last value minus 1 (detects -1 per row patterns)
+  StepDown1:      s=>[M.mod(s[s.length-1]-1)],
+
+  // StepUp1: last value plus 1 (detects +1 per row patterns)
+  StepUp1:        s=>[M.mod(s[s.length-1]+1)],
+
+  // StepDown2: minus 2 per step
+  StepDown2:      s=>[M.mod(s[s.length-1]-2)],
+
+  // StepUp2: plus 2 per step
+  StepUp2:        s=>[M.mod(s[s.length-1]+2)],
+
+  // BestStep: brute-force best constant step (−10 to +10) from history
+  BestStep:       s=>{
+    if(s.length<3)return[s[s.length-1]];
+    let best={sc:-1,step:0};
+    for(let step=-15;step<=15;step++){
+      let sc=0;
+      for(let i=1;i<s.length;i++){
+        if(M.mod(s[i-1]+step)===s[i])sc+=1;
+        else if(M.near(M.mod(s[i-1]+step),s[i],1))sc+=0.4;
+      }
+      if(sc>best.sc)best={sc,step};
+    }
+    return[M.mod(s[s.length-1]+best.step)];
+  },
+
+  // AlternatingStep: detects +k, -k, +k, -k pattern (zigzag with fixed amplitude)
+  AlternatingStep:s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const n=s.length;let best={sc:-1,k:1};
+    for(let k=1;k<=20;k++){
+      let sc=0;
+      for(let i=2;i<n;i++){
+        const expected=i%2===0?M.mod(s[i-2]):M.mod(s[i-1]+(s[i-1]>s[i-2]?-k:k));
+        if(expected===s[i])sc++;
+      }
+      if(sc>best.sc)best={sc,k};
+    }
+    // Predict: if last gap was +k, next is -k and vice versa
+    const lastGap=s[n-1]-s[n-2];
+    return[M.mod(s[n-1]+(lastGap>=0?-best.k:best.k))];
+  },
+
+  // SymmetricBounce: detects values bouncing between two walls (lo, hi)
+  SymmetricBounce:s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const lo=Math.min(...s.slice(-8)),hi=Math.max(...s.slice(-8));
+    const range=hi-lo;if(range<2)return[s[s.length-1]];
+    const v=s[s.length-1];
+    // If near top wall, predict going down; near bottom, going up
+    const distFromTop=hi-v,distFromBot=v-lo;
+    const prevGap=s[s.length-1]-s[s.length-2];
+    if(distFromTop<range*0.2&&prevGap>=0)return[M.mod(v-(prevGap||1))]; // reverse at top
+    if(distFromBot<range*0.2&&prevGap<=0)return[M.mod(v-(prevGap||1))]; // reverse at bottom
+    return[M.mod(v+prevGap)]; // continue trend
+  },
+
+  // DecreasingBothSides: detects v, v-1, v-2... or v, v+1, v+2... (arithmetic sequence)
+  ArithSeqDetect: s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const n=s.length;
+    // Check last 4 values for consistent step
+    const gaps=[];
+    for(let i=Math.max(1,n-5);i<n;i++){
+      let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;
+      gaps.push(g);
+    }
+    const firstGap=gaps[0];
+    const isConsistent=gaps.every(g=>g===firstGap);
+    if(isConsistent&&firstGap!==0)return[M.mod(s[n-1]+firstGap)];
+    // Nearly consistent: allow 1 deviation
+    const avgGap=Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length);
+    const consistent=gaps.filter(g=>g===avgGap).length;
+    if(consistent>=gaps.length-1&&avgGap!==0)return[M.mod(s[n-1]+avgGap)];
+    return[s[n-1]];
+  },
+
+  // ReverseSequence: detects if sequence is running backwards (99,98,97... or 10,9,8...)
+  ReverseSeq:     s=>{
+    if(s.length<3)return[s[s.length-1]];
+    const n=s.length;
+    let decCount=0,incCount=0;
+    for(let i=1;i<n;i++){
+      let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;
+      if(g===-1)decCount++;
+      if(g===1)incCount++;
+    }
+    if(decCount>=Math.floor(n*0.6))return[M.mod(s[n-1]-1)]; // strong decrease by 1
+    if(incCount>=Math.floor(n*0.6))return[M.mod(s[n-1]+1)]; // strong increase by 1
+    return[s[n-1]];
+  },
+
+  // PalindromeStep: detects values that count up then down (1,2,3,4,3,2,1,2,3...)
+  PalindromeStep: s=>{
+    if(s.length<5)return[s[s.length-1]];
+    const n=s.length;
+    const gaps=[];
+    for(let i=1;i<n;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gaps.push(g);}
+    // Detect direction reversal: if last few gaps are all same sign and previous were opposite
+    const last=gaps.slice(-3);
+    const prev=gaps.slice(-6,-3);
+    if(last.length<2||prev.length<2)return[s[n-1]];
+    const lastSign=last.every(g=>g>0)?1:last.every(g=>g<0)?-1:0;
+    const prevSign=prev.every(g=>g>0)?1:prev.every(g=>g<0)?-1:0;
+    if(lastSign!==0&&prevSign!==0&&lastSign!==prevSign){
+      // Currently reversing, continue current direction
+      return[M.mod(s[n-1]+lastSign*Math.abs(last[last.length-1]||1))];
+    }
+    return[s[n-1]];
+  },
+
+  // StepAccelerate: detects accelerating step (1,2,4,8 or 1,3,6,10...)
+  StepAccelerate: s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const n=s.length;
+    const gaps=[];
+    for(let i=1;i<n;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gaps.push(g);}
+    const gapGaps=[];
+    for(let i=1;i<gaps.length;i++)gapGaps.push(gaps[i]-gaps[i-1]);
+    if(!gapGaps.length)return[s[n-1]];
+    const avgAccel=Math.round(gapGaps.reduce((a,b)=>a+b,0)/gapGaps.length);
+    const nextGap=(gaps[gaps.length-1]||0)+avgAccel;
+    // Sanity cap: don't accelerate beyond ±20
+    const cappedGap=Math.max(-20,Math.min(20,nextGap));
+    return[M.mod(s[n-1]+cappedGap)];
+  },
+
+  // DoubleAlternate: detects aa,bb,cc (two same then two same: 11,11,22,22,33,33)
+  DoubleAlternate:s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const n=s.length;
+    // Check for pair pattern
+    let pairCount=0;
+    for(let i=1;i<n-1;i+=2)if(s[i]===s[i-1])pairCount++;
+    if(pairCount>=Math.floor((n-1)/2*0.6)){
+      // Currently in a pair?
+      if(s[n-1]===s[n-2])return[M.mod(s[n-1]+1)]; // pair done, step to next
+      return[s[n-1]]; // repeat current value to complete pair
+    }
+    return[s[n-1]];
+  },
+
+  // TripleRepeat: detects aaa,bbb,ccc patterns
+  TripleRepeat:   s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const n=s.length;
+    // Check if last 3 are same and before-3 are different
+    if(s[n-1]===s[n-2]&&s[n-2]===s[n-3]&&s[n-3]!==s[n-4]){
+      // Triple complete, predict increment
+      return[M.mod(s[n-1]+1)];
+    }
+    if(s[n-1]===s[n-2]&&s[n-2]!==s[n-3]){
+      // Mid-triple, repeat
+      return[s[n-1]];
+    }
+    return[s[n-1]];
+  },
+
+  // SymmetricMirror: detects (a,b) pairs where b=100-a (complements)
+  ComplementPairs:s=>{
+    if(s.length<4)return[M.mod(100-s[s.length-1])];
+    const n=s.length;
+    let compCount=0;
+    for(let i=1;i<n;i++)if(s[i]+s[i-1]===100)compCount++;
+    // If strong complement pattern, predict complement of last value
+    if(compCount>=Math.floor((n-1)*0.5))return[M.mod(100-s[n-1])];
+    return[s[n-1]];
+  },
+
+  // BestModStep: finds best (v mod k + offset) pattern
+  ModStep:        s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const n=s.length;let best={sc:-1,k:2,step:1,off:0};
+    for(let k=2;k<=10;k++)for(let step=-k;step<=k;step++)for(let off=0;off<k;off++){
+      let sc=0;
+      for(let i=1;i<n;i++){
+        const expected=M.mod(((s[i-1]%k)+step+k)%k+off);
+        if(expected===s[i])sc++;
+      }
+      if(sc>best.sc)best={sc,k,step,off};
+    }
+    return[M.mod(((s[n-1]%best.k)+best.step+best.k)%best.k+best.off)];
+  },
+
   // ── V10 NEW ALGORITHMS ──────────────────────────
   NgramVoting:    s=>{
     if(s.length<3)return[s[s.length-1]];
@@ -825,52 +1147,53 @@ function runTournament(customs,data){
 // ── AUTO-GENERATE TRIGGER ──────────────────────
 // Returns true if conditions are met to auto-generate
 function shouldAutoGenerate(rows,genN,lastAutoGenRows){
-  if(rows<6)return false;
-  // Auto-generate every 5 new rows added since last generation
+  if(rows<4)return false;
+  // Auto-generate every 2 new rows
   const rowsSinceLast=(lastAutoGenRows||0);
-  return(rows-rowsSinceLast)>=5;
+  return(rows-rowsSinceLast)>=2;
 }
 
-// ── AUTO-PRUNE WEAK ALGOS ───────────────────────
-// Remove generated algos that consistently underperform
-function pruneWeakAlgos(customs,weights,rows,minSessions){
-  if(!customs||customs.length===0)return{pruned:customs,removed:[]};
-  const removed=[];
-  const kept=customs.filter(ca=>{
-    // Never prune user-defined algos
-    if(!ca.generated)return true;
-    // Need enough data to judge
-    if(rows.length<8)return true;
-    // Check neural scores across all cols
-    const scores=[];
-    COLS.forEach(col=>{
-      const ns=weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
-      if(ns[ca.name]!=null)scores.push(ns[ca.name]);
-    });
-    if(scores.length<2)return true; // not enough signal yet
-    const avgScore=scores.reduce((a,b)=>a+b,0)/scores.length;
-    // Prune if average neural score is very negative AND backtest was poor
-    const fn=makeCustomFn(ca.code);
-    if(!fn)return false; // broken code, remove
-    let totalBt=0,btCnt=0;
-    COLS.forEach(col=>{
-      const s=getSeries(col,rows);
-      if(s.length>=5){totalBt+=btScore(fn,s);btCnt++;}
-    });
-    const avgBt=btCnt?totalBt/btCnt:0;
-    // Prune if: neural score < -0.8 AND backtest < 5%
-    if(avgScore<-0.8&&avgBt<0.05){
-      removed.push({name:ca.name,reason:"neural:"+avgScore.toFixed(2)+" bt:"+Math.round(avgBt*100)+"%"});
-      return false;
-    }
-    // Prune if: backtest is 0% after enough data
-    if(avgBt===0&&rows.length>=15){
-      removed.push({name:ca.name,reason:"zero BT"});
-      return false;
-    }
-    return true;
+// ── AUTO-PRUNE: remove worst generated algo every session ──────
+function scoreAlgo(ca,weights,rows){
+  if(!ca.generated)return Infinity; // never score user algos
+  const fn=makeCustomFn(ca.code);
+  if(!fn)return -999; // broken code = worst score
+  // Composite score = neural score (60%) + backtest (40%)
+  let totalNs=0,nsCount=0,totalBt=0,btCnt=0;
+  COLS.forEach(col=>{
+    const ns=weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
+    if(ns[ca.name]!=null){totalNs+=ns[ca.name];nsCount++;}
+    const s=getSeries(col,rows);
+    if(s.length>=5){totalBt+=btScore(fn,s);btCnt++;}
   });
-  return{pruned:kept,removed};
+  const avgNs=nsCount?totalNs/nsCount:0;
+  const avgBt=btCnt?totalBt/btCnt:0.05;
+  return avgNs*0.6+avgBt*3.0; // combined score
+}
+
+function pruneWeakAlgos(customs,weights,rows){
+  if(!customs||customs.length===0)return{pruned:customs,removed:[]};
+  const generated=customs.filter(ca=>ca.generated);
+  const userDefined=customs.filter(ca=>!ca.generated);
+  if(generated.length<2)return{pruned:customs,removed:[]}; // keep at least 1
+  if(rows.length<4)return{pruned:customs,removed:[]};
+
+  // Score every generated algo
+  const scored=generated.map(ca=>({ca,score:scoreAlgo(ca,weights,rows)}));
+  scored.sort((a,b)=>a.score-b.score); // lowest score = worst
+
+  const worst=scored[0];
+  const removed=[];
+
+  // Always remove the single worst IF it's genuinely bad (score < threshold)
+  // Threshold gets stricter as we have more data
+  const threshold=rows.length>=20?0.1:rows.length>=10?0.0:-0.5;
+  if(worst.score<threshold){
+    removed.push({name:worst.ca.name,reason:"score:"+worst.score.toFixed(2)});
+    const pruned=[...userDefined,...scored.slice(1).map(x=>x.ca)];
+    return{pruned,removed};
+  }
+  return{pruned:customs,removed:[]};
 }
 
 // ── EXPORT HELPERS ─────────────────────────────
@@ -883,17 +1206,17 @@ function doExportCSV(data,preds,predRow){
     pLine="\n"+pad2(predRow)+","+(ok(pa)?pad2(pa):"?")+","+(ok(pb)?pad2(pb):"?")+","+(ok(pc)?pad2(pc):"?")+","+(ok(pd)?pad2(pd):"?")+" (PRED)";
   }
   const blob=new Blob(["Row,A,B,C,D\n"+rows+pLine],{type:"text/csv"});
-  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v12-"+Date.now()+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v13-"+Date.now()+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 function doExportJSON(state){
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
-  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v12-backup-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v13-backup-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 
 // ── WEIGHTS IMPORT/EXPORT ─────────────────────
 function doExportWeights(state){
   const payload={
-    version:"ape-v12-weights",
+    version:"ape-v13-weights",
     exportedAt:new Date().toISOString(),
     weights:state.weights,
     customs:state.customs,
@@ -901,12 +1224,12 @@ function doExportWeights(state){
   };
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");
-  a.href=url;a.download="ape-v12-weights-"+Date.now()+".json";
+  a.href=url;a.download="ape-v13-weights-"+Date.now()+".json";
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 function parseImportedWeights(parsed){
   // Accept both full state backup and weights-only export
-  if(parsed.version==="ape-v12-weights"||parsed.version==="ape-v7-weights"){
+  if(parsed.version==="ape-v13-weights"||parsed.version==="ape-v7-weights"){
     return{weights:parsed.weights,customs:parsed.customs||[],accLog:parsed.accLog||[]};
   }
   // Full state backup
@@ -917,7 +1240,7 @@ function parseImportedWeights(parsed){
 }
 
 // ── STORAGE ────────────────────────────────────
-const SK="ape-v12";
+const SK="ape-v13";
 async function saveS(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}
 async function loadS(){try{const r=localStorage.getItem(SK);return r?JSON.parse(r):null;}catch(e){return null;}}
 function fresh(){
@@ -1163,7 +1486,7 @@ export default function App(){
       const entry={at:new Date().toISOString(),targetRow:prev.predRow,preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]&&prev.preds[c].top5[0]?prev.preds[c].top5[0].value:null])),actuals,results,exactCount};
       // Auto-prune weak generated algos
       const curRows=prev.datasets&&prev.datasets[prev.active]?prev.datasets[prev.active].rows:[];
-      const {pruned,removed}=pruneWeakAlgos(prev.customs||[],nw,curRows,prev.accLog?.length||0);
+      const {pruned,removed}=pruneWeakAlgos(prev.customs||[],nw,curRows);
       if(removed.length>0){
         const msgs=removed.map(r=>"Pruned: "+r.name+" ("+r.reason+")");
         setAutoGenLog(p=>[...p.slice(-(5-msgs.length)),...msgs]);
@@ -1256,8 +1579,8 @@ export default function App(){
 
         <div style={{textAlign:"center",padding:"18px 0 10px"}}>
           <div style={{fontSize:9,letterSpacing:5,color:"#252840",marginBottom:5,textTransform:"uppercase"}}>Self-Learning · Adaptive · Prediction · Engine</div>
-          <div style={{fontSize:"clamp(28px,6vw,48px)",fontWeight:900,letterSpacing:-2,lineHeight:1,background:"linear-gradient(135deg,#a78bfa,#c4b5fd 35%,#34d399 70%,#6ee7b7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>APE v12</div>
-          <div style={{fontSize:9,color:"#252840",marginTop:4}}>{Object.keys(A).length} built-in · auto-generate every 5 rows · auto-prune weak algos · regime-gated · joint col · auto-add rows</div>
+          <div style={{fontSize:"clamp(28px,6vw,48px)",fontWeight:900,letterSpacing:-2,lineHeight:1,background:"linear-gradient(135deg,#a78bfa,#c4b5fd 35%,#34d399 70%,#6ee7b7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>APE v13</div>
+          <div style={{fontSize:9,color:"#252840",marginTop:4}}>{Object.keys(A).length} built-in · sequential patterns · reverse detect · step/bounce algos · fitted PRNG · auto-gen · auto-prune</div>
           {accLog.length>0&&<div style={{marginTop:8,display:"inline-flex",gap:8,alignItems:"center",background:"rgba(52,211,153,.07)",border:"1px solid rgba(52,211,153,.18)",borderRadius:99,padding:"3px 14px",fontSize:10,color:"#34d399"}}>🧠 {accLog.length} sessions · {overallPct}% exact · {customs.length} algos</div>}
         </div>
 
@@ -1357,9 +1680,9 @@ export default function App(){
                   <div style={{fontSize:20,fontWeight:700}}>{S.preds.A?S.preds.A.algoCount:0}</div>
                 </div>
                 <button onClick={()=>{
-                  const lines=["APE v12 — Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36)];
+                  const lines=["APE v13 — Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36)];
                   COLS.forEach(col=>{const t=S.preds[col]?S.preds[col].top5:[];lines.push("Col "+col+": "+t.map((p,i)=>(i===0?"▶":"")+pad2(p.value)+"("+p.pct+"%)").join("  "));});
-                  lines.push("─".repeat(36),"Generated by APE v12");
+                  lines.push("─".repeat(36),"Generated by APE v13");
                   navigator.clipboard&&navigator.clipboard.writeText(lines.join("\n")).catch(()=>{});
                   setCopyMsg("Copied!");setTimeout(()=>setCopyMsg(""),2000);
                 }} style={{background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.3)",color:"#a78bfa",padding:"5px 10px",borderRadius:6,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>{copyMsg||"📋 Copy"}</button>
@@ -1568,7 +1891,7 @@ export default function App(){
           <div style={{background:"rgba(52,211,153,.04)",border:"1px solid rgba(52,211,153,.18)",borderRadius:10,padding:14,marginBottom:14}}>
             <SL style={{color:"#34d399"}}>Auto-Generate and Tournament</SL>
             <p style={{fontSize:11,color:"#4a4e6a",marginBottom:12,lineHeight:1.7}}>
-              APE <b style={{color:"#34d399"}}>auto-generates</b> every 5 new rows and <b style={{color:"#f87171"}}>auto-prunes</b> weak algos after each Learn session (neural score &lt; −0.8 and BT &lt; 5%). Manual buttons below for forced runs.
+              APE <b style={{color:"#34d399"}}>auto-generates</b> every <b style={{color:"#34d399"}}>2 new rows</b> and <b style={{color:"#f87171"}}>auto-prunes the worst performer</b> after every Learn session. The algo pool continuously evolves. Manual buttons for forced runs.
             </p>
             <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
               <PB onClick={doGenerate} style={{background:"#34d399",color:"#060709"}}>🤖 Generate</PB>
@@ -1635,10 +1958,11 @@ export default function App(){
               <b style={{color:"#c8d0e8"}}>HistFreqFilter:</b> values never seen in training get 60% vote penalty<br/>
               <b style={{color:"#c8d0e8"}}>Neural Scores:</b> EMA running accuracy per algo — good algos compound, bad ones fade<br/>
               <b style={{color:"#c8d0e8"}}>Calibration:</b> tracks HIGH/MED/LOW confidence actual accuracy over sessions<br/>
-              <b style={{color:"#c8d0e8"}}>Auto-Generate:</b> triggers every 5 new rows automatically — no manual action needed<br/>
-              <b style={{color:"#c8d0e8"}}>Auto-Prune:</b> after every Learn session, generated algos with neural score &lt;-0.8 AND BT &lt;5% are removed<br/>
+              <b style={{color:"#c8d0e8"}}>Auto-Generate:</b> triggers every 2 new rows automatically — continuous pattern discovery<br/>
+              <b style={{color:"#c8d0e8"}}>Auto-Prune:</b> after every Learn session the single worst-scoring generated algo is removed (scored by neural EMA + BT)<br/>
               <b style={{color:"#c8d0e8"}}>User algos:</b> never auto-pruned — only generated algos are pruned<br/>
-              <b style={{color:"#c8d0e8"}}>Activity Log:</b> last 5 auto-gen/prune events shown in Algos tab
+              <b style={{color:"#c8d0e8"}}>Activity Log:</b> last 5 auto-gen/prune events shown in Algos tab<br/>
+              <b style={{color:"#c8d0e8"}}>PRNG Algos:</b> all 10 pseudo-random algos now brute-force fit best parameters to YOUR data — Xorshift shifts, LCG multipliers, LFSR taps, Rule variants, semi-prime moduli all tuned per series
             </div>
           </Card>
         </div>}
