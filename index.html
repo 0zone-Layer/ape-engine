@@ -2,34 +2,53 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>APE v8 — Strategy Intelligence Layer</title>
+<title>APE v8 — Strategy Intelligence System (Full UI)</title>
 <style>
 body{background:#0e1018;color:#cdd6f4;font-family:monospace;padding:16px}
 .card{background:#141720;padding:14px;margin-bottom:12px;border-radius:10px}
 button{margin:4px;padding:8px}
-input{margin:4px;padding:6px;width:60px}
+input{margin:4px;padding:6px;width:70px}
 pre{background:#000;padding:10px;max-height:300px;overflow:auto}
+.table-wrap{max-height:260px;overflow:auto;border:1px solid #2a3050;border-radius:8px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:6px 8px;border-bottom:1px solid #2a3050}
+th{position:sticky;top:0;background:#141720}
+.actions button{padding:4px 8px;font-size:12px}
+.badge{padding:2px 6px;border-radius:6px;background:#2a3050}
 </style>
 </head>
 <body>
-<h2>APE v8 — Strategy Intelligence System</h2><div class="card">
-Row <input id="row" type="number">
-A <input id="A" type="number">
-B <input id="B" type="number">
-C <input id="C" type="number">
-D <input id="D" type="number">
-<button onclick="addRow()">Add</button>
+<h2>APE v8 — Strategy Intelligence (Dataset UI + Edit/Delete)</h2><div class="card">
+  Row <input id="row" type="number" min="1" max="31">
+  A <input id="A" type="number" min="0" max="99">
+  B <input id="B" type="number" min="0" max="99">
+  C <input id="C" type="number" min="0" max="99">
+  D <input id="D" type="number" min="0" max="99">
+  <button onclick="addRow()">Add / Update</button>
+  <button onclick="clearInputs()">Clear Inputs</button>
 </div><div class="card">
-<button onclick="trainModel()">Train</button>
-<button onclick="runPredict()">Predict</button>
-<button onclick="clearAll()">Reset</button>
+  <strong>Dataset</strong>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th><th>Row</th><th>A</th><th>B</th><th>C</th><th>D</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="dataBody"></tbody>
+    </table>
+  </div>
+  <div id="dataInfo" style="margin-top:6px"></div>
+</div><div class="card">
+  <button onclick="trainModel()">Train</button>
+  <button onclick="runPredict()">Predict</button>
+  <button onclick="clearAll()">Reset All</button>
 </div><div class="card"><h3>Predictions</h3><pre id="pred"></pre></div>
 <div class="card"><h3>Strategy</h3><pre id="strategy"></pre></div>
 <div class="card"><h3>Confidence</h3><pre id="confidence"></pre></div><script>
 'use strict';
 
 const COLS=['A','B','C','D'];
-
 const CFG={epsilon:0.02,decay:0.9,lr:0.25};
 
 let S={dataset:[],weights:{},markov:{},freq:{},autoAlgos:[],metaTrust:{}};
@@ -37,171 +56,215 @@ let S={dataset:[],weights:{},markov:{},freq:{},autoAlgos:[],metaTrust:{}};
 const BASE_ALGOS=['Reverse','DigitSumTf','RowSumCascade','Markov','FreqDecay'];
 
 const M={
-mod:n=>((Math.round(n)%100)+100)%100,
-ds:n=>Math.floor(n/10)+n%10,
-rev:n=>{let s=String(M.mod(n)).padStart(2,'0');return +s[1]+s[0]},
-cdist:(a,b)=>Math.min(Math.abs(a-b),100-Math.abs(a-b))
+  mod:n=>((Math.round(n)%100)+100)%100,
+  ds:n=>Math.floor(n/10)+n%10,
+  rev:n=>{let s=String(M.mod(n)).padStart(2,'0');return +s[1]+s[0]},
+  cdist:(a,b)=>Math.min(Math.abs(a-b),100-Math.abs(a-b))
 };
 
 function init(){
-COLS.forEach(c=>{
-S.weights[c]={};
-S.markov[c]={};
-S.freq[c]={};
-S.metaTrust[c]=1;
-BASE_ALGOS.forEach(a=>S.weights[c][a]=1);
-});
+  COLS.forEach(c=>{
+    S.weights[c]={};
+    S.markov[c]={};
+    S.freq[c]={};
+    S.metaTrust[c]=1;
+    BASE_ALGOS.forEach(a=>S.weights[c][a]=1);
+  });
+  renderDataset();
+}
+
+function getInputNumber(id){
+  const el=document.getElementById(id);
+  return Number(el.value);
+}
+
+function clearInputs(){
+  ['row','A','B','C','D'].forEach(id=>document.getElementById(id).value='');
 }
 
 function addRow(){
-let r={row:+row.value};
-COLS.forEach(c=>r[c]=+window[c].value);
-if(COLS.some(c=>!Number.isFinite(r[c])))return;
-S.dataset=S.dataset.filter(x=>x.row!==r.row);
-S.dataset.push(r);
-S.dataset.sort((a,b)=>a.row-b.row);
+  const r = { row: getInputNumber('row') };
+  COLS.forEach(c=> r[c]=getInputNumber(c));
+
+  if (!Number.isFinite(r.row) || COLS.some(c=>!Number.isFinite(r[c]))) {
+    alert('Enter valid numbers in all fields');
+    return;
+  }
+
+  // replace if same row
+  S.dataset = S.dataset.filter(x=>x.row!==r.row);
+  S.dataset.push(r);
+  S.dataset.sort((a,b)=>a.row-b.row);
+
+  renderDataset();
 }
+
+function editRow(rowId){
+  const r = S.dataset.find(x=>x.row===rowId);
+  if(!r) return;
+  document.getElementById('row').value = r.row;
+  COLS.forEach(c=> document.getElementById(c).value = r[c]);
+}
+
+function deleteRow(rowId){
+  if(!confirm('Delete row '+rowId+'?')) return;
+  S.dataset = S.dataset.filter(x=>x.row!==rowId);
+  renderDataset();
+}
+
+function renderDataset(){
+  const tb = document.getElementById('dataBody');
+  tb.innerHTML='';
+  S.dataset.forEach((r,idx)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML = `
+      <td>${idx+1}</td>
+      <td><span class="badge">${r.row}</span></td>
+      <td>${pad2(r.A)}</td>
+      <td>${pad2(r.B)}</td>
+      <td>${pad2(r.C)}</td>
+      <td>${pad2(r.D)}</td>
+      <td class="actions">
+        <button onclick="editRow(${r.row})">Edit</button>
+        <button onclick="deleteRow(${r.row})">Delete</button>
+      </td>`;
+    tb.appendChild(tr);
+  });
+  document.getElementById('dataInfo').textContent = `${S.dataset.length} rows`;
+}
+
+function pad2(n){ return String(M.mod(n)).padStart(2,'0'); }
 
 function build(c){return S.dataset.map(r=>r[c]);}
 
 function trainModel(){
-buildStats();
-autoDiscover();
-reinforce();
-metaLearn();
+  buildStats();
+  autoDiscover();
+  reinforce();
+  metaLearn();
 }
 
 function buildStats(){
-COLS.forEach(c=>{
-let s=build(c);
-S.markov[c]={};
-S.freq[c]={};
-s.forEach((v,i)=>{
-let w=Math.pow(CFG.decay,s.length-i);
-S.freq[c][v]=(S.freq[c][v]||0)+w;
-if(i>0){
-let p=s[i-1];
-if(!S.markov[c][p])S.markov[c][p]={};
-S.markov[c][p][v]=(S.markov[c][p][v]||0)+1;
-}
-});
-});
+  COLS.forEach(c=>{
+    let s=build(c);
+    S.markov[c]={};
+    S.freq[c]={};
+    s.forEach((v,i)=>{
+      let w=Math.pow(CFG.decay,s.length-i);
+      S.freq[c][v]=(S.freq[c][v]||0)+w;
+      if(i>0){
+        let p=s[i-1];
+        if(!S.markov[c][p])S.markov[c][p]={};
+        S.markov[c][p][v]=(S.markov[c][p][v]||0)+1;
+      }
+    });
+  });
 }
 
 function autoDiscover(){
-S.autoAlgos=[];
-if(S.dataset.length<6)return;
-COLS.forEach(col=>{
-let s=build(col);
-let diffs=s.slice(1).map((v,i)=>M.mod(v-s[i]));
-let f={};diffs.forEach(d=>f[d]=(f[d]||0)+1);
-let best=Object.entries(f).sort((a,b)=>b[1]-a[1])[0];
-if(best&&best[1]>3){
-let d=+best[0];
-S.autoAlgos.push({name:'AutoDiff_'+col,fn:(series)=>[M.mod(series.at(-1)+d)]});
-}
-});
+  S.autoAlgos=[];
+  if(S.dataset.length<6)return;
+  COLS.forEach(col=>{
+    let s=build(col);
+    let diffs=s.slice(1).map((v,i)=>M.mod(v-s[i]));
+    let f={}; diffs.forEach(d=>f[d]=(f[d]||0)+1);
+    let best=Object.entries(f).sort((a,b)=>b[1]-a[1])[0];
+    if(best && best[1]>3){
+      let d=+best[0];
+      S.autoAlgos.push({name:'AutoDiff_'+col, fn:(series)=>[M.mod(series.at(-1)+d)]});
+    }
+  });
 }
 
 function reinforce(){
-let ALL=[...BASE_ALGOS,...S.autoAlgos.map(a=>a.name)];
-for(let i=3;i<S.dataset.length;i++){
-let prev=S.dataset.slice(0,i);
-let actual=S.dataset[i];
-COLS.forEach(col=>{
-let s=prev.map(r=>r[col]);
-ALL.forEach(a=>{
-let preds=runAlgo(s,col,a);
-let hit=preds.some(p=>M.cdist(p,actual[col])<=2);
-if(!S.weights[col][a])S.weights[col][a]=1;
-if(hit) S.weights[col][a]+=CFG.lr;
-else S.weights[col][a]*=0.95;
-});
-});
-}
+  let ALL=[...BASE_ALGOS,...S.autoAlgos.map(a=>a.name)];
+  for(let i=3;i<S.dataset.length;i++){
+    let prev=S.dataset.slice(0,i);
+    let actual=S.dataset[i];
+    COLS.forEach(col=>{
+      let s=prev.map(r=>r[col]);
+      ALL.forEach(a=>{
+        let preds=runAlgo(s,col,a);
+        let hit=preds.some(p=>M.cdist(p,actual[col])<=2);
+        if(!S.weights[col][a])S.weights[col][a]=1;
+        if(hit) S.weights[col][a]+=CFG.lr;
+        else S.weights[col][a]*=0.95;
+      });
+    });
+  }
 }
 
 function metaLearn(){
-COLS.forEach(col=>{
-let trust=1;
-let s=build(col);
-for(let i=2;i<s.length;i++){
-if(M.cdist(s[i-1],s[i])<=2) trust+=0.1;
-else trust*=0.95;
-}
-S.metaTrust[col]=trust;
-});
+  COLS.forEach(col=>{
+    let trust=1;
+    let s=build(col);
+    for(let i=2;i<s.length;i++){
+      if(M.cdist(s[i-1],s[i])<=2) trust+=0.1;
+      else trust*=0.95;
+    }
+    S.metaTrust[col]=trust;
+  });
 }
 
 function runAlgo(s,col,a){
-let last=s.at(-1)||0;
-let r=S.dataset.at(-1)||{};
-let auto=S.autoAlgos.find(x=>x.name===a);
-if(auto) return auto.fn(s);
-
-switch(a){
-case'Reverse':return[M.rev(last)];
-case'DigitSumTf':return[M.mod(last+M.ds(last))];
-case'RowSumCascade':return[M.mod(r.A+r.B+r.C+r.D)];
-case'Markov':{
-let m=S.markov[col][last];
-return m?Object.entries(m).sort((a,b)=>b[1]-a[1]).map(x=>+x[0]):[last];}
-case'FreqDecay':return Object.entries(S.freq[col]).sort((a,b)=>b[1]-a[1]).map(x=>+x[0]);
-}
-return[last];
+  let last=s.at(-1)||0;
+  let r=S.dataset.at(-1)||{};
+  let auto=S.autoAlgos.find(x=>x.name===a);
+  if(auto) return auto.fn(s);
+  switch(a){
+    case 'Reverse':return [M.rev(last)];
+    case 'DigitSumTf':return [M.mod(last+M.ds(last))];
+    case 'RowSumCascade':return [M.mod(r.A+r.B+r.C+r.D)];
+    case 'Markov':{
+      let m=S.markov[col][last];
+      return m?Object.entries(m).sort((a,b)=>b[1]-a[1]).map(x=>+x[0]):[last];
+    }
+    case 'FreqDecay':return Object.entries(S.freq[col]).sort((a,b)=>b[1]-a[1]).map(x=>+x[0]);
+  }
+  return [last];
 }
 
 function runPredict(){
-let ALL=[...Object.keys(S.weights.A),...S.autoAlgos.map(a=>a.name)];
-let result={},confidence={},strategy={};
+  let ALL=[...Object.keys(S.weights.A),...S.autoAlgos.map(a=>a.name)];
+  let result={},confidence={},strategy={};
 
-COLS.forEach(col=>{
-let s=build(col);
-let votes={};
+  COLS.forEach(col=>{
+    let s=build(col);
+    let votes={};
 
-ALL.forEach(a=>{
-let preds=runAlgo(s,col,a);
-let w=S.weights[col][a]||1;
-preds.forEach(p=>votes[p]=(votes[p]||0)+(w/preds.length));
-});
+    ALL.forEach(a=>{
+      let preds=runAlgo(s,col,a);
+      let w=S.weights[col][a]||1;
+      preds.forEach(p=>votes[p]=(votes[p]||0)+(w/preds.length));
+    });
 
-let sorted=Object.entries(votes).sort((a,b)=>b[1]-a[1]);
-let top=sorted.slice(0,5);
+    let sorted=Object.entries(votes).sort((a,b)=>b[1]-a[1]);
+    let top=sorted.slice(0,5);
+    result[col]=top.map(x=>x[0]);
 
-result[col]=top.map(x=>x[0]);
+    let total=Object.values(votes).reduce((a,b)=>a+b,0);
+    let entropy=0;
+    Object.values(votes).forEach(v=>{ let p=v/total; if(p>0) entropy-=p*Math.log2(p); });
+    let conf=(1/(1+entropy))*S.metaTrust[col];
+    confidence[col]=conf.toFixed(3);
 
-// confidence
-let total=Object.values(votes).reduce((a,b)=>a+b,0);
-let entropy=0;
-Object.values(votes).forEach(v=>{
-let p=v/total;if(p>0)entropy-=p*Math.log2(p);
-});
-let conf=(1/(1+entropy))*S.metaTrust[col];
-confidence[col]=conf.toFixed(3);
+    let safe=top[0]?.[0];
+    let risky=top[top.length-1]?.[0];
+    let mid=top[Math.floor(top.length/2)]?.[0];
+    let tier='LOW'; if(conf>0.7) tier='HIGH'; else if(conf>0.4) tier='MEDIUM';
 
-// strategy layer
-let safe=top[0]?.[0];
-let risky=top[top.length-1]?.[0];
-let mid=top[Math.floor(top.length/2)]?.[0];
+    strategy[col]={ safest:safe, balanced:mid, risky:risky, confidenceTier:tier };
+  });
 
-let tier='LOW';
-if(conf>0.7) tier='HIGH';
-else if(conf>0.4) tier='MEDIUM';
-
-strategy[col]={
- safest:safe,
- balanced:mid,
- risky:risky,
- confidenceTier:tier
- };
-});
-
-document.getElementById('pred').textContent=JSON.stringify(result,null,2);
-document.getElementById('confidence').textContent=JSON.stringify(confidence,null,2);
-document.getElementById('strategy').textContent=JSON.stringify(strategy,null,2);
+  document.getElementById('pred').textContent=JSON.stringify(result,null,2);
+  document.getElementById('confidence').textContent=JSON.stringify(confidence,null,2);
+  document.getElementById('strategy').textContent=JSON.stringify(strategy,null,2);
 }
 
-function clearAll(){S={dataset:[],weights:{},markov:{},freq:{},autoAlgos:[],metaTrust:{}};init();}
+function clearAll(){
+  S={dataset:[],weights:{},markov:{},freq:{},autoAlgos:[],metaTrust:{}};
+  init();
+}
 
 init();
 </script></body>
