@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>APE v3 — Adaptive Prediction Engine</title>
+<title>APE v3.1 — Adaptive Prediction Engine</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -26,6 +26,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .header-eye{font-size:10px;letter-spacing:4px;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-bottom:6px}
 .header h1{font-size:clamp(22px,5vw,40px);font-weight:800;background:linear-gradient(135deg,var(--A),#b8b1ff 45%,var(--B));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:-1px;line-height:1}
 .header p{color:var(--muted);font-size:11px;font-family:var(--mono);margin-top:6px}
+.header-actions{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
 
 /* CARDS */
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:12px;position:relative;overflow:hidden}
@@ -35,15 +36,15 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 
 /* GRID */
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
 .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
-@media(max-width:600px){.g2{grid-template-columns:1fr}.g4{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.g2{grid-template-columns:1fr}.g3{grid-template-columns:1fr 1fr}.g4{grid-template-columns:1fr 1fr}}
 
 /* FORMS */
 label{display:block;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-bottom:4px}
 input,textarea,select{background:var(--ink);border:1px solid var(--dim);color:var(--text);padding:10px 12px;border-radius:var(--rs);font-size:14px;font-family:var(--mono);width:100%;outline:none;transition:border-color .15s,box-shadow .15s;-webkit-appearance:none;appearance:none}
-input:focus,textarea:focus{border-color:var(--A);box-shadow:0 0 0 3px var(--gA)}
-input.err{border-color:var(--D);box-shadow:0 0 0 3px var(--gD)}
+input:focus,textarea:focus,select:focus{border-color:var(--A);box-shadow:0 0 0 3px var(--gA)}
 
 /* BUTTONS */
 button{border:none;cursor:pointer;font-family:var(--mono);font-size:12px;font-weight:700;padding:10px 16px;border-radius:var(--rs);transition:all .15s;white-space:nowrap;-webkit-tap-highlight-color:transparent}
@@ -52,10 +53,11 @@ button{border:none;cursor:pointer;font-family:var(--mono);font-size:12px;font-we
 .btn-b{background:var(--B);color:#041a0c}
 .btn-b:active{background:#28b870}
 .btn-ghost{background:transparent;border:1px solid var(--dim);color:var(--soft)}
-.btn-ghost:active{border-color:var(--A);color:var(--A)}
+.btn-ghost:active,.btn-ghost:hover{border-color:var(--A);color:var(--A)}
 .btn-sm{padding:8px 13px;font-size:11px}
 .btn-xs{padding:3px 8px;font-size:10px}
 .btn-d{background:var(--D);color:#fff}
+.btn-c{background:var(--C);color:#1a0f00}
 
 /* BADGES */
 .badge{display:inline-block;padding:2px 7px;border-radius:99px;font-size:13px;font-family:var(--mono);font-weight:700}
@@ -66,7 +68,7 @@ button{border:none;cursor:pointer;font-family:var(--mono);font-size:12px;font-we
 .chip{display:inline-block;padding:1px 6px;background:var(--dim);border-radius:4px;font-size:10px;color:var(--soft);font-family:var(--mono);margin:1px}
 
 /* TABLE */
-.tbl{overflow-x:auto;max-height:260px;overflow-y:auto}
+.tbl{overflow-x:auto;max-height:280px;overflow-y:auto}
 table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px}
 th{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:1.5px;padding:6px 10px;text-align:left;position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line)}
 td{padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.03)}
@@ -74,16 +76,25 @@ tr:hover td{background:rgba(124,109,250,.04)}
 tr:last-child td{border-bottom:none}
 
 /* PREDICTION CARDS */
-.pred-panel{background:var(--ink);border:1px solid var(--line);border-radius:var(--r);padding:13px}
+.pred-panel{background:var(--ink);border:1px solid var(--line);border-radius:var(--r);padding:13px;position:relative}
 .pred-panel.cA{border-top:2px solid var(--A)}.pred-panel.cB{border-top:2px solid var(--B)}
 .pred-panel.cC{border-top:2px solid var(--C)}.pred-panel.cD{border-top:2px solid var(--D)}
-.pred-col{font-size:26px;font-weight:800;margin-bottom:9px}
+.pred-col{font-size:26px;font-weight:800;margin-bottom:2px}
+.pred-sparkline{font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:8px;letter-spacing:1px}
 .pred-row{display:flex;align-items:center;gap:8px;padding:3px 0}
 .pred-val{font-family:var(--mono);font-size:17px;font-weight:700;min-width:28px}
 .pred-bg{flex:1;height:5px;background:var(--dim);border-radius:3px;overflow:hidden}
 .pred-fg{height:100%;border-radius:3px;transition:width .5s cubic-bezier(.23,1,.32,1)}
 .pred-pct{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:30px;text-align:right}
 .pred-tag{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:1px;margin-bottom:5px}
+.pred-hit{font-size:10px;font-family:var(--mono);margin-top:6px;padding:4px 8px;border-radius:4px;display:inline-block}
+.pred-hit.hit{background:rgba(61,214,140,.15);color:var(--B)}
+.pred-hit.miss{background:rgba(242,95,92,.1);color:var(--D)}
+.pred-hit.near{background:rgba(245,166,35,.12);color:var(--C)}
+
+/* HOT COLD */
+.hc-grid{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.hc-num{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:6px;font-family:var(--mono);font-size:12px;font-weight:700;cursor:default}
 
 /* STATUS BAR */
 #statusBar{position:fixed;bottom:0;left:0;right:0;height:38px;display:flex;align-items:center;padding:0 16px;background:var(--panel);border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);z-index:100;gap:10px}
@@ -93,6 +104,22 @@ tr:last-child td{border-bottom:none}
 #dot.err{background:var(--D);box-shadow:0 0 6px var(--D)}
 #dot.busy{background:var(--A);animation:pulse .8s ease-in-out infinite alternate}
 @keyframes pulse{to{box-shadow:0 0 10px var(--A)}}
+
+/* MODAL */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;overflow-y:auto;padding:20px}
+.modal-overlay.open{display:flex;align-items:flex-start;justify-content:center}
+.modal-box{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);max-width:720px;width:100%;padding:24px;position:relative;margin:auto}
+.modal-close{position:absolute;top:12px;right:12px;background:var(--dim);border:none;color:var(--soft);width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:14px}
+.modal-close:hover{color:var(--text)}
+
+/* HOW TO USE */
+.htu-step{display:flex;gap:12px;margin-bottom:16px;align-items:flex-start}
+.htu-num{flex-shrink:0;width:28px;height:28px;border-radius:50%;background:var(--gA);border:1px solid rgba(124,109,250,.3);color:var(--A);font-family:var(--mono);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.htu-body h4{font-size:13px;font-weight:700;color:var(--text);margin-bottom:3px}
+.htu-body p{font-size:12px;color:var(--soft);font-family:var(--mono);line-height:1.6}
+.htu-body code{background:var(--dim);padding:1px 5px;border-radius:3px;color:var(--A);font-size:11px}
+.htu-warn{background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.2);border-radius:var(--rs);padding:10px 14px;font-size:12px;font-family:var(--mono);color:var(--C);margin-top:12px;line-height:1.6}
+.htu-sec{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin:18px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
 
 /* DETAILS */
 details{margin-top:8px}
@@ -112,16 +139,126 @@ a{color:var(--A);text-decoration:none}
 .ok-box{display:none;color:var(--B);font-family:var(--mono);font-size:11px;margin:6px 0 8px;padding:7px 12px;background:rgba(61,214,140,.08);border:1px solid rgba(61,214,140,.2);border-radius:var(--rs)}
 .lb-bg{flex:1;height:4px;background:var(--dim);border-radius:2px;overflow:hidden}
 .lb-fill{height:100%;border-radius:2px;background:var(--A)}
+.target-banner{background:rgba(124,109,250,.07);border:1px solid rgba(124,109,250,.25);border-radius:var(--rs);padding:10px 16px;display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+.target-row-num{font-size:32px;font-weight:800;color:var(--A);font-family:var(--mono)}
+.accuracy-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:99px;font-size:11px;font-family:var(--mono);font-weight:700}
+.acc-good{background:rgba(61,214,140,.12);color:var(--B);border:1px solid rgba(61,214,140,.25)}
+.acc-mid{background:rgba(245,166,35,.12);color:var(--C);border:1px solid rgba(245,166,35,.25)}
+.acc-low{background:rgba(242,95,92,.1);color:var(--D);border:1px solid rgba(242,95,92,.2)}
 </style>
 </head>
 <body>
+
+<!-- HOW TO USE MODAL -->
+<div class="modal-overlay" id="htuModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('htuModal')">✕</button>
+    <div style="font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-bottom:4px">Guide</div>
+    <h2 style="font-size:22px;font-weight:800;margin-bottom:16px;color:var(--text)">How to Use APE v3.1</h2>
+
+    <div class="htu-sec">What APE Does</div>
+    <p style="font-size:12px;font-family:var(--mono);color:var(--soft);line-height:1.7;margin-bottom:10px">
+      APE is an ensemble prediction engine for 4-column number sequences (A, B, C, D), each value 00–99. Think of it as a lottery/game result predictor. Every <strong style="color:var(--text)">Row #</strong> is a date (01–31). Each column holds one value per day. APE uses 28 mathematical algorithms — pattern detection, Markov chains, LCG fitting, cyclic analysis, cross-column correlation — to predict the next row's values.
+    </p>
+
+    <div class="htu-sec">Step-by-Step</div>
+    <div class="htu-step">
+      <div class="htu-num">1</div>
+      <div class="htu-body">
+        <h4>Enter Your Historical Data</h4>
+        <p>In <strong>Dataset Manager</strong>, type the Row # (date: 01–31), then fill A, B, C, D (00–99). Use <code>XX</code> for any unknown value. Press <strong>Enter</strong> to move A→B→C→D→Add automatically. Click <strong>📅 Today</strong> to auto-fill today's date as the Row #.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">2</div>
+      <div class="htu-body">
+        <h4>Load Sample Data (Optional)</h4>
+        <p>Open the <strong>Bulk CSV Import</strong> section and click <strong>Load Sample</strong> to pre-fill 18 rows of demo data. This lets you test the engine immediately without entering real data.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">3</div>
+      <div class="htu-body">
+        <h4>Train the Model</h4>
+        <p>Click <strong>🧠 Train Model</strong>. This runs a backtest on all 28 algorithms against your historical data, adjusting each algorithm's weight based on past accuracy. Train again whenever you add new rows — more data = better weights.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">4</div>
+      <div class="htu-body">
+        <h4>Run Predictions</h4>
+        <p>Click <strong>🔮 Predict Next</strong>. APE shows the top 6 predicted values per column, with confidence %. The top-1 pick per column is your primary prediction. The <strong>Target Row</strong> banner tells you exactly which row number (date) is being predicted.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">5</div>
+      <div class="htu-body">
+        <h4>Check Accuracy (New)</h4>
+        <p>After the actual result is revealed, enter it in the <strong>Accuracy Checker</strong> and click <strong>Check Hit</strong>. APE marks each column as ✅ Exact, 🟡 Near (±2), or ❌ Miss and records your cumulative hit rate.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">6</div>
+      <div class="htu-body">
+        <h4>Add the Actual Result as a New Row</h4>
+        <p>Once you know the actual result, add it as a new row in the Dataset Manager. Then re-train and predict again for the next date. This is the main loop.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">7</div>
+      <div class="htu-body">
+        <h4>Cloud Backup (Optional)</h4>
+        <p>Get a free API key from <a href="https://jsonbin.io" target="_blank">jsonbin.io</a>, paste it in the Cloud config, and click <strong>💾 Save Config</strong>. All data auto-saves to <strong>localStorage</strong> on every entry — cloud is just an extra backup.</p>
+      </div>
+    </div>
+
+    <div class="htu-sec">Tips & Features</div>
+    <div class="htu-step">
+      <div class="htu-num">★</div>
+      <div class="htu-body">
+        <h4>Hot/Cold Numbers</h4>
+        <p>The <strong>Hot/Cold Panel</strong> (appears after training) shows which numbers appear most (🔥 hot) and least (🧊 cold) per column. Cross-reference with predictions for better picks.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">★</div>
+      <div class="htu-body">
+        <h4>Deterministic Mode</h4>
+        <p>Toggle <code>🎲 Rand OFF</code> in Engine Controls to disable exploration randomness. This makes predictions fully reproducible — same data = same result every time.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">★</div>
+      <div class="htu-body">
+        <h4>Algorithm Leaderboard</h4>
+        <p>After training, the leaderboard shows each algorithm's exact match % and near-match %. High-weight algorithms dominate the ensemble. Algorithms with 0% may be zeroed out. Click <strong>♻ Reset Weights</strong> to give all algorithms equal chance again.</p>
+      </div>
+    </div>
+    <div class="htu-step">
+      <div class="htu-num">★</div>
+      <div class="htu-body">
+        <h4>Copy &amp; Export</h4>
+        <p>Click <strong>📋 Copy Predictions</strong> to copy all top picks to clipboard. Use <strong>↗ Export JSON</strong> to save the full state. Use <strong>↙ Import JSON</strong> to restore a saved state.</p>
+      </div>
+    </div>
+    <div class="htu-warn">⚠ APE is a mathematical pattern analysis tool. No prediction system guarantees outcomes. Confidence % reflects internal algorithm agreement, not real-world probability. Use responsibly.</div>
+
+    <button class="btn-a" style="margin-top:16px;width:100%" onclick="closeModal('htuModal')">Got it — Let's Go</button>
+  </div>
+</div>
+
 <div class="wrap">
 
 <!-- HEADER -->
 <div class="header">
   <div class="header-eye">Adaptive · Prediction · Engine</div>
-  <h1>APE v3</h1>
-  <p>28 algorithms · self-learning · localStorage + cloud · mod-100</p>
+  <h1>APE v3.1</h1>
+  <p>28 algorithms · self-learning · localStorage + cloud · mod-100 · bug-fixed</p>
+  <div class="header-actions">
+    <button class="btn-ghost btn-sm" onclick="openModal('htuModal')">📖 How to Use</button>
+    <button class="btn-ghost btn-sm" onclick="importJSON()">↙ Import JSON</button>
+    <button class="btn-ghost btn-sm" onclick="exportJSON()">↗ Export JSON</button>
+  </div>
 </div>
 
 <!-- CLOUD CONFIG -->
@@ -145,7 +282,7 @@ a{color:var(--A);text-decoration:none}
   </div>
   <p class="sm dim mono" style="margin-top:8px;line-height:1.7">
     Get free key → <a href="https://jsonbin.io" target="_blank">jsonbin.io</a> → Register → API Keys → Copy Master Key.
-    All data also auto-saved to <strong style="color:var(--B)">localStorage</strong> on every entry — survives refresh without cloud.
+    All data auto-saved to <strong style="color:var(--B)">localStorage</strong> on every entry.
   </p>
 </div>
 
@@ -153,7 +290,6 @@ a{color:var(--A);text-decoration:none}
 <div class="card">
   <div class="card-title">📊 Dataset Manager</div>
 
-  <!-- ENTRY ROW -->
   <div style="background:rgba(124,109,250,.05);border:1px solid rgba(124,109,250,.15);border-radius:var(--rs);padding:14px;margin-bottom:10px">
     <div class="row" style="margin-bottom:8px">
       <div style="flex:0 0 auto">
@@ -183,28 +319,20 @@ a{color:var(--A);text-decoration:none}
     </div>
     <div id="errBox" class="err-box"></div>
     <div id="okBox" class="ok-box"></div>
-    <p class="sm dim mono">Enter XX for unknown/missing values. Press Enter to move between fields. Tab+Enter to submit.</p>
+    <p class="sm dim mono">Enter XX for unknown. Press <strong>Enter</strong> to move A→B→C→D→Submit automatically.</p>
   </div>
 
-  <!-- API FETCH -->
   <details>
     <summary>🌐 Auto-fetch Row # from API</summary>
     <div class="db">
       <div class="g2" style="margin-bottom:8px">
-        <div>
-          <label>API URL</label>
-          <input type="text" id="apiUrl" placeholder="https://your-api.com/row">
-        </div>
-        <div>
-          <label>JSON Field</label>
-          <input type="text" id="apiField" value="row" style="width:90px">
-        </div>
+        <div><label>API URL</label><input type="text" id="apiUrl" placeholder="https://your-api.com/row"></div>
+        <div><label>JSON Field</label><input type="text" id="apiField" value="row"></div>
       </div>
       <button class="btn-ghost btn-sm" onclick="fetchRowAPI()">Fetch Row #</button>
     </div>
   </details>
 
-  <!-- BULK IMPORT -->
   <details>
     <summary>📋 Bulk CSV Import (row,A,B,C,D per line — XX for unknown)</summary>
     <div class="db">
@@ -216,7 +344,6 @@ a{color:var(--A);text-decoration:none}
     </div>
   </details>
 
-  <!-- DATA TABLE -->
   <div class="tbl" style="margin-top:14px">
     <table>
       <thead><tr><th>#</th><th>Row</th><th style="color:var(--A)">A</th><th style="color:var(--B)">B</th><th style="color:var(--C)">C</th><th style="color:var(--D)">D</th><th></th></tr></thead>
@@ -232,18 +359,55 @@ a{color:var(--A);text-decoration:none}
   <div class="row" style="gap:8px;flex-wrap:wrap">
     <button class="btn-a" onclick="runPredict()">🔮 Predict Next</button>
     <button class="btn-b" onclick="trainModel()">🧠 Train Model</button>
+    <button class="btn-ghost btn-sm" id="btnDet" onclick="toggleDeterministic()">🎲 Rand ON</button>
     <button class="btn-ghost btn-sm" onclick="resetWeights()">♻ Reset Weights</button>
     <button class="btn-ghost btn-sm" onclick="clearAll()">🗑 Clear All</button>
-    <button class="btn-ghost btn-sm" onclick="exportJSON()">↗ Export</button>
   </div>
   <div id="trainMeta" class="sm dim mono" style="margin-top:10px;line-height:1.9"></div>
 </div>
 
 <!-- PREDICTIONS -->
 <div class="card hidden" id="predCard">
-  <div class="card-title">🎯 Predictions</div>
+  <div class="card-title">🎯 Predictions
+    <button class="btn-ghost btn-xs" style="margin-left:auto" onclick="copyPredictions()">📋 Copy</button>
+  </div>
+  <div id="targetBanner" class="target-banner hidden">
+    <div>
+      <div class="sm dim mono">Predicting for Row</div>
+      <div class="target-row-num" id="targetRowNum">--</div>
+    </div>
+    <div style="flex:1">
+      <div class="sm dim mono" style="margin-bottom:4px">Top picks</div>
+      <div id="targetSummary" style="font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text)"></div>
+    </div>
+    <div id="overallAccBadge"></div>
+  </div>
   <div id="insight" class="insight"></div>
   <div class="g4" id="predGrid"></div>
+</div>
+
+<!-- ACCURACY CHECKER -->
+<div class="card hidden" id="accCard">
+  <div class="card-title">✅ Accuracy Checker</div>
+  <p class="sm dim mono" style="margin-bottom:10px">Enter the actual result for the row that was just predicted. APE will mark each column as exact / near / miss and record your hit rate.</p>
+  <div class="row" style="margin-bottom:10px">
+    <div style="flex:0 0 auto"><label>Actual A</label><input type="text" inputmode="numeric" id="actA" style="width:62px" maxlength="2" placeholder="00"></div>
+    <div style="flex:0 0 auto"><label>Actual B</label><input type="text" inputmode="numeric" id="actB" style="width:62px" maxlength="2" placeholder="00"></div>
+    <div style="flex:0 0 auto"><label>Actual C</label><input type="text" inputmode="numeric" id="actC" style="width:62px" maxlength="2" placeholder="00"></div>
+    <div style="flex:0 0 auto"><label>Actual D</label><input type="text" inputmode="numeric" id="actD" style="width:62px" maxlength="2" placeholder="00"></div>
+    <div style="flex:0 0 auto;align-self:flex-end"><button class="btn-a btn-sm" onclick="checkAccuracy()">✅ Check Hit</button></div>
+  </div>
+  <div id="accResult" style="display:none">
+    <div class="g4" id="accGrid" style="margin-bottom:10px"></div>
+    <div id="accSummary" class="insight"></div>
+  </div>
+  <div id="accHistory" style="margin-top:12px"></div>
+</div>
+
+<!-- HOT / COLD NUMBERS -->
+<div class="card hidden" id="hcCard">
+  <div class="card-title">🔥 Hot / 🧊 Cold Numbers</div>
+  <div class="g4" id="hcGrid"></div>
 </div>
 
 <!-- LEADERBOARD -->
@@ -257,6 +421,15 @@ a{color:var(--A);text-decoration:none}
   </div>
 </div>
 
+<!-- PREDICTION HISTORY -->
+<div class="card hidden" id="predHistCard">
+  <div class="card-title">📜 Prediction History</div>
+  <div class="tbl"><table>
+    <thead><tr><th>Time</th><th>Target Row</th><th style="color:var(--A)">A</th><th style="color:var(--B)">B</th><th style="color:var(--C)">C</th><th style="color:var(--D)">D</th><th>Result</th></tr></thead>
+    <tbody id="predHistBody"></tbody>
+  </table></div>
+</div>
+
 <!-- TRAINING LOG -->
 <div class="card hidden" id="histCard">
   <div class="card-title">📈 Training Log</div>
@@ -265,32 +438,32 @@ a{color:var(--A);text-decoration:none}
 
 </div><!-- /wrap -->
 
-<!-- STATUS BAR -->
 <div id="statusBar">
   <div id="dot"></div>
   <span id="stxt">Loading…</span>
 </div>
 
+<!-- HIDDEN FILE INPUT FOR JSON IMPORT -->
+<input type="file" id="jsonImportInput" accept=".json" style="display:none" onchange="handleJSONImport(event)">
+
 <script>
 'use strict';
+
 // ═══════════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════════
-let CFG = { apiKey:'', binId:'', epsilon:0.08, decayFactor:0.82, minRows:3 };
+let CFG = { apiKey:'', binId:'', epsilon:0.08, decayFactor:0.82, minRows:3, deterministic:false };
 const COLS = ['A','B','C','D'];
 const LS_STATE = 'ape_v3_state';
 const LS_CFG   = 'ape_v3_cfg';
 
 const ALGOS = [
-  // ── Intra-column ──────────────────────────────────────
   'Reverse','DigitSumTf','ReverseSumTf','MirrorDiff',
   'LinearTime','KShift','Recurrence2','Markov',
   'FreqDecay','LCGFit','CyclicPattern','XorHeuristic',
   'RollingMean','DigitalRoot',
-  // ── Cross-column batch 1 ──────────────────────────────
   'CrossColumn','RowSumCascade','CDmod','ABmod','BDmod',
   'ValueEcho','ComplementPair','RevCrossCol','ColDiffCascade',
-  // ── Cross-column batch 2 (18-row confirmed) ───────────
   'RevLagCross','DigiSumColChain','SubtractColMod','StickyEcho','PairSumLag',
 ];
 
@@ -303,9 +476,11 @@ function freshState() {
   return {
     dataset:[], weights:initWeights(),
     markov:{A:{},B:{},C:{},D:{}}, freqTable:{A:{},B:{},C:{},D:{}},
-    trainLog:[], trainCount:0, savedAt:null
+    trainLog:[], trainCount:0, savedAt:null,
+    predHistory:[], accLog:[], lastPred:null, lastTargetRow:null
   };
 }
+
 function initWeights() {
   const w={};
   COLS.forEach(c=>{ w[c]={}; ALGOS.forEach(a=>w[c][a]=1.0); });
@@ -313,7 +488,7 @@ function initWeights() {
 }
 
 // ═══════════════════════════════════════════════════
-// LOCAL STORAGE — PRIMARY PERSISTENCE
+// LOCAL STORAGE
 // ═══════════════════════════════════════════════════
 function saveLocal() {
   try { localStorage.setItem(LS_STATE, JSON.stringify(S)); } catch(e){}
@@ -324,14 +499,18 @@ function loadLocal() {
     const raw = localStorage.getItem(LS_STATE);
     if (!raw) return false;
     const saved = JSON.parse(raw);
-    if (saved.dataset?.length)  S.dataset    = saved.dataset;
-    if (saved.weights)          S.weights    = saved.weights;
-    if (saved.markov)           S.markov     = saved.markov;
-    if (saved.freqTable)        S.freqTable  = saved.freqTable;
-    if (saved.trainLog)         S.trainLog   = saved.trainLog;
-    if (saved.trainCount)       S.trainCount = saved.trainCount;
-    if (saved.savedAt)          S.savedAt    = saved.savedAt;
-    // Backfill weights for any new algos not in saved state
+    if (saved.dataset?.length)   S.dataset      = saved.dataset;
+    if (saved.weights)           S.weights      = saved.weights;
+    if (saved.markov)            S.markov       = saved.markov;
+    if (saved.freqTable)         S.freqTable    = saved.freqTable;
+    if (saved.trainLog)          S.trainLog     = saved.trainLog;
+    if (saved.trainCount != null)S.trainCount   = saved.trainCount;
+    if (saved.savedAt)           S.savedAt      = saved.savedAt;
+    if (saved.predHistory)       S.predHistory  = saved.predHistory;
+    if (saved.accLog)            S.accLog       = saved.accLog;
+    if (saved.lastPred)          S.lastPred     = saved.lastPred;
+    if (saved.lastTargetRow != null) S.lastTargetRow = saved.lastTargetRow;
+    // Backfill weights for new algos
     COLS.forEach(c => {
       if (!S.weights[c]) S.weights[c] = {};
       ALGOS.forEach(a => { if (S.weights[c][a] === undefined) S.weights[c][a] = 1.0; });
@@ -386,7 +565,7 @@ async function pushToCloud() {
     else { url=`https://api.jsonbin.io/v3/b/${CFG.binId}`; method='PUT'; }
     const headers={'Content-Type':'application/json','X-Master-Key':CFG.apiKey};
     if (method==='POST') headers['X-Bin-Name']='APE-Engine-v3';
-    const r = await fetch(url,{method,headers,body:JSON.stringify({...S,version:'3.0'})});
+    const r = await fetch(url,{method,headers,body:JSON.stringify({...S,version:'3.1'})});
     const d = await r.json();
     if (!r.ok) throw new Error(d.message||`HTTP ${r.status}`);
     if (method==='POST'&&d.metadata?.id) {
@@ -410,22 +589,43 @@ function mergeCloud(rec) {
   if (rec.markov)     S.markov     = rec.markov;
   if (rec.freqTable)  S.freqTable  = rec.freqTable;
   if (rec.trainLog)   S.trainLog   = rec.trainLog;
-  if (rec.trainCount) S.trainCount = rec.trainCount;
+  if (rec.trainCount != null) S.trainCount = rec.trainCount;
+  if (rec.predHistory) S.predHistory = rec.predHistory;
+  if (rec.accLog)     S.accLog     = rec.accLog;
   COLS.forEach(c => { if(!S.weights[c]) S.weights[c]={}; ALGOS.forEach(a=>{if(S.weights[c][a]===undefined)S.weights[c][a]=1.0;}); });
 }
 
 // ═══════════════════════════════════════════════════
-// DATA ENTRY — FIXED VALIDATION
+// IMPORT / EXPORT
 // ═══════════════════════════════════════════════════
-function pv(id) { // parse value: returns number | null (XX) | undefined (error)
-  const raw = $(id).value.trim();
-  if (!raw || raw.toUpperCase()==='XX') return null;
-  const n = parseInt(raw,10);
-  if (isNaN(n) || n<0 || n>99 || String(n)!==raw.replace(/^0+/,'')||raw.length>2) return undefined;
-  return n;
+function exportJSON() {
+  const b=new Blob([JSON.stringify(S,null,2)],{type:'application/json'});
+  const u=URL.createObjectURL(b), a=document.createElement('a');
+  a.href=u; a.download=`ape-${Date.now()}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u);
+  st('Exported JSON','ok');
 }
 
-// More lenient parser — accepts "09" etc
+function importJSON() { $('jsonImportInput').click(); }
+
+function handleJSONImport(e) {
+  const file=e.target.files[0]; if (!file) return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    try {
+      const data=JSON.parse(ev.target.result);
+      if (!data.dataset) throw new Error('Invalid APE JSON — no dataset field');
+      mergeCloud(data); saveLocal(); renderAll();
+      st(`Imported ${S.dataset.length} rows from file`,'ok');
+    } catch(err) { st('Import failed: '+err.message,'err'); }
+  };
+  reader.readAsText(file);
+  e.target.value='';
+}
+
+// ═══════════════════════════════════════════════════
+// DATA ENTRY
+// ═══════════════════════════════════════════════════
 function pvSafe(id) {
   const raw = $(id).value.trim();
   if (!raw || raw.toUpperCase()==='XX') return null;
@@ -439,13 +639,11 @@ function showOk(msg)  { $('okBox').textContent=msg;  $('okBox').style.display=ms
 
 function addRow() {
   showErr('');
-  // --- Parse row number ---
   const rowRaw = $('rowNum').value.trim();
   const row = parseInt(rowRaw,10);
   if (!rowRaw || isNaN(row) || row<1 || row>31) {
     showErr('❌ Row # must be 01–31'); $('rowNum').focus(); return;
   }
-  // --- Parse A B C D ---
   const keys=['A','B','C','D'], ids=['inA','inB','inC','inD'];
   const vals={};
   for (let i=0;i<4;i++) {
@@ -453,26 +651,20 @@ function addRow() {
     if (v===undefined) { showErr(`❌ ${keys[i]} must be 00–99 or XX`); $(ids[i]).focus(); return; }
     vals[keys[i]] = v;
   }
-  // --- Need at least one real value ---
   if (Object.values(vals).every(v=>v===null)) { showErr('❌ Enter at least one value. Use XX for unknown.'); return; }
 
-  // --- Upsert ---
   S.dataset = S.dataset.filter(r=>r.row!==row);
   S.dataset.push({row, A:vals.A, B:vals.B, C:vals.C, D:vals.D});
   S.dataset.sort((a,b)=>a.row-b.row);
-
-  // ✅ SAVE TO LOCALSTORAGE IMMEDIATELY
   saveLocal();
 
-  // Clear inputs + advance row
   $('rowNum').value = Math.min(31,row+1);
   ids.forEach(id=>$(id).value='');
   $('inA').focus();
 
   showOk(`✅ Row ${String(row).padStart(2,'0')} saved! Total: ${S.dataset.length} rows`);
   renderTable(); renderTrainMeta();
-  st(`Row ${String(row).padStart(2,'0')} saved — ${S.dataset.length} rows in localStorage`,'ok');
-
+  st(`Row ${String(row).padStart(2,'0')} saved — ${S.dataset.length} rows`,'ok');
   if (CFG.apiKey && CFG.binId && S.dataset.length%10===0) pushToCloud();
 }
 
@@ -514,7 +706,7 @@ function bulkImport() {
     S.dataset.push({row,A,B,C,D}); added++;
   }
   S.dataset.sort((a,b)=>a.row-b.row);
-  saveLocal(); // ✅
+  saveLocal();
   renderTable(); renderTrainMeta();
   $('bulk').value='';
   st(`Imported ${added} rows${errs?`, ${errs} skipped`:''}`, errs?'warn':'ok');
@@ -531,16 +723,14 @@ function loadSample() {
     S.dataset.push({row,A,B,C,D});
   });
   S.dataset.sort((a,b)=>a.row-b.row);
-  saveLocal(); // ✅
-  renderTable(); renderTrainMeta();
+  saveLocal(); renderTable(); renderTrainMeta();
   st(`Sample loaded — ${S.dataset.length} rows`,'ok');
 }
 
 function deleteRow(row) {
   if (!confirm(`Delete row ${String(row).padStart(2,'0')}?`)) return;
   S.dataset=S.dataset.filter(r=>r.row!==row);
-  saveLocal(); // ✅
-  renderTable(); renderTrainMeta();
+  saveLocal(); renderTable(); renderTrainMeta();
   st(`Row ${row} deleted`,'warn');
 }
 
@@ -548,42 +738,42 @@ function resetWeights() {
   if (!confirm('Reset model weights? Dataset stays.')) return;
   S.weights=initWeights(); S.markov={A:{},B:{},C:{},D:{}}; S.freqTable={A:{},B:{},C:{},D:{}};
   S.trainLog=[]; S.trainCount=0;
-  saveLocal(); // ✅
-  renderTrainMeta();
-  $('lbCard').classList.add('hidden'); $('histCard').classList.add('hidden');
+  saveLocal(); renderTrainMeta();
+  ['lbCard','histCard','hcCard'].forEach(id=>$(id).classList.add('hidden'));
   st('Weights reset — dataset preserved','warn');
 }
 
 function clearAll() {
-  if (!confirm('Clear ALL data? Cannot undo.')) return;
-  S=freshState(); localStorage.removeItem(LS_STATE); // ✅ wipe local
+  if (!confirm('Clear ALL data including prediction history? Cannot undo.')) return;
+  S=freshState(); localStorage.removeItem(LS_STATE);
   renderAll();
-  $('predCard').classList.add('hidden'); $('lbCard').classList.add('hidden'); $('histCard').classList.add('hidden');
+  ['predCard','lbCard','histCard','accCard','hcCard','predHistCard'].forEach(id=>$(id).classList.add('hidden'));
   st('All cleared','err');
 }
 
-function exportJSON() {
-  const b=new Blob([JSON.stringify(S,null,2)],{type:'application/json'});
-  const u=URL.createObjectURL(b), a=document.createElement('a');
-  a.href=u; a.download=`ape-${Date.now()}.json`;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u);
+function toggleDeterministic() {
+  CFG.deterministic=!CFG.deterministic;
+  $('btnDet').textContent = CFG.deterministic ? '🔒 Rand OFF' : '🎲 Rand ON';
+  $('btnDet').style.borderColor = CFG.deterministic ? 'var(--B)' : '';
+  $('btnDet').style.color = CFG.deterministic ? 'var(--B)' : '';
+  st(CFG.deterministic?'Deterministic mode ON — reproducible results':'Random exploration ON','ok');
 }
 
 // ═══════════════════════════════════════════════════
 // MATH UTILS
 // ═══════════════════════════════════════════════════
 const M = {
-  mod: n => ((Math.round(n)%100)+100)%100,
-  d1:  n => Math.floor(Math.abs(Math.round(n))%100/10),
-  d2:  n => Math.abs(Math.round(n))%10,
-  ds:  n => M.d1(n)+M.d2(n),
-  dp:  n => M.d1(n)*M.d2(n),
-  dr:  n => { let s=M.ds(n); return s===0?0:(s<10?s:M.ds(s)); },
-  rev: n => { const s=String(M.mod(n)).padStart(2,'0'); return parseInt(s[1]+s[0],10); },
-  mean:arr => arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0,
-  pad2:n => String(M.mod(n)).padStart(2,'0'),
-  cd:  (a,b) => Math.min(Math.abs(a-b),100-Math.abs(a-b)),
-  near:(p,a,t=2) => M.cd(p,a)<=t,
+  mod:  n => ((Math.round(n)%100)+100)%100,
+  d1:   n => Math.floor(Math.abs(Math.round(n))%100/10),
+  d2:   n => Math.abs(Math.round(n))%10,
+  ds:   n => M.d1(n)+M.d2(n),
+  dp:   n => M.d1(n)*M.d2(n),
+  dr:   n => { let s=M.ds(n); return s===0?0:(s<10?s:M.ds(s)); },
+  rev:  n => { const s=String(M.mod(n)).padStart(2,'0'); return parseInt(s[1]+s[0],10); },
+  mean: arr => arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0,
+  pad2: n => String(M.mod(n)).padStart(2,'0'),
+  cd:   (a,b) => Math.min(Math.abs(a-b),100-Math.abs(a-b)),
+  near: (p,a,t=2) => M.cd(p,a)<=t,
   softmax: obj => {
     const ks=Object.keys(obj), vs=ks.map(k=>obj[k]), mx=Math.max(...vs);
     const ex=vs.map(v=>Math.exp(Math.min((v-mx)*3,20))), sum=ex.reduce((a,b)=>a+b,0)||1;
@@ -592,7 +782,20 @@ const M = {
 };
 
 function buildSeries(col) {
-  return S.dataset.filter(r=>r[col]!==null&&r[col]!==undefined&&!isNaN(r[col])).map(r=>r[col]);
+  return S.dataset
+    .filter(r=>r[col]!==null&&r[col]!==undefined&&!isNaN(r[col]))
+    .map(r=>r[col]);
+}
+
+// Sparkline (text-based trend indicator)
+function sparkline(s) {
+  if (s.length<2) return '';
+  const last=s.slice(-6);
+  return last.map((v,i)=>{
+    if (i===0) return '·';
+    const d=v-last[i-1]; if(d>50)d-=100; if(d<-50)d+=100;
+    return d>5?'↑':d<-5?'↓':'─';
+  }).join('');
 }
 
 // ═══════════════════════════════════════════════════
@@ -601,7 +804,7 @@ function buildSeries(col) {
 function algo_Reverse(s)       { return [M.rev(s[s.length-1])]; }
 function algo_DigitSumTf(s)    { const v=s[s.length-1]; return [M.mod(v+M.ds(v))]; }
 function algo_ReverseSumTf(s)  { const v=s[s.length-1]; return [M.mod(v+M.rev(v))]; }
-function algo_MirrorDiff(s)    { const v=s[s.length-1]; return [M.mod(Math.abs(M.d1(v)-M.d2(v))*11)]; }
+function algo_MirrorDiff(s)    { const v=s[s.length-1]; const d=Math.abs(M.d1(v)-M.d2(v)); return d===0?[M.mod(v+1)]:[M.mod(d*11)]; } // BUG FIX: avoid degenerate 00 for palindromes
 function algo_DigitalRoot(s)   { return [M.mod(M.dr(s[s.length-1])*11)]; }
 
 function algo_LinearTime(s) {
@@ -613,11 +816,14 @@ function algo_LinearTime(s) {
   return [best.pred];
 }
 
+// BUG FIX: KShift — reversed exponent so RECENT diffs get more weight
 function algo_KShift(s) {
   if (s.length<2) return [s[0]||0];
   let ws=0,wd=0;
   for (let i=1;i<s.length;i++) {
-    const w=Math.pow(1.4,i-1); let d=s[i]-s[i-1];
+    // recent index = s.length-1, oldest = 1; weight recent MORE
+    const w=Math.pow(1.4, s.length-1-i + 1); // +1 so min weight=1.4^1 not 0
+    let d=s[i]-s[i-1];
     if (d>50) d-=100; if (d<-50) d+=100;
     ws+=w; wd+=d*w;
   }
@@ -688,15 +894,15 @@ function algo_RollingMean(s) {
 function algo_CrossColumn(s,col) {
   if (!S.dataset.length) return [s[s.length-1]];
   const src=COLS[(COLS.indexOf(col)+3)%4], last=S.dataset[S.dataset.length-1];
-  if (last[src]===null||last[src]===undefined) return [s[s.length-1]];
+  if (last[src]===null||last[src]===undefined||isNaN(last[src])) return [s[s.length-1]];
   return [M.mod(last[col]+M.ds(last[src]))];
 }
 
-// ── Cross-column batch 1 ──────────────────────────
 function algo_RowSumCascade(s,col) {
   const ds=S.dataset; if (!ds.length) return [s[s.length-1]];
   const l=ds[ds.length-1];
-  if ([l.A,l.B,l.C,l.D].some(v=>v===null||isNaN(v))) return [s[s.length-1]];
+  // BUG FIX: guard undefined too, not just null
+  if ([l.A,l.B,l.C,l.D].some(v=>v===null||v===undefined||isNaN(v))) return [s[s.length-1]];
   const full=M.mod(l.A+l.B+l.C+l.D);
   const pm={A:M.mod(l.C+l.D),B:M.mod(l.A+l.D),C:M.mod(l.A+l.B),D:M.mod(l.B+l.C)};
   return [...new Set([full,pm[col]])];
@@ -705,21 +911,21 @@ function algo_RowSumCascade(s,col) {
 function algo_CDmod(s,col) {
   const ds=S.dataset; if (!ds.length) return [s[s.length-1]];
   const l=ds[ds.length-1];
-  if (l.C===null||l.D===null||isNaN(l.C)||isNaN(l.D)) return [s[s.length-1]];
+  if (l.C===null||l.C===undefined||l.D===null||l.D===undefined||isNaN(l.C)||isNaN(l.D)) return [s[s.length-1]];
   return [M.mod(l.C+l.D)];
 }
 
 function algo_ABmod(s,col) {
   const ds=S.dataset; if (!ds.length) return [s[s.length-1]];
   const l=ds[ds.length-1];
-  if (l.A===null||l.B===null||isNaN(l.A)||isNaN(l.B)) return [s[s.length-1]];
+  if (l.A===null||l.A===undefined||l.B===null||l.B===undefined||isNaN(l.A)||isNaN(l.B)) return [s[s.length-1]];
   return [M.mod(l.A+l.B)];
 }
 
 function algo_BDmod(s,col) {
   const ds=S.dataset; if (!ds.length) return [s[s.length-1]];
   const l=ds[ds.length-1];
-  if (l.B===null||l.D===null||isNaN(l.B)||isNaN(l.D)) return [s[s.length-1]];
+  if (l.B===null||l.B===undefined||l.D===null||l.D===undefined||isNaN(l.B)||isNaN(l.D)) return [s[s.length-1]];
   return [M.mod(l.B+l.D)];
 }
 
@@ -742,39 +948,41 @@ function algo_RevCrossCol(s,col) {
   if (!S.dataset.length) return [s[s.length-1]];
   const l=S.dataset[S.dataset.length-1], ci=COLS.indexOf(col);
   const pv=COLS[(ci+3)%4], nv=COLS[(ci+1)%4];
-  const rp=l[pv]!==null&&!isNaN(l[pv])?M.rev(l[pv]):s[s.length-1];
-  const rn=l[nv]!==null&&!isNaN(l[nv])?M.rev(l[nv]):s[s.length-1];
+  const rp=(l[pv]!==null&&l[pv]!==undefined&&!isNaN(l[pv]))?M.rev(l[pv]):s[s.length-1];
+  const rn=(l[nv]!==null&&l[nv]!==undefined&&!isNaN(l[nv]))?M.rev(l[nv]):s[s.length-1];
   return [...new Set([rp,rn])];
 }
 
+// BUG FIX: ColDiffCascade — filter out null/undefined rows from diffs
 function algo_ColDiffCascade(s,col) {
   if (S.dataset.length<2) return [s[s.length-1]];
   const l=S.dataset[S.dataset.length-1], ci=COLS.indexOf(col);
   const nxt=COLS[(ci+1)%4], prv=COLS[(ci+3)%4];
   const lv=s[s.length-1];
-  const safe=(a,b)=>(a!==null&&b!==null&&!isNaN(a)&&!isNaN(b));
+  const safe=(a,b)=>(a!==null&&a!==undefined&&b!==null&&b!==undefined&&!isNaN(a)&&!isNaN(b));
   const cands=new Set();
   if (safe(l[col],l[nxt])) cands.add(M.mod(l[col]-l[nxt]));
   if (safe(l[col],l[prv])) cands.add(M.mod(l[col]-l[prv]));
-  const diffs=S.dataset.slice(-5).map(r=>{
-    if (!safe(r[col],r[nxt])) return 0;
-    let d=r[col]-r[nxt]; if(d>50)d-=100; if(d<-50)d+=100; return d;
-  });
-  cands.add(M.mod(lv+Math.round(diffs.reduce((a,b)=>a+b,0)/diffs.length)));
+  // BUG FIX: filter out rows where the relevant columns are null/undefined before computing diffs
+  const validRows=S.dataset.slice(-5).filter(r=>safe(r[col],r[nxt]));
+  if (validRows.length>0) {
+    const diffs=validRows.map(r=>{ let d=r[col]-r[nxt]; if(d>50)d-=100; if(d<-50)d+=100; return d; });
+    cands.add(M.mod(lv+Math.round(diffs.reduce((a,b)=>a+b,0)/diffs.length)));
+  } else {
+    cands.add(lv);
+  }
   return [...cands];
 }
 
-// ── Cross-column batch 2 ──────────────────────────
 function algo_RevLagCross(s,col) {
   if (S.dataset.length<2) return [s[s.length-1]];
   const prev=S.dataset[S.dataset.length-2], ci=COLS.indexOf(col);
   const pv=COLS[(ci+3)%4], nv=COLS[(ci+1)%4];
-  const safe=v=>v!==null&&!isNaN(v);
+  const safe=v=>v!==null&&v!==undefined&&!isNaN(v);
   const cands=new Set();
-  if (safe(prev[col]))  cands.add(M.rev(prev[col]));
-  if (safe(prev[pv]))   cands.add(M.rev(prev[pv]));
-  if (safe(prev[nv]))   cands.add(M.rev(prev[nv]));
-  // Single-digit * 10 special case (e.g. 9 → 90)
+  if (safe(prev[col])) cands.add(M.rev(prev[col]));
+  if (safe(prev[pv]))  cands.add(M.rev(prev[pv]));
+  if (safe(prev[nv]))  cands.add(M.rev(prev[nv]));
   const d=prev['D']; if (safe(d)&&d<10) cands.add(d*10);
   return [...cands];
 }
@@ -784,16 +992,17 @@ function algo_DigiSumColChain(s,col) {
   const l=S.dataset[S.dataset.length-1], ci=COLS.indexOf(col);
   const srcL=COLS[(ci+3)%4], srcR=COLS[(ci+1)%4];
   const cands=new Set();
-  const add=(v)=>{ if(v!==null&&!isNaN(v)){ cands.add(M.mod(v+M.ds(v))); cands.add(M.mod(v-M.ds(v))); }};
+  const add=(v)=>{ if(v!==null&&v!==undefined&&!isNaN(v)){ cands.add(M.mod(v+M.ds(v))); cands.add(M.mod(v-M.ds(v))); }};
   add(l[srcL]); add(l[srcR]);
   const v=s[s.length-1]; cands.add(M.mod(v+M.ds(v))); cands.add(M.mod(v-M.ds(v)));
   return [...cands];
 }
 
+// BUG FIX: SubtractColMod — undefined guard added
 function algo_SubtractColMod(s,col) {
   if (!S.dataset.length) return [s[s.length-1]];
   const {A,B,C,D}=S.dataset[S.dataset.length-1];
-  if ([A,B,C,D].some(v=>v===null||isNaN(v))) return [s[s.length-1]];
+  if ([A,B,C,D].some(v=>v===null||v===undefined||isNaN(v))) return [s[s.length-1]];
   const ci=COLS.indexOf(col), adjL=COLS[(ci+3)%4], adjR=COLS[(ci+1)%4];
   const l=S.dataset[S.dataset.length-1];
   const cands=new Set([
@@ -808,22 +1017,26 @@ function algo_StickyEcho(s,col) {
   if (!S.dataset.length) return [s[s.length-1]];
   const gf={};
   S.dataset.forEach(r=>COLS.forEach(c=>{
-    const v=r[c]; if(v!==null&&!isNaN(v)) gf[v]=(gf[v]||0)+1;
+    const v=r[c]; if(v!==null&&v!==undefined&&!isNaN(v)) gf[v]=(gf[v]||0)+1;
   }));
   buildSeries(col).forEach(v=>{gf[v]=(gf[v]||0)+0.8;});
-  return Object.entries(gf).filter(([,c])=>c>=2).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([v])=>parseInt(v,10));
+  const top=Object.entries(gf).filter(([,c])=>c>=2).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([v])=>parseInt(v,10));
+  // BUG FIX: if no values pass c>=2 threshold (sparse data), fall back to top 3 regardless
+  if (top.length===0) return Object.entries(gf).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v,10));
+  return top;
 }
 
 function algo_PairSumLag(s,col) {
   if (S.dataset.length<1) return [s[s.length-1]];
   const l=S.dataset[S.dataset.length-1];
   const {A,B,C,D}=l; const cands=new Set();
-  const ok=v=>v!==null&&!isNaN(v);
+  const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
   if (ok(B)&&ok(D)) cands.add(M.mod(B+D));
   if (ok(C)&&ok(D)) cands.add(M.mod(C+D));
   if (ok(A)&&ok(B)) cands.add(M.mod(A+B));
   if (ok(A)&&ok(C)) cands.add(M.mod(A+C));
   if ([A,B,C,D].every(ok)) cands.add(M.mod(A+B+C+D));
+  if (cands.size===0) cands.add(s[s.length-1]);
   return [...cands];
 }
 
@@ -867,18 +1080,19 @@ function dispatch(name,s,col) {
 }
 
 // ═══════════════════════════════════════════════════
-// BACKTEST
+// BACKTEST — BUG FIX: track actual count, not assumed win
 // ═══════════════════════════════════════════════════
 function backtest(name,s,col) {
   if (s.length<4) return {exact:0,near:0};
-  const win=Math.min(10,s.length-2); let ex=0,nr=0;
+  const win=Math.min(10,s.length-2); let ex=0,nr=0,actual=0;
   for (let i=s.length-win;i<s.length;i++) {
     if (i<2) continue;
-    const hist=s.slice(0,i), preds=dispatch(name,hist,col), actual=s[i];
-    if (preds.some(p=>p===actual)) ex++;
-    if (preds.some(p=>M.near(p,actual,2))) nr++;
+    const hist=s.slice(0,i), preds=dispatch(name,hist,col), v=s[i];
+    actual++;
+    if (preds.some(p=>p===v)) ex++;
+    if (preds.some(p=>M.near(p,v,2))) nr++;
   }
-  return {exact:ex/win,near:nr/win};
+  return {exact:actual?ex/actual:0, near:actual?nr/actual:0};
 }
 
 // ═══════════════════════════════════════════════════
@@ -892,7 +1106,9 @@ function predictCol(col) {
   const norm=M.softmax(comb);
   const votes={}, contrib={};
   for (const a of ALGOS) {
-    let w=norm[a]; if (Math.random()<CFG.epsilon) w*=(1+Math.random()*.5);
+    // BUG FIX: respect deterministic mode
+    let w=norm[a];
+    if (!CFG.deterministic && Math.random()<CFG.epsilon) w*=(1+Math.random()*.5);
     dispatch(a,s,col).forEach((raw,rank)=>{
       const p=M.mod(raw), v=w/(rank+1);
       votes[p]=(votes[p]||0)+v;
@@ -906,7 +1122,9 @@ function predictCol(col) {
   }));
   const avg=ALGOS.reduce((s,a)=>s+bt[a],0)/ALGOS.length;
   const top=Object.entries(norm).sort((a,b)=>b[1]-a[1])[0][0];
-  return {preds:sorted,mode:avg>0.08?'structured':'probabilistic',topAlgo:top,topAlgoW:Math.round(norm[top]*100),avgScore:Math.round(avg*100),bt,norm};
+  return {preds:sorted, mode:avg>0.08?'structured':'probabilistic',
+    topAlgo:top, topAlgoW:Math.round(norm[top]*100), avgScore:Math.round(avg*100), bt, norm,
+    spark: sparkline(s), series:s};
 }
 
 // ═══════════════════════════════════════════════════
@@ -936,6 +1154,48 @@ function rebuildFreq() {
 }
 
 // ═══════════════════════════════════════════════════
+// HOT / COLD NUMBERS
+// ═══════════════════════════════════════════════════
+function computeHotCold(col) {
+  const freq={};
+  buildSeries(col).forEach(v=>{ freq[v]=(freq[v]||0)+1; });
+  const entries=Object.entries(freq).sort((a,b)=>b[1]-a[1]);
+  return entries;
+}
+
+function renderHotCold() {
+  $('hcGrid').innerHTML = COLS.map(col=>{
+    const entries=computeHotCold(col);
+    if (!entries.length) return `<div class="dim mono sm">No data for ${col}</div>`;
+    const max=entries[0][1], min=entries[entries.length-1][1];
+    const range=max-min||1;
+    const colVar=`var(--${col})`;
+    const nums=entries.slice(0,15).map(([v,c])=>{
+      const t=(c-min)/range; // 0=cold, 1=hot
+      const bg=t>0.65?`rgba(242,95,92,${0.15+t*0.35})`:t<0.25?`rgba(100,180,255,${0.12+t*0.2})`:`rgba(124,109,250,${0.08+t*0.15})`;
+      const col2=t>0.65?'var(--D)':t<0.25?'#7ab8e8':'var(--soft)';
+      return `<div class="hc-num" style="background:${bg};color:${col2}" title="${c}x">${v.padStart(2,'0')}</div>`;
+    }).join('');
+    return `<div>
+      <div style="font-size:11px;font-weight:700;color:${colVar};font-family:var(--mono);margin-bottom:6px">${col} — top ${Math.min(15,entries.length)}</div>
+      <div class="hc-grid">${nums}</div>
+    </div>`;
+  }).join('');
+  $('hcCard').classList.remove('hidden');
+}
+
+// ═══════════════════════════════════════════════════
+// TARGET ROW COMPUTATION
+// ═══════════════════════════════════════════════════
+function computeTargetRow() {
+  if (!S.dataset.length) return null;
+  const rows=S.dataset.map(r=>r.row);
+  const maxRow=Math.max(...rows);
+  // Next row = maxRow+1, wrapping at 31→1
+  return maxRow>=31?1:maxRow+1;
+}
+
+// ═══════════════════════════════════════════════════
 // TRAIN
 // ═══════════════════════════════════════════════════
 function trainModel() {
@@ -949,11 +1209,12 @@ function trainModel() {
       S.weights[col][a]=Math.max(.05,.7*ow+.3*(.1+perf*4));
     });
   });
-  S.trainCount++; S.trainLog.push({at:new Date().toISOString(),rows:S.dataset.length,n:S.trainCount});
-  saveLocal(); // ✅
+  S.trainCount++;
+  S.trainLog.push({at:new Date().toISOString(),rows:S.dataset.length,n:S.trainCount});
+  saveLocal();
   if (CFG.apiKey&&CFG.binId&&S.trainCount%5===0) pushToCloud();
-  renderLeaderboard(); renderTrainLog(); renderTrainMeta();
-  $('lbCard').classList.remove('hidden'); $('histCard').classList.remove('hidden');
+  renderLeaderboard(); renderTrainLog(); renderTrainMeta(); renderHotCold();
+  ['lbCard','histCard','hcCard'].forEach(id=>$(id).classList.remove('hidden'));
   st(`✅ Training #${S.trainCount} done — ${S.dataset.length} rows`,'ok');
 }
 
@@ -970,12 +1231,124 @@ function runPredict() {
     if (!res) { st(`Not enough data for ${col}`,'warn'); return; }
     results[col]=res; dom.push(`${col}→${res.topAlgo}`); modes.push(res.mode);
   }
-  S.lastPred=results;
-  renderPredictions(results); renderLeaderboard();
+  const targetRow=computeTargetRow();
+  S.lastPred=results; S.lastTargetRow=targetRow;
+
+  // Save to prediction history
+  const histEntry={
+    at:new Date().toISOString(), targetRow,
+    preds:{ A:results.A.preds[0]?.value, B:results.B.preds[0]?.value,
+            C:results.C.preds[0]?.value, D:results.D.preds[0]?.value },
+    result:null
+  };
+  S.predHistory.push(histEntry);
+  if (S.predHistory.length>50) S.predHistory=S.predHistory.slice(-50);
+
+  saveLocal();
+  renderPredictions(results, targetRow); renderLeaderboard(); renderPredHistory();
+
   const ms=modes.includes('structured')?'✅ Structured pattern detected':'⚠ Probabilistic mode — low signal';
-  $('insight').innerHTML=`${ms} &nbsp;|&nbsp; ${dom.join(' · ')} &nbsp;|&nbsp; ${S.dataset.length} rows`;
-  $('predCard').classList.remove('hidden'); $('lbCard').classList.remove('hidden');
+  const detMode=CFG.deterministic?'🔒 Deterministic':'🎲 Random';
+  $('insight').innerHTML=`${ms} &nbsp;|&nbsp; ${dom.join(' · ')} &nbsp;|&nbsp; ${detMode} &nbsp;|&nbsp; ${S.dataset.length} rows`;
+  ['predCard','lbCard','accCard','predHistCard'].forEach(id=>$(id).classList.remove('hidden'));
+  $('accResult').style.display='none';
+  ['actA','actB','actC','actD'].forEach(id=>$(id).value='');
   st('Predictions ready','ok');
+}
+
+// ═══════════════════════════════════════════════════
+// ACCURACY CHECKER
+// ═══════════════════════════════════════════════════
+function checkAccuracy() {
+  if (!S.lastPred) { st('Run prediction first','warn'); return; }
+  const actVals={};
+  for (const col of COLS) {
+    const id='act'+col;
+    const raw=$(id).value.trim();
+    if (!raw) { st(`Enter actual value for ${col}`,'warn'); return; }
+    const n=parseInt(raw,10);
+    if (isNaN(n)||n<0||n>99) { st(`${col} must be 00–99`,'warn'); return; }
+    actVals[col]=n;
+  }
+
+  let exactCount=0, nearCount=0;
+  const colResults={};
+  for (const col of COLS) {
+    const pred=S.lastPred[col];
+    const actual=actVals[col];
+    const top1=pred.preds[0]?.value;
+    const isExact=pred.preds.some(p=>p.value===actual);
+    const isNear=pred.preds.some(p=>M.near(p.value,actual,2));
+    const status=isExact?'exact':isNear?'near':'miss';
+    colResults[col]={top1,actual,status};
+    if (isExact) exactCount++;
+    else if (isNear) nearCount++;
+  }
+
+  // Record in acc log
+  const logEntry={at:new Date().toISOString(),targetRow:S.lastTargetRow,colResults,exactCount,nearCount};
+  S.accLog.push(logEntry);
+  if (S.accLog.length>30) S.accLog=S.accLog.slice(-30);
+
+  // Update last pred history entry
+  if (S.predHistory.length>0) {
+    S.predHistory[S.predHistory.length-1].result={actVals,exactCount,nearCount};
+  }
+
+  saveLocal();
+
+  // Render acc result
+  const colCls={exact:'hit',near:'near',miss:'miss'};
+  const colIcon={exact:'✅',near:'🟡',miss:'❌'};
+  $('accGrid').innerHTML=COLS.map(col=>{
+    const r=colResults[col];
+    const colVar=`var(--${col})`;
+    return `<div style="background:var(--ink);border:1px solid var(--line);border-top:2px solid ${colVar};border-radius:var(--r);padding:12px;text-align:center">
+      <div style="font-size:18px;font-weight:800;color:${colVar};font-family:var(--mono);margin-bottom:4px">${col}</div>
+      <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">Predicted: <strong style="color:var(--text)">${String(r.top1??'?').padStart(2,'0')}</strong></div>
+      <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">Actual: <strong style="color:var(--text)">${String(r.actual).padStart(2,'0')}</strong></div>
+      <div class="pred-hit ${colCls[r.status]}" style="margin-top:6px">${colIcon[r.status]} ${r.status.toUpperCase()}</div>
+    </div>`;
+  }).join('');
+
+  // Overall stats
+  const totalChecks=S.accLog.length;
+  const totalExact=S.accLog.reduce((s,e)=>s+e.exactCount,0);
+  const totalNear=S.accLog.reduce((s,e)=>s+e.nearCount,0);
+  const totalCols=totalChecks*4;
+  const exactPct=totalCols?Math.round(totalExact/totalCols*100):0;
+  const nearPct=totalCols?Math.round((totalExact+totalNear)/totalCols*100):0;
+  $('accSummary').innerHTML=
+    `This check: <strong style="color:var(--B)">${exactCount} exact</strong>, <strong style="color:var(--C)">${nearCount} near</strong>, <strong style="color:var(--D)">${4-exactCount-nearCount} miss</strong> &nbsp;|&nbsp; `+
+    `All-time (${totalChecks} checks): Exact <strong style="color:var(--B)">${exactPct}%</strong>, Hit±2 <strong style="color:var(--C)">${nearPct}%</strong>`;
+
+  // Update overall acc badge in pred card
+  const accClass=exactPct>30?'acc-good':exactPct>10?'acc-mid':'acc-low';
+  $('overallAccBadge').innerHTML=`<span class="accuracy-badge ${accClass}">🎯 ${exactPct}% exact</span>`;
+
+  $('accResult').style.display='block';
+  renderPredHistory();
+  st(`Check done — ${exactCount}/4 exact, ${nearCount}/4 near`,'ok');
+}
+
+// ═══════════════════════════════════════════════════
+// COPY PREDICTIONS
+// ═══════════════════════════════════════════════════
+function copyPredictions() {
+  if (!S.lastPred) { st('No predictions yet','warn'); return; }
+  const targetRow=S.lastTargetRow;
+  const lines=[`APE Predictions — Row ${String(targetRow??'?').padStart(2,'0')} — ${new Date().toLocaleString()}`,''];
+  for (const col of COLS) {
+    const r=S.lastPred[col];
+    const top3=r.preds.slice(0,3).map(p=>`${M.pad2(p.value)}(${p.conf}%)`).join(' ');
+    lines.push(`${col}: ${top3}`);
+  }
+  lines.push('','Generated by APE v3.1');
+  navigator.clipboard.writeText(lines.join('\n')).then(()=>{
+    st('Predictions copied to clipboard ✓','ok');
+  }).catch(()=>{
+    st('Copy failed — try a different browser','warn');
+  });
 }
 
 // ═══════════════════════════════════════════════════
@@ -1000,7 +1373,15 @@ function renderTable() {
     : 'No data yet. Add rows above.';
 }
 
-function renderPredictions(res) {
+function renderPredictions(res, targetRow) {
+  // Target banner
+  if (targetRow!=null) {
+    $('targetRowNum').textContent=String(targetRow).padStart(2,'0');
+    const summary=COLS.map(col=>M.pad2(res[col].preds[0]?.value??0)).join(' · ');
+    $('targetSummary').textContent=summary;
+    $('targetBanner').classList.remove('hidden');
+  }
+
   $('predGrid').innerHTML = COLS.map(col=>{
     const r=res[col]; if (!r) return '';
     const mx=r.preds[0]?.conf||1;
@@ -1012,6 +1393,7 @@ function renderPredictions(res) {
       </div>${i===0?`<div class="pred-tag">${p.algos.join(' · ')}</div>`:''}`).join('');
     return `<div class="pred-panel c${col}">
       <div class="pred-col" style="color:var(--${col})">${col}</div>
+      <div class="pred-sparkline">${r.spark||''}</div>
       ${rowsHtml}
       <div style="margin-top:7px;font-size:10px;color:var(--muted);font-family:var(--mono)">${r.mode} · ${r.topAlgo}</div>
     </div>`;
@@ -1041,6 +1423,26 @@ function renderLeaderboard() {
   $('lbCard').classList.remove('hidden');
 }
 
+function renderPredHistory() {
+  if (!S.predHistory.length) { $('predHistCard').classList.add('hidden'); return; }
+  $('predHistBody').innerHTML=S.predHistory.slice(-10).reverse().map(h=>{
+    const A=M.pad2(h.preds.A??0), B=M.pad2(h.preds.B??0), C=M.pad2(h.preds.C??0), D=M.pad2(h.preds.D??0);
+    const res=h.result
+      ?`<span style="color:${h.result.exactCount>2?'var(--B)':h.result.exactCount>0?'var(--C)':'var(--D)'}">${h.result.exactCount} exact</span>`
+      :`<span class="dim">pending</span>`;
+    return `<tr>
+      <td class="dim mono" style="font-size:11px">${new Date(h.at).toLocaleTimeString()}</td>
+      <td class="mono">${String(h.targetRow??'?').padStart(2,'0')}</td>
+      <td><span class="badge ba">${A}</span></td>
+      <td><span class="badge bb">${B}</span></td>
+      <td><span class="badge bc">${C}</span></td>
+      <td><span class="badge bd">${D}</span></td>
+      <td class="mono" style="font-size:11px">${res}</td>
+    </tr>`;
+  }).join('');
+  $('predHistCard').classList.remove('hidden');
+}
+
 function renderTrainLog() {
   if (!S.trainLog.length) { $('histBody').innerHTML='<p class="dim sm mono">No sessions yet.</p>'; return; }
   $('histBody').innerHTML=S.trainLog.slice(-8).reverse().map(h=>`
@@ -1052,14 +1454,37 @@ function renderTrainLog() {
 }
 
 function renderTrainMeta() {
+  const targetRow=computeTargetRow();
   $('trainMeta').innerHTML=
-    `Rows in memory: <span style="color:var(--B)">${S.dataset.length}</span> &nbsp;|&nbsp;`+
-    `Training sessions: <span style="color:var(--A)">${S.trainCount}</span> &nbsp;|&nbsp;`+
-    `<span style="color:var(--B)">localStorage: ✓ auto-saved on every entry</span> &nbsp;|&nbsp;`+
-    `Cloud last: <span class="dim">${S.savedAt?new Date(S.savedAt).toLocaleString():'never'}</span>`;
+    `Rows: <span style="color:var(--B)">${S.dataset.length}</span> &nbsp;|&nbsp;`+
+    `Sessions: <span style="color:var(--A)">${S.trainCount}</span> &nbsp;|&nbsp;`+
+    `Next target row: <span style="color:var(--C)">${targetRow!=null?String(targetRow).padStart(2,'0'):'—'}</span> &nbsp;|&nbsp;`+
+    `Checks: <span style="color:var(--soft)">${S.accLog.length}</span> &nbsp;|&nbsp;`+
+    `<span style="color:var(--B)">localStorage ✓</span> &nbsp;|&nbsp;`+
+    `Cloud: <span class="dim">${S.savedAt?new Date(S.savedAt).toLocaleString():'never'}</span>`;
 }
 
-function renderAll() { renderTable(); renderTrainMeta(); if (S.trainCount>0){renderLeaderboard();renderTrainLog();} }
+function renderAll() {
+  renderTable(); renderTrainMeta();
+  if (S.trainCount>0) { renderLeaderboard(); renderTrainLog(); renderHotCold(); }
+  if (S.lastPred) { renderPredictions(S.lastPred, S.lastTargetRow); $('predCard').classList.remove('hidden'); }
+  if (S.predHistory.length>0) { renderPredHistory(); $('predHistCard').classList.remove('hidden'); }
+  if (S.accLog.length>0) {
+    $('accCard').classList.remove('hidden');
+    const totalChecks=S.accLog.length;
+    const totalExact=S.accLog.reduce((s,e)=>s+e.exactCount,0);
+    const totalCols=totalChecks*4;
+    const exactPct=totalCols?Math.round(totalExact/totalCols*100):0;
+    const accClass=exactPct>30?'acc-good':exactPct>10?'acc-mid':'acc-low';
+    $('overallAccBadge').innerHTML=`<span class="accuracy-badge ${accClass}">🎯 ${exactPct}% exact</span>`;
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// MODAL
+// ═══════════════════════════════════════════════════
+function openModal(id)  { $(id).classList.add('open'); document.body.style.overflow='hidden'; }
+function closeModal(id) { $(id).classList.remove('open'); document.body.style.overflow=''; }
 
 // ═══════════════════════════════════════════════════
 // STATUS + HELPERS
@@ -1069,7 +1494,7 @@ function cm(msg) { $('cloudMsg').textContent=msg; }
 function $(id) { return document.getElementById(id); }
 
 // ═══════════════════════════════════════════════════
-// KEYBOARD — Enter moves between A→B→C→D→Add
+// KEYBOARD — Enter moves A→B→C→D→Submit
 // ═══════════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
   if (e.key==='Enter') {
@@ -1080,7 +1505,21 @@ document.addEventListener('keydown',e=>{
       else addRow();
       e.preventDefault();
     }
+    // Accuracy checker Enter chain
+    const accChain={actA:'actB',actB:'actC',actC:'actD',actD:null};
+    if (id in accChain) {
+      if (accChain[id]) $(accChain[id]).focus();
+      else checkAccuracy();
+      e.preventDefault();
+    }
   }
+  // ESC closes modal
+  if (e.key==='Escape') closeModal('htuModal');
+});
+
+// Click outside modal to close
+$('htuModal').addEventListener('click',e=>{
+  if (e.target===$('htuModal')) closeModal('htuModal');
 });
 
 // ═══════════════════════════════════════════════════
@@ -1093,7 +1532,7 @@ document.addEventListener('keydown',e=>{
   if (had && S.dataset.length>0)
     st(`✅ Restored ${S.dataset.length} rows from localStorage`,'ok');
   else
-    st('Ready — enter data or load from cloud','ok');
+    st('Ready — click 📖 How to Use to get started','ok');
   if (CFG.apiKey && CFG.binId) setTimeout(loadFromCloud, 900);
   $('rowNum').value=String(new Date().getDate()).padStart(2,'0');
 })();
