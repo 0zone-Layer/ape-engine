@@ -106,7 +106,124 @@ const A={
   ModSearch:      s=>{if(s.length<4)return[s[s.length-1]];const n=s.length;let best={sc:-1,k:2,off:0};for(let k=2;k<=15;k++)for(let off=0;off<100;off+=2){let sc=0;for(let i=1;i<n;i++)if(((s[i-1]%k)+off)%100===s[i])sc++;if(sc>best.sc)best={sc,k,off};}return[M.mod((s[n-1]%best.k)+best.off)];},
   XorChain:       s=>{if(s.length<5)return[s[s.length-1]];const n=s.length;return[M.mod(s[n-1]^s[n-3]^s[n-5])];},
   PolyCong:       s=>{if(s.length<3)return[s[s.length-1]];const n=s.length;let best={sc:-1,a:1,b:1,c:0};for(const a of[1,2,3])for(const b of[1,3,5,7])for(const c of[0,1,3,7,11]){let sc=0;for(let i=1;i<n;i++)if(M.mod(a*s[i-1]*s[i-1]+b*s[i-1]+c)===s[i])sc++;if(sc>best.sc)best={sc,a,b,c};}return[M.mod(best.a*s[n-1]*s[n-1]+best.b*s[n-1]+best.c)];},
+
+  // ── V9 NEW ALGORITHMS ──────────────────────────
+  DeepMarkov4:    s=>{
+    if(s.length<5)return[s[s.length-1]];
+    const tr={};
+    for(let i=3;i<s.length-1;i++){
+      const k=s[i-3]+"_"+s[i-2]+"_"+s[i-1]+"_"+s[i];
+      if(!tr[k])tr[k]={};
+      tr[k][s[i+1]]=(tr[k][s[i+1]]||0)+1;
+    }
+    const k=s[s.length-4]+"_"+s[s.length-3]+"_"+s[s.length-2]+"_"+s[s.length-1];
+    if(!tr[k])return[s[s.length-1]];
+    return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+  },
+  GapMarkov:      s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const gaps=[];
+    for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gaps.push(g);}
+    const tr={};
+    for(let i=1;i<gaps.length-1;i++){
+      const k=gaps[i-1]+"_"+gaps[i];
+      if(!tr[k])tr[k]={};
+      tr[k][gaps[i+1]]=(tr[k][gaps[i+1]]||0)+1;
+    }
+    const lastK=gaps[gaps.length-2]+"_"+gaps[gaps.length-1];
+    if(!tr[lastK])return[s[s.length-1]];
+    const bestGap=parseInt(Object.entries(tr[lastK]).sort((a,b)=>b[1]-a[1])[0][0]);
+    return[M.mod(s[s.length-1]+bestGap)];
+  },
+  EntropyAdapt:   s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const w=s.slice(-8);
+    const freq={};w.forEach(v=>{freq[v]=(freq[v]||0)+1;});
+    const probs=Object.values(freq).map(c=>c/w.length);
+    const entropy=-probs.reduce((sum,p)=>sum+p*Math.log2(p+1e-10),0);
+    if(entropy>3.2){
+      // high entropy: use frequency
+      const f={};s.forEach((v,i)=>{f[v]=(f[v]||0)+Math.pow(1.4,i);});
+      return[parseInt(Object.entries(f).sort((a,b)=>b[1]-a[1])[0][0])];
+    }
+    // low entropy: use linear fit
+    const n=s.length;let sx=0,sy=0,sxy=0,sx2=0;
+    s.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});
+    const D=n*sx2-sx*sx;if(!D)return[s[n-1]];
+    const a=(n*sxy-sx*sy)/D,b=(sy-a*sx)/n;
+    return[M.mod(Math.round(a*n+b))];
+  },
+  FreqMomentum:   s=>{
+    if(s.length<8)return[s[s.length-1]];
+    const half=Math.floor(s.length/2);
+    const old=s.slice(0,half),rec=s.slice(half);
+    const fOld={},fRec={};
+    old.forEach(v=>{fOld[v]=(fOld[v]||0)+1;});
+    rec.forEach(v=>{fRec[v]=(fRec[v]||0)+1;});
+    const rising={};
+    Object.keys(fRec).forEach(v=>{
+      const growth=(fRec[v]||0)-(fOld[v]||0);
+      if(growth>0)rising[v]=growth;
+    });
+    if(!Object.keys(rising).length)return[s[s.length-1]];
+    return[parseInt(Object.entries(rising).sort((a,b)=>b[1]-a[1])[0][0])];
+  },
+  SequenceHash:   s=>{
+    if(s.length<5)return[s[s.length-1]];
+    const key=s.slice(-4).join(",");
+    const hist={};
+    for(let i=3;i<s.length-1;i++){
+      const k=s.slice(i-3,i+1).join(",");
+      if(!hist[k])hist[k]={};
+      hist[k][s[i+1]]=(hist[k][s[i+1]]||0)+1;
+    }
+    if(!hist[key])return[s[s.length-1]];
+    return Object.entries(hist[key]).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([v])=>parseInt(v));
+  },
+  DiffSeriesLin:  s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const diffs=[];
+    for(let i=1;i<s.length;i++){let d=s[i]-s[i-1];if(d>50)d-=100;if(d<-50)d+=100;diffs.push(d);}
+    const n=diffs.length;let sx=0,sy=0,sxy=0,sx2=0;
+    diffs.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});
+    const D=n*sx2-sx*sx;
+    const nextDiff=D?Math.round((n*sxy-sx*sy)/D*n+(sy-(n*sxy-sx*sy)/D*sx)/n):diffs[n-1];
+    return[M.mod(s[s.length-1]+nextDiff)];
+  },
+  ValueCluster:   s=>{
+    if(s.length<6)return[s[s.length-1]];
+    // k=4 cluster centers: 12,37,62,87
+    const centers=[12,37,62,87];
+    const last=s[s.length-1];
+    const ci=centers.reduce((bi,c,i)=>M.cd(last,c)<M.cd(last,centers[bi])?i:bi,0);
+    // find which cluster follows ci most often
+    const trans={};
+    for(let i=0;i<s.length-1;i++){
+      const fc=centers.reduce((bi,c,ix)=>M.cd(s[i],c)<M.cd(s[i],centers[bi])?ix:bi,0);
+      const tc=centers.reduce((bi,c,ix)=>M.cd(s[i+1],c)<M.cd(s[i+1],centers[bi])?ix:bi,0);
+      trans[fc]=trans[fc]||{};
+      trans[fc][tc]=(trans[fc][tc]||0)+1;
+    }
+    if(!trans[ci])return[centers[ci]];
+    const nextCi=parseInt(Object.entries(trans[ci]).sort((a,b)=>b[1]-a[1])[0][0]);
+    return[centers[nextCi]];
+  },
+  SumConstraint:  s=>{
+    if(s.length<5)return[s[s.length-1]];
+    const avg=M.mean(s);
+    const std=M.std(s);
+    // predict within 1 std of historical mean
+    const lo=Math.max(0,Math.round(avg-std));
+    const hi=Math.min(99,Math.round(avg+std));
+    const mid=Math.round((lo+hi)/2);
+    const last=s[s.length-1];
+    if(last<lo)return[M.mod(lo+Math.round((hi-lo)*0.25))];
+    if(last>hi)return[M.mod(hi-Math.round((hi-lo)*0.25))];
+    let g=last-s[s.length-2];if(g>50)g-=100;if(g<-50)g+=100;
+    return[M.mod(last+Math.round(g*0.5))];
+  },
 };
+
 console.log("Algo count:",Object.keys(A).length);
 
 // ── CROSS-COL ──────────────────────────────────
@@ -204,6 +321,7 @@ function predictCol(col,data,W,customs){
   const series=getSeries(col,data);
   if(series.length<3)return null;
   const gw=W.global||{},rw=W.perRow||{},rnw=W.perRange||{};
+  const ns=W.neuralScores||{};  // neural running scores
   const maxRow=data.length?Math.max(...data.map(r=>r.row)):1;
   const predRow=maxRow>=31?1:maxRow+1;
   const curRange=Math.floor((series[series.length-1]||0)/25);
@@ -228,7 +346,10 @@ function predictCol(col,data,W,customs){
       const lw=gw[name]!=null?gw[name]:1;
       const rowW=rw[predRow]?rw[predRow][name]!=null?rw[predRow][name]:1:1;
       const ranW=rnw[curRange]?rnw[curRange][name]!=null?rnw[curRange][name]:1:1;
-      const w=(0.15+bt*4.0)*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*regimeMult(name);
+      // Neural score boost: positive running score boosts, negative penalises
+      const nScore=ns[name]!=null?ns[name]:0;
+      const nMult=nScore>1?1.5:nScore>0?1.2:nScore<-0.5?0.6:1.0;
+      const w=(0.15+bt*4.0)*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*regimeMult(name)*nMult;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
       details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin"};
@@ -258,6 +379,23 @@ function predictCol(col,data,W,customs){
   const total=Object.values(votes).reduce((a,b)=>a+b,0)||1;
   const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,5)
     .map(([v,vt])=>({value:parseInt(v),votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:contrib[v]||[]}));
+  // ── CONSENSUS FILTER: boost values agreed by 3+ independent algos ──
+  const algoAgreement={};
+  Object.values(details).forEach(info=>{
+    const v=info.pred!=null?M.mod(Math.round(info.pred)):-1;
+    if(v>=0)algoAgreement[v]=(algoAgreement[v]||0)+1;
+  });
+  // Re-boost values with high agreement
+  Object.entries(algoAgreement).forEach(([v,cnt])=>{
+    if(cnt>=4&&votes[parseInt(v)])votes[parseInt(v)]*=1+(cnt-3)*0.15;
+  });
+
+  // ── HISTORICAL FREQ FILTER: down-vote values that never appeared ──
+  const histValues=new Set(series);
+  Object.keys(votes).forEach(v=>{
+    if(!histValues.has(parseInt(v)))votes[parseInt(v)]*=0.4;
+  });
+
   const ac=Object.keys(details).length;
   const consensus=top5[0]?Math.round(top5[0].algos.length/ac*100):0;
   const t1pct=top5[0]?top5[0].pct:0;
@@ -268,6 +406,37 @@ function predictCol(col,data,W,customs){
   const lo=sAllP[Math.floor(sAllP.length*0.1)]||top5[0]?.value||0;
   const hi=sAllP[Math.floor(sAllP.length*0.9)]||top5[0]?.value||0;
   return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,bandLo:lo,bandHi:hi};
+}
+
+// ── NEURAL RUNNING SCORE (per-algo accuracy tracker) ──
+function updateNeuralScores(pred,actual,prevScores){
+  const next={...prevScores};
+  if(!pred)return next;
+  Object.entries(pred.details).forEach(([name,info])=>{
+    if(!ok(info.pred))return;
+    const p=M.mod(Math.round(info.pred));
+    const ex=p===actual;
+    const nr=!ex&&M.near(p,actual,2);
+    const reward=ex?3:nr?1:-0.5;
+    const prev=next[name]!=null?next[name]:0;
+    // exponential moving average: 80% old, 20% new
+    next[name]=+(0.8*prev+0.2*reward).toFixed(3);
+  });
+  return next;
+}
+
+// ── CALIBRATION TRACKER ─────────────────────────
+function updateCalibration(conf,wasExact,prevCal){
+  const cal={...prevCal};
+  if(!cal[conf])cal[conf]={right:0,total:0};
+  cal[conf].total++;
+  if(wasExact)cal[conf].right++;
+  return cal;
+}
+function getCalibrationLabel(conf,cal){
+  if(!cal||!cal[conf]||cal[conf].total<3)return conf;
+  const rate=Math.round(cal[conf].right/cal[conf].total*100);
+  return conf+"("+rate+"%)";
 }
 
 // ── WEIGHT UPDATE ──────────────────────────────
@@ -294,7 +463,7 @@ function updateW(pred,actual,W,predRow){
     const rn=rnw[cr][name]!=null?rnw[cr][name]:1;
     rnw[cr][name]=Math.min(5,Math.max(0.05,rn*mult));
   });
-  return{global:gw,perRow:rw,perRange:rnw};
+  return{global:gw,perRow:rw,perRange:rnw,neuralScores:updateNeuralScores(pred,actual,W.neuralScores||{})};
 }
 
 // ── ADAPTIVE ALGO GENERATOR ────────────────────
@@ -358,17 +527,17 @@ function doExportCSV(data,preds,predRow){
     pLine="\n"+pad2(predRow)+","+(ok(pa)?pad2(pa):"?")+","+(ok(pb)?pad2(pb):"?")+","+(ok(pc)?pad2(pc):"?")+","+(ok(pd)?pad2(pd):"?")+" (PRED)";
   }
   const blob=new Blob(["Row,A,B,C,D\n"+rows+pLine],{type:"text/csv"});
-  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v8-"+Date.now()+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v9-"+Date.now()+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 function doExportJSON(state){
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
-  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v8-backup-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v9-backup-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 
 // ── WEIGHTS IMPORT/EXPORT ─────────────────────
 function doExportWeights(state){
   const payload={
-    version:"ape-v8-weights",
+    version:"ape-v9-weights",
     exportedAt:new Date().toISOString(),
     weights:state.weights,
     customs:state.customs,
@@ -376,12 +545,12 @@ function doExportWeights(state){
   };
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");
-  a.href=url;a.download="ape-v8-weights-"+Date.now()+".json";
+  a.href=url;a.download="ape-v9-weights-"+Date.now()+".json";
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 function parseImportedWeights(parsed){
   // Accept both full state backup and weights-only export
-  if(parsed.version==="ape-v8-weights"||parsed.version==="ape-v7-weights"){
+  if(parsed.version==="ape-v9-weights"||parsed.version==="ape-v7-weights"){
     return{weights:parsed.weights,customs:parsed.customs||[],accLog:parsed.accLog||[]};
   }
   // Full state backup
@@ -392,14 +561,15 @@ function parseImportedWeights(parsed){
 }
 
 // ── STORAGE ────────────────────────────────────
-const SK="ape-v8";
+const SK="ape-v9";
 async function saveS(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}
 async function loadS(){try{const r=localStorage.getItem(SK);return r?JSON.parse(r):null;}catch(e){return null;}}
 function fresh(){
   return{
     datasets:{def:{name:"Dataset 1",rows:[]}},
     active:"def",
-    weights:{A:{global:{},perRow:{},perRange:{}},B:{global:{},perRow:{},perRange:{}},C:{global:{},perRow:{},perRange:{}},D:{global:{},perRow:{},perRange:{}}},
+    weights:{A:{global:{},perRow:{},perRange:{},neuralScores:{}},B:{global:{},perRow:{},perRange:{},neuralScores:{}},C:{global:{},perRow:{},perRange:{},neuralScores:{}},D:{global:{},perRow:{},perRange:{},neuralScores:{}}},
+    calibration:{A:{},B:{},C:{},D:{}},
     customs:[],accLog:[],preds:null,predRow:null,genN:0,tourN:0
   };
 }
@@ -426,6 +596,7 @@ export default function App(){
   const[dsName,setDsName]=useState("");
   const[copyMsg,setCopyMsg]=useState("");
   const[weightsMsg,setWeightsMsg]=useState("");
+  const[showCalib,setShowCalib]=useState(false);
 
   const st=(t,c)=>setMsg({t,c:c||"ok"});
 
@@ -452,7 +623,9 @@ export default function App(){
       if(saved){
         if(saved.dataset&&!saved.datasets){saved.datasets={def:{name:"Dataset 1",rows:saved.dataset}};saved.active="def";delete saved.dataset;}
         if(!saved.active)saved.active="def";
-        if(!saved.weights||!saved.weights.A||!saved.weights.A.global)saved.weights={A:{global:{},perRow:{},perRange:{}},B:{global:{},perRow:{},perRange:{}},C:{global:{},perRow:{},perRange:{}},D:{global:{},perRow:{},perRange:{}}};
+        if(!saved.weights||!saved.weights.A||!saved.weights.A.global)saved.weights={A:{global:{},perRow:{},perRange:{},neuralScores:{}},B:{global:{},perRow:{},perRange:{},neuralScores:{}},C:{global:{},perRow:{},perRange:{},neuralScores:{}},D:{global:{},perRow:{},perRange:{},neuralScores:{}}};
+        COLS.forEach(col=>{if(!saved.weights[col].neuralScores)saved.weights[col].neuralScores={};});
+        if(!saved.calibration)saved.calibration={A:{},B:{},C:{},D:{}};
         if(!saved.customs)saved.customs=[];
         if(!saved.genN)saved.genN=0;
         if(!saved.tourN)saved.tourN=0;
@@ -567,9 +740,14 @@ export default function App(){
     setCheckRes(results);
     upd(prev=>{
       const nw={...prev.weights};
-      COLS.forEach(col=>{nw[col]=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow);});
+      const nc={...prev.calibration||{A:{},B:{},C:{},D:{}}};
+      COLS.forEach(col=>{
+        nw[col]=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow);
+        const pred=prev.preds[col];
+        if(pred)nc[col]=updateCalibration(pred.conf,actuals[col]===pred.top5[0]?.value,nc[col]||{});
+      });
       const entry={at:new Date().toISOString(),targetRow:prev.predRow,preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]&&prev.preds[c].top5[0]?prev.preds[c].top5[0].value:null])),actuals,results,exactCount};
-      return{...prev,weights:nw,accLog:[...(prev.accLog||[]).slice(-99),entry]};
+      return{...prev,weights:nw,calibration:nc,accLog:[...(prev.accLog||[]).slice(-99),entry]};
     });
     st("Learned! "+exactCount+"/4 exact — weights saved ✓");
   }
@@ -645,8 +823,8 @@ export default function App(){
 
         <div style={{textAlign:"center",padding:"18px 0 10px"}}>
           <div style={{fontSize:9,letterSpacing:5,color:"#252840",marginBottom:5,textTransform:"uppercase"}}>Self-Learning · Adaptive · Prediction · Engine</div>
-          <div style={{fontSize:"clamp(28px,6vw,48px)",fontWeight:900,letterSpacing:-2,lineHeight:1,background:"linear-gradient(135deg,#a78bfa,#c4b5fd 35%,#34d399 70%,#6ee7b7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>APE v8</div>
-          <div style={{fontSize:9,color:"#252840",marginTop:4}}>{Object.keys(A).length} built-in + cross-col + {customs.length} custom · Pseudo-RNG algos · PatternMemBank · Bayesian · regime · per-row · per-range</div>
+          <div style={{fontSize:"clamp(28px,6vw,48px)",fontWeight:900,letterSpacing:-2,lineHeight:1,background:"linear-gradient(135deg,#a78bfa,#c4b5fd 35%,#34d399 70%,#6ee7b7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>APE v9</div>
+          <div style={{fontSize:9,color:"#252840",marginTop:4}}>{Object.keys(A).length} built-in + cross-col + {customs.length} custom · Neural scores · Calibration · Consensus filter · DeepMarkov4 · GapMarkov</div>
           {accLog.length>0&&<div style={{marginTop:8,display:"inline-flex",gap:8,alignItems:"center",background:"rgba(52,211,153,.07)",border:"1px solid rgba(52,211,153,.18)",borderRadius:99,padding:"3px 14px",fontSize:10,color:"#34d399"}}>🧠 {accLog.length} sessions · {overallPct}% exact · {customs.length} algos</div>}
         </div>
 
@@ -745,9 +923,9 @@ export default function App(){
                   <div style={{fontSize:20,fontWeight:700}}>{S.preds.A?S.preds.A.algoCount:0}</div>
                 </div>
                 <button onClick={()=>{
-                  const lines=["APE v8 — Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36)];
+                  const lines=["APE v9 — Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36)];
                   COLS.forEach(col=>{const t=S.preds[col]?S.preds[col].top5:[];lines.push("Col "+col+": "+t.map((p,i)=>(i===0?"▶":"")+pad2(p.value)+"("+p.pct+"%)").join("  "));});
-                  lines.push("─".repeat(36),"Generated by APE v8");
+                  lines.push("─".repeat(36),"Generated by APE v9");
                   navigator.clipboard&&navigator.clipboard.writeText(lines.join("\n")).catch(()=>{});
                   setCopyMsg("Copied!");setTimeout(()=>setCopyMsg(""),2000);
                 }} style={{background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.3)",color:"#a78bfa",padding:"5px 10px",borderRadius:6,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>{copyMsg||"📋 Copy"}</button>
@@ -861,6 +1039,26 @@ export default function App(){
                 <div style={{fontSize:22,fontWeight:900,color:streaks[col]>=3?"#34d399":streaks[col]>=2?"#fbbf24":"#4a4e6a"}}>{streaks[col]}</div>
                 <div style={{fontSize:9,color:"#2d3158"}}>exact in a row</div>
               </div>)}
+            </div>
+          </Card>}
+
+          {S.calibration&&Object.values(S.calibration).some(c=>Object.values(c).some(x=>x.total>=3))&&<Card style={{marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <SL style={{margin:0}}>🎯 Confidence Calibration</SL>
+              <span style={{fontSize:9,color:"#4a4e6a"}}>How accurate are HIGH/MED/LOW labels?</span>
+            </div>
+            <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+              {COLS.map(col=><CalibCol key={col} col={col} cal={S.calibration[col]||{}}/>)}
+            </div>
+          </Card>}
+
+          {accLog.length>0&&<Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <SL style={{margin:0}}>🧠 Neural Scores — Top Algos</SL>
+              <span style={{fontSize:9,color:"#4a4e6a"}}>Running accuracy (positive = good)</span>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:10}}>
+              {COLS.map(col=><NeuralScoreCol key={col} col={col} scores={S.weights[col]?S.weights[col].neuralScores||{}:{}}/>)}
             </div>
           </Card>}
         </div>}
@@ -983,7 +1181,17 @@ export default function App(){
               <b style={{color:"#c8d0e8"}}>ModSearch:</b> brute-forces best (v mod k) + offset pattern<br/>
               <b style={{color:"#c8d0e8"}}>XorChain:</b> multi-step XOR across lag positions<br/>
               <b style={{color:"#c8d0e8"}}>PolyCong:</b> quadratic congruential fitting (ax²+bx+c)<br/>
-              <b style={{color:"#c8d0e8"}}>Weight Export:</b> save all training progress to file, import on any device — no retraining ever needed
+              <b style={{color:"#c8d0e8"}}>Weight Export:</b> save all training progress to file, import on any device — no retraining ever needed<br/>
+              <b style={{color:"#c8d0e8"}}>DeepMarkov4:</b> 4-gram context window — finds what follows exact 4-value sequences<br/>
+              <b style={{color:"#c8d0e8"}}>GapMarkov:</b> Markov chain on DIFFERENCES — gaps often repeat even when values don't<br/>
+              <b style={{color:"#c8d0e8"}}>EntropyAdapt:</b> measures series entropy, auto-switches between frequency and linear<br/>
+              <b style={{color:"#c8d0e8"}}>FreqMomentum:</b> finds values rising in frequency — predicts what's trending up<br/>
+              <b style={{color:"#c8d0e8"}}>SequenceHash:</b> exact 4-value sequence lookup in history<br/>
+              <b style={{color:"#c8d0e8"}}>ValueCluster:</b> k=4 cluster Markov — which cluster follows which<br/>
+              <b style={{color:"#c8d0e8"}}>ConsensusFilter:</b> values agreed by 4+ algos get 15% vote boost per extra agreement<br/>
+              <b style={{color:"#c8d0e8"}}>HistFreqFilter:</b> values never seen in training get 60% vote penalty<br/>
+              <b style={{color:"#c8d0e8"}}>Neural Scores:</b> EMA running accuracy per algo — good algos compound, bad ones fade<br/>
+              <b style={{color:"#c8d0e8"}}>Calibration:</b> tracks HIGH/MED/LOW confidence actual accuracy over sessions
             </div>
           </Card>
         </div>}
@@ -1053,6 +1261,40 @@ function HotColdCol(p){
       <span style={{fontSize:9,color:"#a78bfa",display:"block",marginBottom:2}}>🧊 Cold</span>
       {cold.map(([v,c])=><span key={v} style={{display:"inline-block",background:"rgba(167,139,250,.06)",border:"1px solid rgba(167,139,250,.15)",borderRadius:4,padding:"2px 5px",fontSize:10,color:"#a78bfa",margin:"1px",fontWeight:700}}>{pad2(parseInt(v))}<span style={{fontSize:8,color:"#a78bfaaa"}}>×{c}</span></span>)}
     </div>
+  </div>;
+}
+function CalibCol(p){
+  const cal=p.cal;
+  const levels=["HIGH","MED","LOW"];
+  return <div>
+    <div style={{fontSize:9,color:CLR[p.col],letterSpacing:2,marginBottom:6}}>{p.col}</div>
+    {levels.map(lv=>{
+      const d=cal[lv];
+      if(!d||d.total<3)return null;
+      const rate=Math.round(d.right/d.total*100);
+      const clr=rate>50?"#34d399":rate>25?"#fbbf24":"#f87171";
+      return <div key={lv} style={{display:"flex",gap:6,alignItems:"center",marginBottom:4}}>
+        <span style={{fontSize:9,color:"#4a4e6a",minWidth:30}}>{lv}</span>
+        <div style={{flex:1,height:4,background:"#1a1e35",borderRadius:99}}>
+          <div style={{height:"100%",width:rate+"%",background:clr,borderRadius:99}}/>
+        </div>
+        <span style={{fontSize:9,color:clr,minWidth:32,textAlign:"right"}}>{rate}% ({d.total})</span>
+      </div>;
+    })}
+  </div>;
+}
+function NeuralScoreCol(p){
+  const entries=Object.entries(p.scores).filter(([k])=>!k.startsWith("_")).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  if(!entries.length)return <div style={{fontSize:9,color:"#2d3158"}}>No data yet</div>;
+  return <div>
+    <div style={{fontSize:9,color:CLR[p.col],letterSpacing:2,marginBottom:6}}>{p.col}</div>
+    {entries.map(([name,score])=>{
+      const clr=score>1?"#34d399":score>0?"#a78bfa":score<-0.5?"#f87171":"#4a4e6a";
+      return <div key={name} style={{display:"flex",gap:5,alignItems:"center",marginBottom:3}}>
+        <span style={{fontSize:9,color:"#4a4e6a",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
+        <span style={{fontSize:9,color:clr,fontWeight:700,minWidth:36,textAlign:"right"}}>{score>0?"+":""}{score.toFixed(2)}</span>
+      </div>;
+    })}
   </div>;
 }
 function CorrCell(p){
