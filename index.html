@@ -1,0 +1,1829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>APE — Adaptive Prediction Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+/* ── DESIGN TOKENS ─────────────────────────────── */
+:root {
+  --ink:    #07080d;
+  --paper:  #0e1018;
+  --panel:  #141720;
+  --line:   #1e2336;
+  --dim:    #2a3050;
+  --muted:  #4a5580;
+  --soft:   #8892b0;
+  --text:   #cdd6f4;
+  --hi:     #e2e8ff;
+  --A:      #7c6dfa;   /* violet */
+  --B:      #3dd68c;   /* emerald */
+  --C:      #f5a623;   /* amber */
+  --D:      #f25f5c;   /* red */
+  --glow-A: rgba(124,109,250,0.18);
+  --glow-B: rgba(61,214,140,0.15);
+  --glow-C: rgba(245,166,35,0.15);
+  --glow-D: rgba(242,95,92,0.15);
+  --mono: 'Space Mono', monospace;
+  --sans: 'Syne', sans-serif;
+  --r: 10px;
+  --r-sm: 6px;
+}
+
+/* ── RESET ─────────────────────────────────────── */
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── GRID NOISE BACKGROUND ─────────────────────── */
+body::before {
+  content:'';
+  position:fixed;
+  inset:0;
+  background-image:
+    linear-gradient(rgba(124,109,250,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(124,109,250,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events:none;
+  z-index:0;
+}
+
+.wrap { position:relative; z-index:1; max-width:1120px; margin:0 auto; padding:16px 16px 80px; }
+
+/* ── HEADER ────────────────────────────────────── */
+.header {
+  text-align: center;
+  padding: 32px 0 24px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
+}
+.header-eye {
+  font-size: 11px;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-bottom: 8px;
+}
+.header h1 {
+  font-family: var(--sans);
+  font-size: clamp(24px, 5vw, 42px);
+  font-weight: 800;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--A) 0%, #b8b1ff 40%, var(--B) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: -1px;
+}
+.header p {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+  margin-top: 8px;
+}
+
+/* ── CARDS ─────────────────────────────────────── */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 18px;
+  margin-bottom: 14px;
+  position: relative;
+  overflow: hidden;
+}
+.card::before {
+  content:'';
+  position:absolute;
+  top:0; left:0; right:0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--A), transparent);
+  opacity: 0.4;
+}
+.card-title {
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-title::after {
+  content:'';
+  flex:1;
+  height:1px;
+  background: var(--line);
+}
+
+/* ── GRID HELPERS ──────────────────────────────── */
+.g2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.g4 { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+.row { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; }
+@media(max-width:640px) {
+  .g2,.g4 { grid-template-columns:1fr 1fr; }
+  .g4 { grid-template-columns:repeat(2,1fr); }
+}
+
+/* ── FORM ELEMENTS ─────────────────────────────── */
+label {
+  display:block;
+  font-size:10px;
+  letter-spacing:2px;
+  text-transform:uppercase;
+  color:var(--muted);
+  font-family:var(--mono);
+  margin-bottom:5px;
+}
+input[type=text], input[type=number], textarea, select {
+  background: var(--ink);
+  border: 1px solid var(--dim);
+  color: var(--text);
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  font-family: var(--mono);
+  width: 100%;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  outline: none;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--A);
+  box-shadow: 0 0 0 3px var(--glow-A);
+}
+input[type=number] { -moz-appearance: textfield; }
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+
+/* ── BUTTONS ───────────────────────────────────── */
+button {
+  border: none;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 10px 18px;
+  border-radius: var(--r-sm);
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-a { background: var(--A); color: #fff; }
+.btn-a:hover { background: #6a5ce8; transform: translateY(-1px); box-shadow: 0 4px 20px var(--glow-A); }
+.btn-b { background: var(--B); color: #0a1a12; }
+.btn-b:hover { background: #30c47e; transform: translateY(-1px); box-shadow: 0 4px 20px var(--glow-B); }
+.btn-c { background: var(--C); color: #1a1000; }
+.btn-c:hover { background: #e09500; }
+.btn-d { background: var(--D); color: #fff; }
+.btn-d:hover { background: #e04340; }
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--dim);
+  color: var(--soft);
+}
+.btn-ghost:hover { border-color: var(--A); color: var(--A); }
+.btn-sm { padding: 7px 12px; font-size: 11px; }
+.btn-xs { padding: 4px 9px; font-size: 10px; }
+
+/* ── BADGES ────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-family: var(--mono);
+  font-weight: 700;
+}
+.badge-A { background: var(--glow-A); color: var(--A); border:1px solid rgba(124,109,250,0.3); }
+.badge-B { background: var(--glow-B); color: var(--B); border:1px solid rgba(61,214,140,0.25); }
+.badge-C { background: var(--glow-C); color: var(--C); border:1px solid rgba(245,166,35,0.25); }
+.badge-D { background: var(--glow-D); color: var(--D); border:1px solid rgba(242,95,92,0.25); }
+.chip {
+  display: inline-block;
+  padding: 1px 7px;
+  background: var(--dim);
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--soft);
+  font-family: var(--mono);
+  margin: 1px;
+}
+
+/* ── TABLE ─────────────────────────────────────── */
+.tbl-wrap { overflow-x: auto; max-height: 280px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; }
+th { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:1.5px; padding:6px 10px; text-align:left; position:sticky; top:0; background:var(--panel); border-bottom:1px solid var(--line); }
+td { padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+tr:hover td { background: rgba(124,109,250,0.04); }
+tr:last-child td { border-bottom: none; }
+
+/* ── PREDICTION CARDS ──────────────────────────── */
+.pred-panel {
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 14px;
+  position: relative;
+  overflow: hidden;
+}
+.pred-panel.col-A { border-top: 2px solid var(--A); }
+.pred-panel.col-B { border-top: 2px solid var(--B); }
+.pred-panel.col-C { border-top: 2px solid var(--C); }
+.pred-panel.col-D { border-top: 2px solid var(--D); }
+.pred-col-label { font-size: 28px; font-weight: 800; font-family: var(--sans); margin-bottom: 10px; }
+.pred-row { display:flex; align-items:center; gap:8px; padding:3px 0; }
+.pred-val { font-family:var(--mono); font-size:17px; font-weight:700; min-width:30px; }
+.pred-bar-bg { flex:1; height:5px; background:var(--dim); border-radius:3px; overflow:hidden; }
+.pred-bar-fg { height:100%; border-radius:3px; transition: width 0.6s cubic-bezier(.23,1,.32,1); }
+.pred-pct { font-family:var(--mono); font-size:11px; color:var(--muted); min-width:32px; text-align:right; }
+.pred-top-tag { font-size:9px; color:var(--muted); font-family:var(--mono); margin-top:2px; margin-bottom:6px; opacity:0.8; }
+
+/* ── LEADERBOARD ───────────────────────────────── */
+.lb-bar { display:flex; align-items:center; gap:6px; width:80px; }
+.lb-bar-bg { flex:1; height:4px; background:var(--dim); border-radius:2px; overflow:hidden; }
+.lb-bar-fill { height:100%; border-radius:2px; background:var(--A); }
+
+/* ── STATUS BAR ────────────────────────────────── */
+#statusBar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  z-index: 100;
+  gap: 12px;
+}
+#statusDot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+#statusDot.ok { background: var(--B); box-shadow: 0 0 6px var(--B); }
+#statusDot.warn { background: var(--C); box-shadow: 0 0 6px var(--C); }
+#statusDot.err { background: var(--D); box-shadow: 0 0 6px var(--D); }
+#statusDot.busy {
+  background: var(--A);
+  animation: pulse 0.8s ease-in-out infinite alternate;
+}
+@keyframes pulse { to { box-shadow: 0 0 10px var(--A); } }
+
+/* ── DETAILS ───────────────────────────────────── */
+details { margin-top: 8px; }
+summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--A);
+  font-family: var(--mono);
+  padding: 6px 0;
+  user-select: none;
+  list-style: none;
+}
+summary::before { content: '▸ '; }
+details[open] summary::before { content: '▾ '; }
+.details-body { padding: 10px 0 4px; }
+
+/* ── INSIGHT BOX ───────────────────────────────── */
+.insight-box {
+  background: rgba(124,109,250,0.06);
+  border: 1px solid rgba(124,109,250,0.2);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--soft);
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+
+/* ── PROGRESS ──────────────────────────────────── */
+.mini-progress { height:3px; background:var(--dim); border-radius:2px; overflow:hidden; margin-top:4px; }
+.mini-progress-fill { height:100%; background:linear-gradient(90deg,var(--A),var(--B)); border-radius:2px; transition:width 0.4s; }
+
+/* ── MISC ──────────────────────────────────────── */
+.hidden { display:none !important; }
+a { color:var(--A); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.mono { font-family:var(--mono); }
+.text-muted { color:var(--muted); }
+.text-sm { font-size:12px; }
+hr { border:none; border-top:1px solid var(--line); margin:12px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ── HEADER ─────────────────────────────── -->
+<div class="header">
+  <div class="header-eye">Adaptive · Prediction · Engine</div>
+  <h1>APE v2.0</h1>
+  <p>multi-algorithm · self-learning · cloud-synced · mod-100 prediction</p>
+</div>
+
+<!-- ── CLOUD CONFIG ────────────────────────── -->
+<div class="card">
+  <div class="card-title">☁ Cloud Storage — JSONBin.io</div>
+  <div class="g2" style="margin-bottom:10px;">
+    <div>
+      <label>Master API Key</label>
+      <input type="text" id="cfgKey" placeholder="$2b$10$xxxxxxxxxxxxxxx" autocomplete="off">
+    </div>
+    <div>
+      <label>Bin ID (auto-created on first save)</label>
+      <input type="text" id="cfgBin" placeholder="Leave blank → auto-create">
+    </div>
+  </div>
+  <div class="row">
+    <button class="btn-a btn-sm" onclick="saveConfig()">💾 Save Config</button>
+    <button class="btn-ghost btn-sm" onclick="loadFromCloud()">↓ Load Cloud</button>
+    <button class="btn-ghost btn-sm" onclick="pushToCloud()">↑ Push Cloud</button>
+    <span id="cloudMsg" class="text-sm text-muted mono" style="align-self:center;"></span>
+  </div>
+  <div class="text-sm text-muted mono" style="margin-top:10px; line-height:1.7;">
+    Free setup → <a href="https://jsonbin.io" target="_blank">jsonbin.io</a> → Register → API Keys → Copy Master Key.
+    All training data + model weights saved permanently. Never deleted.
+  </div>
+</div>
+
+<!-- ── DATASET MANAGER ─────────────────────── -->
+<div class="card">
+  <div class="card-title">📊 Dataset Manager</div>
+
+  <!-- Row Entry -->
+  <div class="row" style="margin-bottom:12px;">
+    <div style="flex:0 0 auto;">
+      <label>Row # (01–31)</label>
+      <input type="number" id="rowNum" min="1" max="31" value="1" style="width:70px;">
+    </div>
+    <div style="flex:0 0 auto;">
+      <label>A</label>
+      <input type="number" id="inA" min="0" max="99" style="width:58px;" placeholder="00">
+    </div>
+    <div style="flex:0 0 auto;">
+      <label>B</label>
+      <input type="number" id="inB" min="0" max="99" style="width:58px;" placeholder="00">
+    </div>
+    <div style="flex:0 0 auto;">
+      <label>C</label>
+      <input type="number" id="inC" min="0" max="99" style="width:58px;" placeholder="00">
+    </div>
+    <div style="flex:0 0 auto;">
+      <label>D</label>
+      <input type="number" id="inD" min="0" max="99" style="width:58px;" placeholder="00">
+    </div>
+    <div style="flex:0 0 auto; display:flex; gap:6px;">
+      <button class="btn-b btn-sm" onclick="addRow()">＋ Add</button>
+      <button class="btn-ghost btn-sm" onclick="autoDate()">📅 Today</button>
+    </div>
+  </div>
+
+  <!-- API Row Fetch -->
+  <details>
+    <summary>🌐 Fetch Row # from API / Date Source</summary>
+    <div class="details-body">
+      <div class="g2" style="margin-bottom:8px;">
+        <div>
+          <label>API URL (returns JSON with {row} or {date})</label>
+          <input type="text" id="apiUrl" placeholder="https://your-api.com/current-row">
+        </div>
+        <div>
+          <label>JSON Field Name</label>
+          <input type="text" id="apiField" value="row" style="width:100px;">
+        </div>
+      </div>
+      <button class="btn-ghost btn-sm" onclick="fetchRowFromAPI()">Fetch Row #</button>
+      <span class="text-sm text-muted mono" style="margin-left:8px;">or auto-uses today's date (1–31)</span>
+    </div>
+  </details>
+
+  <!-- Bulk Import -->
+  <details>
+    <summary>📋 Bulk Paste Import (CSV: row,A,B,C,D per line)</summary>
+    <div class="details-body">
+      <textarea id="bulkInput" rows="5" style="font-size:12px;" placeholder="1,23,45,67,89&#10;2,34,56,78,90&#10;3,11,22,33,44"></textarea>
+      <div style="margin-top:6px; display:flex; gap:6px;">
+        <button class="btn-ghost btn-sm" onclick="bulkImport()">Import CSV</button>
+        <button class="btn-ghost btn-sm" onclick="loadSampleData()">Load Sample Data</button>
+      </div>
+    </div>
+  </details>
+
+  <!-- Data Table -->
+  <div class="tbl-wrap" style="margin-top:14px;">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Row</th><th style="color:var(--A)">A</th><th style="color:var(--B)">B</th><th style="color:var(--C)">C</th><th style="color:var(--D)">D</th><th></th></tr>
+      </thead>
+      <tbody id="dataBody"></tbody>
+    </table>
+  </div>
+  <div id="dataInfo" class="text-sm text-muted mono" style="margin-top:8px;"></div>
+</div>
+
+<!-- ── ENGINE CONTROLS ─────────────────────── -->
+<div class="card">
+  <div class="card-title">⚡ Engine Controls</div>
+  <div class="row" style="gap:8px; flex-wrap:wrap;">
+    <button class="btn-a" onclick="runPredict()">🔮 Predict Next Row</button>
+    <button class="btn-b" onclick="trainModel()">🧠 Train Model</button>
+    <button class="btn-ghost btn-sm" onclick="resetModel()">♻ Reset Weights</button>
+    <button class="btn-ghost btn-sm" onclick="clearAll()">🗑 Clear All</button>
+    <button class="btn-ghost btn-sm" onclick="exportJSON()">↗ Export</button>
+  </div>
+  <div id="trainMeta" class="text-sm text-muted mono" style="margin-top:10px; line-height:1.8;"></div>
+</div>
+
+<!-- ── PREDICTIONS ────────────────────────── -->
+<div class="card hidden" id="predCard">
+  <div class="card-title">🎯 Predictions — Next Row</div>
+  <div id="insightBox" class="insight-box"></div>
+  <div class="g4" id="predGrid"></div>
+</div>
+
+<!-- ── ALGORITHM LEADERBOARD ──────────────── -->
+<div class="card hidden" id="lbCard">
+  <div class="card-title">🏆 Algorithm Leaderboard</div>
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr><th>Algorithm</th><th>Exact %</th><th>Near ±2%</th><th>Weight</th><th>Score</th></tr>
+      </thead>
+      <tbody id="lbBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── TRAINING LOG ───────────────────────── -->
+<div class="card hidden" id="histCard">
+  <div class="card-title">📈 Training Log</div>
+  <div id="histBody"></div>
+</div>
+
+<!-- ── FORMULA REFERENCE ───────────────────────── -->
+<div class="card" id="formulaCard">
+  <div class="card-title">🧮 Algorithm Formula Reference — All 23 Engines</div>
+  <div style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>Algorithm</th>
+          <th>Type</th>
+          <th>Formula / Logic</th>
+          <th>Signal Strength</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td colspan="4" style="color:var(--A); font-size:10px; padding:8px 10px; letter-spacing:2px; text-transform:uppercase;">── Intra-Column (single series) ──</td></tr>
+        <tr>
+          <td><span class="mono">Reverse</span></td>
+          <td><span class="chip">Deterministic</span></td>
+          <td class="mono" style="font-size:11px;">rev(n) → swap digits of last value</td>
+          <td>baseline</td>
+        </tr>
+        <tr>
+          <td><span class="mono">DigitSumTf</span></td>
+          <td><span class="chip">Deterministic</span></td>
+          <td class="mono" style="font-size:11px;">(n + d₁+d₂) % 100</td>
+          <td>baseline</td>
+        </tr>
+        <tr>
+          <td><span class="mono">ReverseSumTf</span></td>
+          <td><span class="chip">Deterministic</span></td>
+          <td class="mono" style="font-size:11px;">(n + rev(n)) % 100</td>
+          <td>baseline</td>
+        </tr>
+        <tr>
+          <td><span class="mono">MirrorDiff</span></td>
+          <td><span class="chip">Deterministic</span></td>
+          <td class="mono" style="font-size:11px;">|d₁ - d₂| × 11 % 100</td>
+          <td>digit gap</td>
+        </tr>
+        <tr>
+          <td><span class="mono">LinearTime</span></td>
+          <td><span class="chip">Modular Linear</span></td>
+          <td class="mono" style="font-size:11px;">(a×t + b) % 100 — fits time index</td>
+          <td>structured data</td>
+        </tr>
+        <tr>
+          <td><span class="mono">KShift</span></td>
+          <td><span class="chip">Modular Linear</span></td>
+          <td class="mono" style="font-size:11px;">last + weighted_avg(diffs) % 100</td>
+          <td>trending</td>
+        </tr>
+        <tr>
+          <td><span class="mono">Recurrence2</span></td>
+          <td><span class="chip">Recurrence</span></td>
+          <td class="mono" style="font-size:11px;">(a×n[i-1] + b×n[i-2] + c) % 100</td>
+          <td>2nd-order</td>
+        </tr>
+        <tr>
+          <td><span class="mono">Markov</span></td>
+          <td><span class="chip">Probabilistic</span></td>
+          <td class="mono" style="font-size:11px;">P(next|current) — transition matrix</td>
+          <td>state-based</td>
+        </tr>
+        <tr>
+          <td><span class="mono">FreqDecay</span></td>
+          <td><span class="chip">Probabilistic</span></td>
+          <td class="mono" style="font-size:11px;">freq × decayᵏ — recency-weighted count</td>
+          <td>repeaters</td>
+        </tr>
+        <tr>
+          <td><span class="mono">LCGFit</span></td>
+          <td><span class="chip">Generator Fit</span></td>
+          <td class="mono" style="font-size:11px;">X(n+1) = (a×X(n) + c) % 100 — best (a,c)</td>
+          <td>pseudo-random</td>
+        </tr>
+        <tr>
+          <td><span class="mono">CyclicPattern</span></td>
+          <td><span class="chip">Pattern Mining</span></td>
+          <td class="mono" style="font-size:11px;">Period detection p=2–10; n[i] ≈ n[i-p]</td>
+          <td>cyclic data</td>
+        </tr>
+        <tr>
+          <td><span class="mono">XorHeuristic</span></td>
+          <td><span class="chip">Heuristic</span></td>
+          <td class="mono" style="font-size:11px;">(d₁(n) XOR d₁(prev)) × 10 + (d₂ XOR d₂)</td>
+          <td>digit XOR</td>
+        </tr>
+        <tr>
+          <td><span class="mono">RollingMean</span></td>
+          <td><span class="chip">Statistical</span></td>
+          <td class="mono" style="font-size:11px;">round(mean(last w)) % 100, w∈{2,3,5}</td>
+          <td>smoothing</td>
+        </tr>
+        <tr>
+          <td><span class="mono">DigitalRoot</span></td>
+          <td><span class="chip">Heuristic</span></td>
+          <td class="mono" style="font-size:11px;">digital_root(n) × 11 % 100</td>
+          <td>baseline</td>
+        </tr>
+        <tr>
+          <td><span class="mono">CrossColumn</span></td>
+          <td><span class="chip">Cross-Col</span></td>
+          <td class="mono" style="font-size:11px;">(col[i] + ds(prevCol[i])) % 100</td>
+          <td>adj. col link</td>
+        </tr>
+
+        <tr><td colspan="4" style="color:var(--B); font-size:10px; padding:8px 10px; letter-spacing:2px; text-transform:uppercase;">── Cross-Column Interconnection (NEW — added from dataset analysis) ──</td></tr>
+
+        <tr style="background:rgba(61,214,140,0.04);">
+          <td><span class="mono" style="color:var(--B)">RowSumCascade</span></td>
+          <td><span class="chip" style="background:var(--glow-B);color:var(--B)">Cross-Row</span></td>
+          <td class="mono" style="font-size:11px;">(A+B+C+D)[i] % 100 → next candidate<br><span style="color:var(--muted)">Also: opposite-pair sum per col (A→C+D, B→A+D…)</span></td>
+          <td style="color:var(--B)">50% hit rate</td>
+        </tr>
+        <tr style="background:rgba(61,214,140,0.04);">
+          <td><span class="mono" style="color:var(--B)">CDmod</span></td>
+          <td><span class="chip" style="background:var(--glow-B);color:var(--B)">Cross-Col</span></td>
+          <td class="mono" style="font-size:11px;">(C + D)[i] % 100 → candidate for A or B<br><span style="color:var(--muted)">Confirmed: Row09 C+D=25=A[12], Row10 C+D=38=A[07]</span></td>
+          <td style="color:var(--B)">42% hit rate</td>
+        </tr>
+        <tr style="background:rgba(61,214,140,0.04);">
+          <td><span class="mono" style="color:var(--B)">ABmod</span></td>
+          <td><span class="chip" style="background:var(--glow-B);color:var(--B)">Cross-Col</span></td>
+          <td class="mono" style="font-size:11px;">(A + B)[i] % 100 → candidate for C or D<br><span style="color:var(--muted)">Confirmed: Row06 A+B=72=C[13], Row10 A+B=28=B[11]</span></td>
+          <td style="color:var(--C)">25% hit rate</td>
+        </tr>
+        <tr style="background:rgba(61,214,140,0.04);">
+          <td><span class="mono" style="color:var(--B)">BDmod</span></td>
+          <td><span class="chip" style="background:var(--glow-B);color:var(--B)">Cross-Col</span></td>
+          <td class="mono" style="font-size:11px;">(B + D)[i] % 100 → predictor for next row A<br><span style="color:var(--muted)">Best near-±5 predictor for A[i+1] (4 of 11 windows)</span></td>
+          <td style="color:var(--B)">near-5: 4/11</td>
+        </tr>
+        <tr style="background:rgba(61,214,140,0.04);">
+          <td><span class="mono" style="color:var(--B)">ValueEcho</span></td>
+          <td><span class="chip" style="background:var(--glow-B);color:var(--B)">Global Freq</span></td>
+          <td class="mono" style="font-size:11px;">Rank all values by appearance across ALL 4 cols<br><span style="color:var(--muted)">Confirmed: 49 in A[03], A[10], B[13] — echo effect</span></td>
+          <td style="color:var(--B)">multi-col echo</td>
+        </tr>
+        <tr style="background:rgba(61,214,140,0.04);">
+          <td><span class="mono" style="color:var(--B)">ComplementPair</span></td>
+          <td><span class="chip" style="background:var(--glow-B);color:var(--B)">Deterministic</span></td>
+          <td class="mono" style="font-size:11px;">(100 - n) % 100 and (100-n+ds(n)) % 100<br><span style="color:var(--muted)">Confirmed: Row07 A=38+B=62=100 exactly</span></td>
+          <td style="color:var(--C)">when active: exact</td>
+        </tr>
+        <tr style="background:rgba(61,214,140,0.04);">
+          <td><span class="mono" style="color:var(--B)">RevCrossCol</span></td>
+          <td><span class="chip" style="background:var(--glow-B);color:var(--B)">Cross-Col</span></td>
+          <td class="mono" style="font-size:11px;">rev(prevCol[i]) and rev(nextCol[i]) → this col<br><span style="color:var(--muted)">Confirmed: Row12 rev(B=90)=09=D[12] ✓</span></td>
+          <td style="color:var(--muted)">8% base, spikes</td>
+        </tr>
+        <tr style="background:rgba(61,214,140,0.04);">
+          <td><span class="mono" style="color:var(--B)">ColDiffCascade</span></td>
+          <td><span class="chip" style="background:var(--glow-B);color:var(--B)">Diff Pattern</span></td>
+          <td class="mono" style="font-size:11px;">(col-nextCol)%100 · (col-prevCol)%100 · last+avg_diff<br><span style="color:var(--muted)">Row06 A-B=00 (perfect mirror), Row04 B-C=01 (locked pair)</span></td>
+          <td style="color:var(--C)">structural</td>
+        </tr>
+
+        <tr><td colspan="4" style="color:var(--D); font-size:10px; padding:8px 10px; letter-spacing:2px; text-transform:uppercase;">── Batch 2 — Confirmed by 18-row Extended Dataset ──</td></tr>
+
+        <tr style="background:rgba(242,95,92,0.04);">
+          <td><span class="mono" style="color:var(--D)">RevLagCross</span></td>
+          <td><span class="chip" style="background:var(--glow-D);color:var(--D)">Lag + Reverse</span></td>
+          <td class="mono" style="font-size:11px;">rev(prevRow[anyCol]) → current col<br>
+            <span style="color:var(--muted)">Confirmed: rev(D[11]=09)=90=A[12] ✓ exact</span><br>
+            <span style="color:var(--muted)">rev(A)→nextA: 44% near±3 · rev(D)→nextA: 31% near±3</span></td>
+          <td style="color:var(--D)">12% exact / 44% near</td>
+        </tr>
+        <tr style="background:rgba(242,95,92,0.04);">
+          <td><span class="mono" style="color:var(--D)">DigiSumColChain</span></td>
+          <td><span class="chip" style="background:var(--glow-D);color:var(--D)">Within-Row</span></td>
+          <td class="mono" style="font-size:11px;">adjCol ± ds(adjCol) → thisCol (same row transform)<br>
+            <span style="color:var(--muted)">Row03: B+ds(B)=17=C ✓ · Row06: A+ds(A)=45=C, C-ds(C)=36=D ✓✓</span><br>
+            <span style="color:var(--muted)">Row08: C-ds(C)=45=D ✓ · Row12: B-ds(B)=9=C ✓ · Row15: A-ds(A)=27=B ✓</span></td>
+          <td style="color:var(--D)">5 hits / 17 rows</td>
+        </tr>
+        <tr style="background:rgba(242,95,92,0.04);">
+          <td><span class="mono" style="color:var(--D)">SubtractColMod</span></td>
+          <td><span class="chip" style="background:var(--glow-D);color:var(--D)">Within-Row</span></td>
+          <td class="mono" style="font-size:11px;">(A−B)%100=C · (B−C)%100=D · all 6 pairwise diffs<br>
+            <span style="color:var(--muted)">Row07: (B-C)%100=38=D ✓ · Row08: (A-B)%100=51=C ✓</span><br>
+            <span style="color:var(--muted)">Row07 simultaneously had 4 patterns — super-structured row</span></td>
+          <td style="color:var(--D)">2 exact confirmed</td>
+        </tr>
+        <tr style="background:rgba(242,95,92,0.04);">
+          <td><span class="mono" style="color:var(--D)">StickyEcho</span></td>
+          <td><span class="chip" style="background:var(--glow-D);color:var(--D)">Global Freq+</span></td>
+          <td class="mono" style="font-size:11px;">All values seen 3×+ across all cols boosted as "sticky"<br>
+            <span style="color:var(--muted)">Confirmed sticky: 49(3×) · 90(3×) · 74(3×) · 45(3×) · 82(3×)</span><br>
+            <span style="color:var(--muted)">Structural magnetism — these values reappear across columns</span></td>
+          <td style="color:var(--D)">5 sticky values</td>
+        </tr>
+        <tr style="background:rgba(242,95,92,0.04);">
+          <td><span class="mono" style="color:var(--D)">PairSumLag</span></td>
+          <td><span class="chip" style="background:var(--glow-D);color:var(--D)">Lag Predictor</span></td>
+          <td class="mono" style="font-size:11px;">(B+D)[i]%100, (C+D)[i]%100, (A+B)[i]%100 → any col[i+1]<br>
+            <span style="color:var(--muted)">(B+D)→any: <strong style="color:var(--B)">50% near±3</strong> — STRONGEST lag signal found</span><br>
+            <span style="color:var(--muted)">(C+D)→any: 38% · (A+B)→any: 31% near±3</span></td>
+          <td style="color:var(--B)">50% near±3</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="margin-top:12px; padding:12px; background:rgba(124,109,250,0.06); border:1px solid rgba(124,109,250,0.2); border-radius:6px; font-family:var(--mono); font-size:11px; line-height:1.8; color:var(--soft);">
+    <strong style="color:var(--A)">Voting System:</strong> Every algorithm casts weighted votes for each candidate value.
+    Weight = learned_weight × backtest_score. Softmax normalizes. ε-greedy (8%) ensures exploration.
+    Final top-5/6 = highest cumulative votes across all 23 engines. More data → better weight calibration.
+  </div>
+</div>
+
+</div><!-- /wrap -->
+
+<!-- ── STATUS BAR ─────────────────────────── -->
+<div id="statusBar">
+  <div id="statusDot"></div>
+  <span id="statusTxt">Ready — configure cloud storage or paste data to begin</span>
+</div>
+
+<!-- ══════════════════════════════════════════
+     ENGINE
+═══════════════════════════════════════════ -->
+<script>
+'use strict';
+
+// ────────────────────────────────────────────────────
+// CONFIG
+// ────────────────────────────────────────────────────
+let CFG = {
+  apiKey: '', binId: '',
+  epsilon: 0.08,       // exploration rate
+  decayFactor: 0.82,   // recency weight for frequencies
+  minRows: 3,
+};
+
+const COLS = ['A','B','C','D'];
+
+const ALGOS = [
+  // ── Intra-column (single series) ──────────────────
+  'Reverse','DigitSumTf','ReverseSumTf','MirrorDiff',
+  'LinearTime','KShift','Recurrence2','Markov',
+  'FreqDecay','LCGFit','CyclicPattern','XorHeuristic',
+  'RollingMean','DigitalRoot','CrossColumn',
+  // ── Cross-column interconnection (NEW) ────────────
+  // Formula: (A+B+C+D)%100 → 50% recurrence signal
+  'RowSumCascade',
+  // Formula: (C+D)%100 → 42% recurrence signal
+  'CDmod',
+  // Formula: (A+B)%100 → 25% recurrence signal
+  'ABmod',
+  // Formula: (B+D)%100 → best near-5 predictor for next A
+  'BDmod',
+  // Formula: global value frequency across ALL columns (echo effect)
+  'ValueEcho',
+  // Formula: (100-n)%100 — complement pattern; A+B=100 detected
+  'ComplementPair',
+  // Formula: rev(prevCol) → nextCol digit mirror between columns
+  'RevCrossCol',
+  // Formula: (col[i]-nextCol[i])%100 — inter-column diff cascade
+  'ColDiffCascade',
+  // ── NEW — confirmed by 18-row dataset analysis ─────
+  // Formula: rev(prevRow.anyCol) → current col prediction
+  // Signal: rev(D[11]=9)=90=A[12] exact ✓; rev(A)→nextA 44% near±3
+  'RevLagCross',
+  // Formula: B±ds(B)=C, C-ds(C)=D, A-ds(A)=B within same row
+  // Signal: 5 confirmed hits in 17 rows; C-ds(C)=D 12%
+  'DigiSumColChain',
+  // Formula: (A-B)%100=C, (B-C)%100=D — column subtraction cascade
+  // Signal: Row07 (B-C)=D ✓, Row08 (A-B)=C ✓, confirmed 2 exact
+  'SubtractColMod',
+  // Formula: Sticky global top-5 repeaters boosted by 3x appearance
+  // Signal: 49,90,74,45,82 each appear 3× across all cols — "echoes"
+  'StickyEcho',
+  // Formula: (B+D)%100 near-lag — strongest lag predictor 50% near±3
+  // Extended: also tries (A+C)%100 and col-offset sums
+  'PairSumLag',
+];
+
+// ────────────────────────────────────────────────────
+// STATE
+// ────────────────────────────────────────────────────
+let S = freshState();
+
+function freshState() {
+  return {
+    dataset: [],
+    weights: initWeights(),
+    markov:    { A:{}, B:{}, C:{}, D:{} },
+    freqTable: { A:{}, B:{}, C:{}, D:{} },
+    trainLog: [],
+    trainCount: 0,
+    lastPred: null,
+    savedAt: null,
+  };
+}
+
+function initWeights() {
+  const w = {};
+  for (const c of COLS) { w[c] = {}; for (const a of ALGOS) w[c][a] = 1.0; }
+  return w;
+}
+
+// ────────────────────────────────────────────────────
+// MATH UTILS
+// ────────────────────────────────────────────────────
+const M = {
+  mod: n => ((Math.round(n) % 100) + 100) % 100,
+  d1:  n => Math.floor(Math.abs(Math.round(n)) % 100 / 10),
+  d2:  n => Math.abs(Math.round(n)) % 10,
+  ds:  n => M.d1(n) + M.d2(n),
+  dp:  n => M.d1(n) * M.d2(n),
+  dr:  n => { let s = M.ds(n); return s === 0 ? 0 : (s < 10 ? s : M.ds(s)); },
+  rev: n => { const s = String(M.mod(n)).padStart(2,'0'); return parseInt(s[1]+s[0],10); },
+  mean: arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0,
+  pad2: n => String(M.mod(n)).padStart(2,'0'),
+  // Circular distance in mod-100 space
+  cdist: (a,b) => Math.min(Math.abs(a-b), 100-Math.abs(a-b)),
+  nearMatch: (p,a,t=2) => M.cdist(p,a) <= t,
+  // Numerically stable softmax
+  softmax: obj => {
+    const keys = Object.keys(obj), vals = keys.map(k=>obj[k]);
+    const mx = Math.max(...vals);
+    const exps = vals.map(v => Math.exp(Math.min((v-mx)*3, 20)));
+    const sum = exps.reduce((a,b)=>a+b, 0) || 1;
+    const r = {};
+    keys.forEach((k,i) => r[k] = exps[i]/sum);
+    return r;
+  }
+};
+
+// ────────────────────────────────────────────────────
+// CLOUD STORAGE
+// ────────────────────────────────────────────────────
+function saveConfig() {
+  CFG.apiKey = document.getElementById('cfgKey').value.trim();
+  CFG.binId  = document.getElementById('cfgBin').value.trim();
+  localStorage.setItem('ape_cfg', JSON.stringify({ apiKey: CFG.apiKey, binId: CFG.binId }));
+  setStatus('Config saved locally', 'ok');
+}
+
+function loadConfig() {
+  const raw = localStorage.getItem('ape_cfg');
+  if (!raw) return;
+  try {
+    const c = JSON.parse(raw);
+    CFG.apiKey = c.apiKey || ''; CFG.binId = c.binId || '';
+    document.getElementById('cfgKey').value = CFG.apiKey;
+    document.getElementById('cfgBin').value = CFG.binId;
+  } catch(e){}
+}
+
+async function loadFromCloud() {
+  if (!CFG.apiKey || !CFG.binId) { setStatus('Enter API key + Bin ID first','warn'); return; }
+  setCloudMsg('⏳ Loading…'); setStatus('Fetching from cloud…','busy');
+  try {
+    const r = await fetch(`https://api.jsonbin.io/v3/b/${CFG.binId}/latest`, {
+      headers: { 'X-Master-Key': CFG.apiKey }
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    if (d.record) {
+      mergeCloud(d.record);
+      setCloudMsg('✅ Loaded ' + new Date(d.record.savedAt||Date.now()).toLocaleTimeString());
+      setStatus('Cloud data loaded — ' + S.dataset.length + ' rows', 'ok');
+      renderAll();
+    }
+  } catch(e) {
+    setCloudMsg('❌ ' + e.message);
+    setStatus('Load failed: ' + e.message, 'err');
+  }
+}
+
+async function pushToCloud() {
+  if (!CFG.apiKey) { setStatus('Enter API key first','warn'); return; }
+  setCloudMsg('⏳ Saving…'); setStatus('Pushing to cloud…','busy');
+  S.savedAt = new Date().toISOString();
+  const body = JSON.stringify({ ...S, version: '2.0' });
+  try {
+    let res, url, method;
+    if (!CFG.binId) {
+      url = 'https://api.jsonbin.io/v3/b'; method = 'POST';
+    } else {
+      url = `https://api.jsonbin.io/v3/b/${CFG.binId}`; method = 'PUT';
+    }
+    const headers = { 'Content-Type':'application/json','X-Master-Key':CFG.apiKey };
+    if (method === 'POST') headers['X-Bin-Name'] = 'APE-Engine';
+    const r = await fetch(url, { method, headers, body });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.message || `HTTP ${r.status}`);
+    if (method === 'POST' && d.metadata?.id) {
+      CFG.binId = d.metadata.id;
+      document.getElementById('cfgBin').value = CFG.binId;
+      localStorage.setItem('ape_cfg', JSON.stringify({ apiKey: CFG.apiKey, binId: CFG.binId }));
+    }
+    setCloudMsg('✅ Saved ' + new Date().toLocaleTimeString());
+    setStatus('Pushed to cloud successfully', 'ok');
+  } catch(e) {
+    setCloudMsg('❌ ' + e.message);
+    setStatus('Cloud push failed: ' + e.message, 'err');
+  }
+}
+
+function mergeCloud(rec) {
+  // Merge dataset: cloud values win on same row number
+  if (rec.dataset?.length) {
+    const map = {};
+    S.dataset.forEach(r => map[r.row] = r);
+    rec.dataset.forEach(r => map[r.row] = r);
+    S.dataset = Object.values(map).sort((a,b)=>a.row-b.row);
+  }
+  if (rec.weights)    S.weights    = rec.weights;
+  if (rec.markov)     S.markov     = rec.markov;
+  if (rec.freqTable)  S.freqTable  = rec.freqTable;
+  if (rec.trainLog)   S.trainLog   = rec.trainLog;
+  if (rec.trainCount) S.trainCount = rec.trainCount;
+}
+
+// ────────────────────────────────────────────────────
+// FEATURE ENGINEERING
+// ────────────────────────────────────────────────────
+function buildSeries(col) {
+  return S.dataset.map(r => r[col]).filter(v => v !== null && v !== undefined && !isNaN(v));
+}
+
+function getFeatures(series, idx) {
+  if (idx < 0 || idx >= series.length) return null;
+  const v = series[idx];
+  return {
+    v, d1: M.d1(v), d2: M.d2(v),
+    ds: M.ds(v), dp: M.dp(v),
+    rev: M.rev(v), dr: M.dr(v),
+    diff:  idx > 0 ? series[idx] - series[idx-1] : 0,
+    diff2: idx > 1 ? series[idx] - series[idx-2] : 0,
+    rm2:   idx >= 1 ? M.mean(series.slice(idx-1, idx+1)) : v,
+    rm3:   idx >= 2 ? M.mean(series.slice(idx-2, idx+1)) : v,
+    rm5:   idx >= 4 ? M.mean(series.slice(idx-4, idx+1)) : v,
+    prev:  idx > 0 ? series[idx-1] : v,
+    prev2: idx > 1 ? series[idx-2] : v,
+    t:     idx,
+  };
+}
+
+// ────────────────────────────────────────────────────
+// ALGORITHM IMPLEMENTATIONS
+// ────────────────────────────────────────────────────
+function algo_Reverse(series) {
+  return [M.rev(series[series.length-1])];
+}
+
+function algo_DigitSumTf(series) {
+  const v = series[series.length-1];
+  return [M.mod(v + M.ds(v))];
+}
+
+function algo_ReverseSumTf(series) {
+  const v = series[series.length-1];
+  return [M.mod(v + M.rev(v))];
+}
+
+function algo_MirrorDiff(series) {
+  const v = series[series.length-1];
+  return [M.mod(Math.abs(M.d1(v) - M.d2(v)) * 11)];
+}
+
+function algo_LinearTime(series) {
+  // Fit a*t + b ≡ val (mod 100) where t = index
+  const n = series.length;
+  let best = { sc: -1, pred: series[n-1] };
+  for (let a = 0; a < 20; a++) {
+    for (let b = 0; b < 100; b += 5) {
+      let sc = 0;
+      for (let i = 0; i < n; i++) {
+        if (M.mod(a*i + b) === series[i]) sc++;
+      }
+      if (sc > best.sc) best = { sc, pred: M.mod(a*n + b) };
+    }
+  }
+  return [best.pred];
+}
+
+function algo_KShift(series) {
+  if (series.length < 2) return [series[0]||0];
+  const n = series.length;
+  // Weighted average of diffs (recent heavier)
+  let wSum = 0, wDiff = 0;
+  for (let i = 1; i < n; i++) {
+    const w = Math.pow(1.4, i - 1);
+    // Use signed diff in [-50,49] range
+    let d = series[i] - series[i-1];
+    if (d > 50) d -= 100; if (d < -50) d += 100;
+    wSum += w; wDiff += d * w;
+  }
+  const avgDiff = wSum > 0 ? Math.round(wDiff / wSum) : 0;
+  return [M.mod(series[n-1] + avgDiff)];
+}
+
+function algo_Recurrence2(series) {
+  if (series.length < 3) return [series[series.length-1]];
+  const n = series.length;
+  const params = [];
+  for (const a of [1,2,3,5]) for (const b of [0,1,-1,2,-2]) for (const c of [0,1,-1,3,-3,7,-7]) {
+    params.push([a,b,c]);
+  }
+  let best = { sc: -1, pred: series[n-1] };
+  for (const [a,b,c] of params) {
+    let sc = 0;
+    for (let i = 2; i < n; i++) {
+      if (M.mod(a*series[i-1] + b*series[i-2] + c) === series[i]) sc++;
+    }
+    if (sc > best.sc) best = { sc, pred: M.mod(a*series[n-1] + b*series[n-2] + c) };
+  }
+  return [best.pred];
+}
+
+function algo_Markov(series, col) {
+  const tm = S.markov[col];
+  const key = String(series[series.length-1]);
+  if (!tm[key] || !Object.keys(tm[key]).length) return [series[series.length-1]];
+  const sorted = Object.entries(tm[key]).sort((a,b)=>b[1]-a[1]);
+  return sorted.slice(0,3).map(([v])=>parseInt(v,10));
+}
+
+function algo_FreqDecay(series, col) {
+  const ft = S.freqTable[col];
+  const keys = Object.keys(ft);
+  if (!keys.length) {
+    // Build on the fly
+    const tmp = {};
+    series.forEach(v => { tmp[v] = (tmp[v]||0)+1; });
+    return Object.entries(tmp).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v,10));
+  }
+  return Object.entries(ft).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v,10));
+}
+
+function algo_LCGFit(series) {
+  if (series.length < 3) return [series[series.length-1]];
+  const n = series.length;
+  const as = [1,2,3,5,7,11,13,17,21,31,41,51,71,91];
+  const cs = [0,1,3,7,13,17,23,31,37,41,53,61,71,83,97];
+  let best = { sc: -1, pred: series[n-1] };
+  for (const a of as) {
+    for (const c of cs) {
+      let sc = 0;
+      for (let i = 1; i < n; i++) {
+        if (M.mod(a * series[i-1] + c) === series[i]) sc++;
+      }
+      if (sc > best.sc) best = { sc, pred: M.mod(a * series[n-1] + c) };
+    }
+  }
+  return [best.pred];
+}
+
+function algo_CyclicPattern(series) {
+  if (series.length < 4) return [series[series.length-1]];
+  const n = series.length;
+  let best = { sc: -1, period: 1, pred: series[n-1] };
+  for (let p = 2; p <= Math.min(10, Math.floor(n/2)); p++) {
+    let sc = 0;
+    for (let i = p; i < n; i++) {
+      if (M.cdist(series[i], series[i-p]) <= 2) sc++;
+    }
+    const normSc = sc / (n - p);
+    if (normSc > best.sc) {
+      const pos = n % p;
+      const predVal = pos > 0 ? series[n - pos] : series[n - p];
+      best = { sc: normSc, period: p, pred: M.mod(predVal || series[n-1]) };
+    }
+  }
+  return [best.pred];
+}
+
+function algo_XorHeuristic(series) {
+  if (series.length < 2) return [series[0]||0];
+  const last = series[series.length-1];
+  const prev = series[series.length-2];
+  const nd1 = (M.d1(last) ^ M.d1(prev)) % 10;
+  const nd2 = (M.d2(last) ^ M.d2(prev)) % 10;
+  return [nd1 * 10 + nd2];
+}
+
+function algo_RollingMean(series) {
+  if (series.length < 2) return [series[0]||0];
+  const preds = [2,3,5].map(w => M.mod(Math.round(M.mean(series.slice(-w)))));
+  return [...new Set(preds)];
+}
+
+function algo_DigitalRoot(series) {
+  const v = series[series.length-1];
+  return [M.mod(M.dr(v) * 11)];
+}
+
+function algo_CrossColumn(col) {
+  if (S.dataset.length < 2) return [50];
+  const srcCol = COLS[(COLS.indexOf(col) + 3) % 4];
+  const last   = S.dataset[S.dataset.length-1];
+  return [M.mod(last[col] + M.ds(last[srcCol]))];
+}
+
+// ════════════════════════════════════════════════════
+// CROSS-COLUMN ALGORITHMS (NEW — use full S.dataset)
+// ════════════════════════════════════════════════════
+
+// ALGO: RowSumCascade
+// Formula: (A + B + C + D) % 100 of last row
+// Signal: 50% of time this value reappears in the dataset
+// Also emits per-column pair sums: A→C+D, B→A+D, C→A+B, D→B+C
+function algo_RowSumCascade(series, col) {
+  const ds = S.dataset;
+  if (!ds.length) return [series[series.length-1]];
+  const last = ds[ds.length-1];
+  const full = M.mod(last.A + last.B + last.C + last.D);
+  // Each col gets its opposite-pair sum too
+  const pairMap = {
+    A: M.mod(last.C + last.D), B: M.mod(last.A + last.D),
+    C: M.mod(last.A + last.B), D: M.mod(last.B + last.C)
+  };
+  return [...new Set([full, pairMap[col]])];
+}
+
+// ALGO: CDmod
+// Formula: (C + D) % 100 of last row → candidate for A/B
+// Signal: 42% recurrence rate (confirmed in dataset)
+// Row03 C+D=30=D[02], Row05 C+D=20=D[13], Row09 C+D=25=A[12]
+function algo_CDmod(series, col) {
+  const ds = S.dataset;
+  if (!ds.length) return [series[series.length-1]];
+  const last = ds[ds.length-1];
+  return [M.mod(last.C + last.D)];
+}
+
+// ALGO: ABmod
+// Formula: (A + B) % 100 of last row → candidate for C/D
+// Signal: 25% recurrence rate
+// Row06 A+B=72=C[13], Row08 A+B=74=C[10], Row10 A+B=28=B[11]
+function algo_ABmod(series, col) {
+  const ds = S.dataset;
+  if (!ds.length) return [series[series.length-1]];
+  const last = ds[ds.length-1];
+  return [M.mod(last.A + last.B)];
+}
+
+// ALGO: BDmod
+// Formula: (B + D) % 100 of last row
+// Signal: best near-±5 predictor for next row's A (4/11 windows)
+function algo_BDmod(series, col) {
+  const ds = S.dataset;
+  if (!ds.length) return [series[series.length-1]];
+  const last = ds[ds.length-1];
+  return [M.mod(last.B + last.D)];
+}
+
+// ALGO: ValueEcho
+// Formula: frequency ranking of every value seen across ALL columns
+// Signal: values like 49 appeared in A[03], A[10], B[13] — echo effect
+// When a number echoes across columns it's a strong repeater candidate
+function algo_ValueEcho(series, col) {
+  const freq = {};
+  S.dataset.forEach(r => {
+    COLS.forEach(c => {
+      const v = r[c];
+      if (!isNaN(v) && v !== null) freq[v] = (freq[v] || 0) + 1;
+    });
+  });
+  // Weight the current column's values higher
+  buildSeries(col).forEach(v => { freq[v] = (freq[v] || 0) + 0.5; });
+  const sorted = Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([v]) => parseInt(v, 10));
+  return sorted.length ? sorted : [series[series.length-1]];
+}
+
+// ALGO: ComplementPair
+// Formula: (100 - n) % 100 — complement detection
+// Signal: Row07 A(38)+B(62)=100 exactly; Row04 D=90=100-A[11]=91≈
+// When complement pattern is active, both n and 100-n are candidates
+function algo_ComplementPair(series) {
+  const last = series[series.length-1];
+  const comp = M.mod(100 - last);
+  // Also try complement with digit adjustments
+  const comp2 = M.mod(100 - last + M.ds(last));
+  return [...new Set([comp, comp2])];
+}
+
+// ALGO: RevCrossCol
+// Formula: rev(prevCol) and rev(nextCol) → cross-column digit mirror
+// Signal: Row12 rev(B=90)=09=D[12] ✓; cross-column reverse matching
+// Digits flip between adjacent columns in certain rows
+function algo_RevCrossCol(series, col) {
+  const ds = S.dataset;
+  if (!ds.length) return [series[series.length-1]];
+  const last = ds[ds.length-1];
+  const ci = COLS.indexOf(col);
+  const prevCol = COLS[(ci + 3) % 4];
+  const nextCol = COLS[(ci + 1) % 4];
+  return [...new Set([M.rev(last[prevCol]), M.rev(last[nextCol])])];
+}
+
+// ALGO: ColDiffCascade
+// Formula: (col[i] - adjacentCol[i]) % 100 — inter-column difference
+// Signal: A-B differences: Row06=00(mirror!), Row07=76, ...
+// Stable differences indicate locked relationships between columns
+function algo_ColDiffCascade(series, col) {
+  const ds = S.dataset;
+  if (ds.length < 2) return [series[series.length-1]];
+  const last = ds[ds.length-1];
+  const ci = COLS.indexOf(col);
+  const nextCol = COLS[(ci + 1) % 4];
+  const prevCol = COLS[(ci + 3) % 4];
+  // Current diff between this col and its neighbour
+  const diffRight = M.mod(last[col]  - last[nextCol]);
+  const diffLeft  = M.mod(last[col]  - last[prevCol]);
+  // Apply the average recent diff as the shift
+  const lastVal   = series[series.length-1];
+  const diffs = ds.slice(-5).map(r => {
+    let d = r[col] - r[nextCol];
+    if (d > 50) d -= 100; if (d < -50) d += 100;
+    return d;
+  });
+  const avgDiff = Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length);
+  return [...new Set([M.mod(diffRight), M.mod(diffLeft), M.mod(lastVal + avgDiff)])];
+}
+
+// ════════════════════════════════════════════════════
+// NEW ALGORITHMS — Confirmed by 18-row dataset analysis
+// ════════════════════════════════════════════════════
+
+// ALGO: RevLagCross
+// Formula: rev(previousRow[anyCol]) predicts current row
+// Strongest signal: rev(D_prev) → A_current: 12% exact, 31% near±3
+//                   rev(A_prev) → A_current: 6% exact, 44% near±3
+// Confirmed: rev(D[11]=09)=90=A[12] (single digit rev → 2-digit)
+function algo_RevLagCross(series, col) {
+  const ds = S.dataset;
+  if (ds.length < 2) return [series[series.length-1]];
+  const prev = ds[ds.length-2];                // row i-1
+  const ci   = COLS.indexOf(col);
+  // Reverse every column of prev row — all are candidates
+  const prevCol  = COLS[(ci + 3) % 4];
+  const nextCol  = COLS[(ci + 1) % 4];
+  const revSame  = M.rev(prev[col]);
+  const revRight = M.rev(prev[nextCol]);
+  const revLeft  = M.rev(prev[prevCol]);
+  // Special: single digit reversed = *10 (e.g. 9→90)
+  const lastInD  = prev['D'];
+  const singleRev = !isNaN(lastInD) && lastInD < 10 ? lastInD * 10 : M.rev(lastInD||0);
+  return [...new Set([revSame, revRight, revLeft, singleRev])];
+}
+
+// ALGO: DigiSumColChain
+// Formula: B ± ds(B) = C;  C - ds(C) = D;  A - ds(A) = B
+// Signal confirmed in dataset:
+//   Row03: B+ds(B)=17=C ✓   Row06: A+ds(A)=45=C, C-ds(C)=36=D ✓✓
+//   Row08: C-ds(C)=45=D ✓   Row12: B-ds(B)=9=C ✓   Row15: A-ds(A)=27=B ✓
+// Applies to: predict nextCol from currentCol using ±ds transform
+function algo_DigiSumColChain(series, col) {
+  const ds = S.dataset;
+  if (!ds.length) return [series[series.length-1]];
+  const last = ds[ds.length-1];
+  const ci   = COLS.indexOf(col);
+  const srcL = COLS[(ci + 3) % 4];   // col to the left
+  const srcR = COLS[(ci + 1) % 4];   // col to the right
+  const cands = new Set();
+  // Try: srcL ± ds(srcL) = this col
+  const vL = last[srcL]; if (!isNaN(vL)) {
+    cands.add(M.mod(vL + M.ds(vL)));
+    cands.add(M.mod(vL - M.ds(vL)));
+  }
+  // Try: srcR ± ds(srcR) = this col
+  const vR = last[srcR]; if (!isNaN(vR)) {
+    cands.add(M.mod(vR + M.ds(vR)));
+    cands.add(M.mod(vR - M.ds(vR)));
+  }
+  // Also: this col's last ± ds as auto-chain
+  const v = series[series.length-1];
+  cands.add(M.mod(v + M.ds(v)));
+  cands.add(M.mod(v - M.ds(v)));
+  return [...cands];
+}
+
+// ALGO: SubtractColMod
+// Formula: (A - B) % 100 = C;  (B - C) % 100 = D  — same-row cascade
+// Confirmed: Row07 (B-C)%100=38=D ✓, Row08 (A-B)%100=51=C ✓
+// Extended: all 6 pairwise subtractions tried as candidates
+function algo_SubtractColMod(series, col) {
+  const ds = S.dataset;
+  if (!ds.length) return [series[series.length-1]];
+  const last = ds[ds.length-1];
+  const A=last.A, B=last.B, C=last.C, D=last.D;
+  if ([A,B,C,D].some(v=>isNaN(v)||v===null)) return [series[series.length-1]];
+  const cands = new Set();
+  // All 6 ordered pairwise differences
+  const pairs = [
+    M.mod(A-B), M.mod(B-A),
+    M.mod(B-C), M.mod(C-B),
+    M.mod(C-D), M.mod(D-C),
+    M.mod(A-C), M.mod(A-D),
+    M.mod(B-D),
+  ];
+  // Weight: pick the ones that involve adjacent cols of our target
+  const ci = COLS.indexOf(col);
+  const adjL = COLS[(ci+3)%4]; const adjR = COLS[(ci+1)%4];
+  cands.add(M.mod(last[adjL] - last[adjR]));
+  cands.add(M.mod(last[adjR] - last[adjL]));
+  pairs.forEach(p => cands.add(p));
+  return [...cands].slice(0,4);
+}
+
+// ALGO: StickyEcho
+// Formula: Boost values that appear 3+ times across ALL 4 columns
+// Signal: 49(3×), 90(3×), 74(3×), 45(3×), 82(3×) in the dataset
+// Theory: "sticky" numbers have structural magnetism — they reappear
+// Implementation: count all-column occurrences, return top-5 by global freq
+function algo_StickyEcho(series, col) {
+  if (!S.dataset.length) return [series[series.length-1]];
+  const globalFreq = {};
+  S.dataset.forEach(row => {
+    COLS.forEach(c => {
+      const v = row[c];
+      if (!isNaN(v) && v !== null && v !== undefined) {
+        globalFreq[v] = (globalFreq[v] || 0) + 1;
+      }
+    });
+  });
+  // Extra weight for the current column's own repeaters
+  buildSeries(col).forEach(v => {
+    globalFreq[v] = (globalFreq[v] || 0) + 0.8;
+  });
+  return Object.entries(globalFreq)
+    .filter(([,cnt]) => cnt >= 2)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0,5)
+    .map(([v]) => parseInt(v,10));
+}
+
+// ALGO: PairSumLag
+// Formula: (B+D)[i]%100 → any col[i+1]; also (C+D)[i]→B/C, (A+B)[i]→D
+// Signal: (B+D)→any = 50% near±3 (STRONGEST lag signal in dataset)
+//         (C+D)→any = 38% near±3; (A+B)→any = 31% near±3
+// Emits all 3 pair sums simultaneously — highest vote accumulator
+function algo_PairSumLag(series, col) {
+  const ds = S.dataset;
+  if (ds.length < 2) return [series[series.length-1]];
+  const prev = ds[ds.length-2];  // row i-1 (the one just before last)
+  const last  = ds[ds.length-1]; // row i (the last complete row)
+  const A=last.A, B=last.B, C=last.C, D=last.D;
+  const cands = new Set();
+  if (!isNaN(B)&&!isNaN(D)) cands.add(M.mod(B+D));   // 50% near±3
+  if (!isNaN(C)&&!isNaN(D)) cands.add(M.mod(C+D));   // 38% near±3
+  if (!isNaN(A)&&!isNaN(B)) cands.add(M.mod(A+B));   // 31% near±3
+  if (!isNaN(A)&&!isNaN(C)) cands.add(M.mod(A+C));   // control
+  // Also: full row sum (RowSumCascade already does this, but weight matters)
+  if ([A,B,C,D].every(v=>!isNaN(v)&&v!==null)) cands.add(M.mod(A+B+C+D));
+  return [...cands];
+}
+
+// ────────────────────────────────────────────────────
+// ALGORITHM DISPATCHER
+// ────────────────────────────────────────────────────
+function dispatch(name, series, col) {
+  try {
+    switch(name) {
+      case 'Reverse':        return algo_Reverse(series);
+      case 'DigitSumTf':     return algo_DigitSumTf(series);
+      case 'ReverseSumTf':   return algo_ReverseSumTf(series);
+      case 'MirrorDiff':     return algo_MirrorDiff(series);
+      case 'LinearTime':     return algo_LinearTime(series);
+      case 'KShift':         return algo_KShift(series);
+      case 'Recurrence2':    return algo_Recurrence2(series);
+      case 'Markov':         return algo_Markov(series, col);
+      case 'FreqDecay':      return algo_FreqDecay(series, col);
+      case 'LCGFit':         return algo_LCGFit(series);
+      case 'CyclicPattern':  return algo_CyclicPattern(series);
+      case 'XorHeuristic':   return algo_XorHeuristic(series);
+      case 'RollingMean':    return algo_RollingMean(series);
+      case 'DigitalRoot':    return algo_DigitalRoot(series);
+      case 'CrossColumn':    return algo_CrossColumn(col);
+      // Cross-column interconnection algorithms
+      case 'RowSumCascade':  return algo_RowSumCascade(series, col);
+      case 'CDmod':          return algo_CDmod(series, col);
+      case 'ABmod':          return algo_ABmod(series, col);
+      case 'BDmod':          return algo_BDmod(series, col);
+      case 'ValueEcho':      return algo_ValueEcho(series, col);
+      case 'ComplementPair': return algo_ComplementPair(series);
+      case 'RevCrossCol':    return algo_RevCrossCol(series, col);
+      case 'ColDiffCascade': return algo_ColDiffCascade(series, col);
+      // NEW — 18-row dataset confirmed
+      case 'RevLagCross':    return algo_RevLagCross(series, col);
+      case 'DigiSumColChain':return algo_DigiSumColChain(series, col);
+      case 'SubtractColMod': return algo_SubtractColMod(series, col);
+      case 'StickyEcho':     return algo_StickyEcho(series, col);
+      case 'PairSumLag':     return algo_PairSumLag(series, col);
+      default: return [series[series.length-1]];
+    }
+  } catch(e) {
+    return [series[series.length-1] || 0];
+  }
+}
+
+// ────────────────────────────────────────────────────
+// BACKTESTING
+// ────────────────────────────────────────────────────
+function backtest(algoName, series, col) {
+  if (series.length < 4) return { exact: 0, near: 0 };
+  const window = Math.min(10, series.length - 2);
+  let exactHits = 0, nearHits = 0;
+  for (let i = series.length - window; i < series.length; i++) {
+    if (i < 2) continue;
+    const hist = series.slice(0, i);
+    const preds = dispatch(algoName, hist, col);
+    const actual = series[i];
+    if (preds.some(p => p === actual)) exactHits++;
+    if (preds.some(p => M.nearMatch(p, actual, 2))) nearHits++;
+  }
+  return { exact: exactHits / window, near: nearHits / window };
+}
+
+// ────────────────────────────────────────────────────
+// ENSEMBLE PREDICT
+// ────────────────────────────────────────────────────
+function predictCol(col) {
+  const series = buildSeries(col);
+  if (series.length < CFG.minRows) return null;
+
+  // Backtest score for each algo
+  const btScores = {};
+  for (const a of ALGOS) {
+    const bt = backtest(a, series, col);
+    btScores[a] = bt.exact * 0.65 + bt.near * 0.35;
+  }
+
+  // Combine with learned weights
+  const combined = {};
+  for (const a of ALGOS) {
+    const w = S.weights[col][a] || 1.0;
+    combined[a] = w * (0.5 + btScores[a] * 3.0);
+  }
+  const norm = M.softmax(combined);
+
+  // Collect predictions into vote map
+  const votes = {}; // value → weight
+  const contrib = {}; // value → [algo, ...]
+
+  for (const a of ALGOS) {
+    let w = norm[a];
+    // Epsilon-greedy exploration
+    if (Math.random() < CFG.epsilon) w *= (1 + Math.random() * 0.5);
+    const preds = dispatch(a, series, col);
+    preds.forEach((raw, rank) => {
+      const p = M.mod(raw);
+      const vote = w / (rank + 1);
+      votes[p] = (votes[p] || 0) + vote;
+      if (!contrib[p]) contrib[p] = [];
+      if (!contrib[p].includes(a)) contrib[p].push(a);
+    });
+  }
+
+  // Sort and normalize
+  const total = Object.values(votes).reduce((a,b)=>a+b, 0) || 1;
+  const sorted = Object.entries(votes)
+    .sort((a,b)=>b[1]-a[1])
+    .slice(0,6)
+    .map(([v, vt]) => ({
+      value: parseInt(v, 10),
+      conf: Math.round((vt/total)*100),
+      algos: (contrib[v]||[]).slice(0,3)
+    }));
+
+  // Determine if data is structured or random
+  const avgScore = ALGOS.reduce((s,a)=>s+btScores[a],0)/ALGOS.length;
+  const topAlgoName = Object.entries(norm).sort((a,b)=>b[1]-a[1])[0][0];
+  const mode = avgScore > 0.08 ? 'structured' : 'probabilistic';
+
+  return {
+    preds: sorted,
+    mode,
+    topAlgo: topAlgoName,
+    topAlgoW: Math.round(norm[topAlgoName]*100),
+    avgScore: Math.round(avgScore*100),
+    btScores,
+    normWeights: norm,
+  };
+}
+
+// ────────────────────────────────────────────────────
+// MARKOV & FREQUENCY TABLES
+// ────────────────────────────────────────────────────
+function rebuildMarkov() {
+  for (const col of COLS) {
+    S.markov[col] = {};
+    const s = buildSeries(col);
+    for (let i = 1; i < s.length; i++) {
+      const from = String(s[i-1]);
+      const to   = String(s[i]);
+      if (!S.markov[col][from]) S.markov[col][from] = {};
+      S.markov[col][from][to] = (S.markov[col][from][to]||0) + 1;
+    }
+  }
+}
+
+function rebuildFrequency() {
+  for (const col of COLS) {
+    S.freqTable[col] = {};
+    const s = buildSeries(col);
+    s.forEach((v, i) => {
+      const decW = Math.pow(CFG.decayFactor, s.length - 1 - i);
+      S.freqTable[col][String(v)] = (S.freqTable[col][String(v)]||0) + decW;
+    });
+  }
+}
+
+// ────────────────────────────────────────────────────
+// SELF-TRAINING
+// ────────────────────────────────────────────────────
+function trainModel() {
+  if (S.dataset.length < CFG.minRows) { setStatus(`Need ≥${CFG.minRows} rows to train`,'warn'); return; }
+  setStatus('Training all algorithms…','busy');
+
+  rebuildMarkov();
+  rebuildFrequency();
+
+  // Update weights via exponential moving average of backtest scores
+  for (const col of COLS) {
+    const s = buildSeries(col);
+    for (const a of ALGOS) {
+      const bt = backtest(a, s, col);
+      const perf = bt.exact * 0.7 + bt.near * 0.3;
+      const oldW = S.weights[col][a] || 1.0;
+      // EMA: 30% new, 70% old — preserves historical learning
+      S.weights[col][a] = Math.max(0.05, 0.7 * oldW + 0.3 * (0.1 + perf * 4.0));
+    }
+  }
+
+  S.trainCount++;
+  S.trainLog.push({ at: new Date().toISOString(), rows: S.dataset.length, n: S.trainCount });
+
+  renderLeaderboard();
+  renderTrainLog();
+  renderTrainMeta();
+
+  document.getElementById('lbCard').classList.remove('hidden');
+  document.getElementById('histCard').classList.remove('hidden');
+
+  setStatus(`✅ Training session #${S.trainCount} complete — ${S.dataset.length} rows processed`, 'ok');
+
+  // Auto-cloud push every 5 sessions
+  if (CFG.apiKey && CFG.binId && S.trainCount % 5 === 0) pushToCloud();
+}
+
+// ────────────────────────────────────────────────────
+// PREDICT
+// ────────────────────────────────────────────────────
+function runPredict() {
+  if (S.dataset.length < CFG.minRows) { setStatus(`Need ≥${CFG.minRows} rows`,'warn'); return; }
+  setStatus('Computing ensemble predictions…','busy');
+
+  rebuildMarkov();
+  rebuildFrequency();
+
+  const results = {};
+  let dominated = [], modes = [];
+
+  for (const col of COLS) {
+    const res = predictCol(col);
+    if (!res) { setStatus(`Not enough data for column ${col}`,'warn'); return; }
+    results[col] = res;
+    dominated.push(`${col}→${res.topAlgo}`);
+    modes.push(res.mode);
+  }
+
+  S.lastPred = results;
+
+  renderPredictions(results);
+  renderLeaderboard();
+
+  const modeStr = modes.includes('structured') ? '✅ Structured pattern detected' : '⚠ Low signal — probabilistic mode';
+  document.getElementById('insightBox').innerHTML =
+    `${modeStr} &nbsp;|&nbsp; Dominant: ${dominated.join(', ')} &nbsp;|&nbsp; Rows used: ${S.dataset.length}`;
+
+  document.getElementById('predCard').classList.remove('hidden');
+  document.getElementById('lbCard').classList.remove('hidden');
+
+  setStatus('Predictions computed — ' + S.dataset.length + ' rows analyzed', 'ok');
+}
+
+// ────────────────────────────────────────────────────
+// DATA MANAGEMENT
+// ────────────────────────────────────────────────────
+function addRow() {
+  const row = parseInt(document.getElementById('rowNum').value, 10);
+  const A   = parseInt(document.getElementById('inA').value, 10);
+  const B   = parseInt(document.getElementById('inB').value, 10);
+  const C   = parseInt(document.getElementById('inC').value, 10);
+  const D   = parseInt(document.getElementById('inD').value, 10);
+
+  if (isNaN(row)||row<1||row>31) { setStatus('Row must be 1–31','warn'); return; }
+  if ([A,B,C,D].some(v=>isNaN(v)||v<0||v>99)) { setStatus('Values must be 00–99','warn'); return; }
+
+  S.dataset = S.dataset.filter(r=>r.row!==row);
+  S.dataset.push({ row, A, B, C, D });
+  S.dataset.sort((a,b)=>a.row-b.row);
+
+  // Auto-advance row
+  document.getElementById('rowNum').value = Math.min(31, row+1);
+  ['inA','inB','inC','inD'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('inA').focus();
+
+  renderDataTable();
+  setStatus(`Row ${String(row).padStart(2,'0')} added — ${S.dataset.length} rows total`, 'ok');
+
+  // Background cloud save every 10 rows
+  if (CFG.apiKey && CFG.binId && S.dataset.length % 10 === 0) pushToCloud();
+}
+
+function autoDate() {
+  const d = new Date().getDate();
+  document.getElementById('rowNum').value = d;
+  setStatus(`Row set to today: day ${d}`, 'ok');
+}
+
+async function fetchRowFromAPI() {
+  const url   = document.getElementById('apiUrl').value.trim();
+  const field = document.getElementById('apiField').value.trim() || 'row';
+  if (!url) { autoDate(); return; }
+  setStatus('Fetching row from API…','busy');
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    const val = d[field] ?? d.date ?? new Date().getDate();
+    document.getElementById('rowNum').value = parseInt(String(val).replace(/\D/g,''), 10) || new Date().getDate();
+    setStatus(`Row fetched: ${val}`, 'ok');
+  } catch(e) {
+    setStatus('API fetch failed — using today\'s date','warn');
+    autoDate();
+  }
+}
+
+function bulkImport() {
+  const lines = document.getElementById('bulkInput').value.trim().split('\n').filter(l=>l.trim());
+  let added = 0, errs = 0;
+  for (const line of lines) {
+    const parts = line.split(',').map(p=>p.trim()).map(Number);
+    if (parts.length < 5 || parts.some(isNaN)) { errs++; continue; }
+    const [row,A,B,C,D] = parts;
+    if (row<1||row>31||[A,B,C,D].some(v=>v<0||v>99)) { errs++; continue; }
+    S.dataset = S.dataset.filter(r=>r.row!==row);
+    S.dataset.push({ row, A, B, C, D });
+    added++;
+  }
+  S.dataset.sort((a,b)=>a.row-b.row);
+  renderDataTable();
+  document.getElementById('bulkInput').value = '';
+  setStatus(`Imported ${added} rows${errs?`, ${errs} skipped`:''}`, errs?'warn':'ok');
+}
+
+function loadSampleData() {
+  const sample = [
+    [1,23,45,67,89],[2,34,56,78,90],[3,45,67,89,01],[4,56,78,90,12],
+    [5,67,89,01,23],[6,78,90,12,34],[7,89,01,23,45],[8,90,12,34,56],
+    [9,01,23,45,67],[10,12,34,56,78],[11,23,45,67,89],[12,35,57,79,91],
+  ];
+  sample.forEach(([row,A,B,C,D])=>{
+    S.dataset = S.dataset.filter(r=>r.row!==row);
+    S.dataset.push({row,A,B,C,D});
+  });
+  S.dataset.sort((a,b)=>a.row-b.row);
+  renderDataTable();
+  setStatus(`Sample dataset loaded — ${S.dataset.length} rows`, 'ok');
+}
+
+function deleteRow(row) {
+  S.dataset = S.dataset.filter(r=>r.row!==row);
+  renderDataTable();
+  setStatus(`Row ${String(row).padStart(2,'0')} deleted`, 'warn');
+}
+
+function resetModel() {
+  if (!confirm('Reset all model weights? Dataset is preserved.')) return;
+  S.weights = initWeights();
+  S.markov = { A:{},B:{},C:{},D:{} };
+  S.freqTable = { A:{},B:{},C:{},D:{} };
+  S.trainLog = [];
+  S.trainCount = 0;
+  renderTrainMeta();
+  setStatus('Model weights reset. Dataset preserved.','warn');
+}
+
+function clearAll() {
+  if (!confirm('Clear ALL data and model? This cannot be undone.')) return;
+  S = freshState();
+  renderAll();
+  setStatus('All data cleared','err');
+}
+
+function exportJSON() {
+  const blob = new Blob([JSON.stringify(S,null,2)],{type:'application/json'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `ape-state-${Date.now()}.json`;
+  a.click(); URL.revokeObjectURL(url);
+}
+
+// ────────────────────────────────────────────────────
+// RENDER
+// ────────────────────────────────────────────────────
+function renderDataTable() {
+  document.getElementById('dataBody').innerHTML = S.dataset.map((r,i)=>`
+    <tr>
+      <td class="text-muted mono">${i+1}</td>
+      <td><strong class="mono">${String(r.row).padStart(2,'0')}</strong></td>
+      <td><span class="badge badge-A">${String(r.A).padStart(2,'0')}</span></td>
+      <td><span class="badge badge-B">${String(r.B).padStart(2,'0')}</span></td>
+      <td><span class="badge badge-C">${String(r.C).padStart(2,'0')}</span></td>
+      <td><span class="badge badge-D">${String(r.D).padStart(2,'0')}</span></td>
+      <td><button class="btn-ghost btn-xs" onclick="deleteRow(${r.row})">✕</button></td>
+    </tr>
+  `).join('');
+  document.getElementById('dataInfo').textContent =
+    S.dataset.length
+      ? `${S.dataset.length} rows · Rows present: ${S.dataset.map(r=>r.row).join(', ')}`
+      : 'No data yet. Add rows above or use bulk import.';
+}
+
+function renderPredictions(results) {
+  const grid = document.getElementById('predGrid');
+  grid.innerHTML = COLS.map(col => {
+    const res = results[col];
+    if (!res) return '';
+    const preds = res.preds;
+    const maxConf = preds[0]?.conf || 1;
+    const rows = preds.map((p,i) => `
+      <div class="pred-row">
+        <span class="pred-val" style="color:${i===0?`var(--${col})`:'var(--soft)'}">${M.pad2(p.value)}</span>
+        <div class="pred-bar-bg">
+          <div class="pred-bar-fg" style="width:${Math.round(p.conf/maxConf*100)}%; background:${i===0?`var(--${col})`:'var(--dim)'}"></div>
+        </div>
+        <span class="pred-pct">${p.conf}%</span>
+      </div>
+      ${i===0?`<div class="pred-top-tag">${p.algos.join(' · ')}</div>`:''}
+    `).join('');
+    return `
+      <div class="pred-panel col-${col}">
+        <div class="pred-col-label" style="color:var(--${col})">${col}</div>
+        ${rows}
+        <div style="margin-top:8px; font-size:10px; color:var(--muted); font-family:var(--mono);">
+          mode: ${res.mode} · top: ${res.topAlgo}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderLeaderboard() {
+  const tbody = document.getElementById('lbBody');
+  // Compute averaged scores across all columns
+  const scores = {};
+  for (const a of ALGOS) {
+    let sumE=0, sumN=0, sumW=0, n=0;
+    for (const col of COLS) {
+      const s = buildSeries(col);
+      if (s.length < 4) continue;
+      const bt = backtest(a, s, col);
+      sumE += bt.exact; sumN += bt.near;
+      sumW += S.weights[col][a] || 1;
+      n++;
+    }
+    scores[a] = n ? { exact: sumE/n, near: sumN/n, w: sumW/n } : { exact:0,near:0,w:1 };
+  }
+
+  const sorted = Object.entries(scores).sort((a,b)=>b[1].exact-a[1].exact);
+  const medals = ['🥇','🥈','🥉'];
+
+  tbody.innerHTML = sorted.map(([a,s],i)=>{
+    const pct = v => (v*100).toFixed(0)+'%';
+    const barW = Math.round(s.exact*100);
+    const rowColor = s.exact > 0.15 ? 'var(--B)' : s.exact > 0.05 ? 'var(--C)' : 'var(--muted)';
+    return `<tr>
+      <td>${medals[i]||'  '} <span class="mono">${a}</span></td>
+      <td style="color:${rowColor}">${pct(s.exact)}</td>
+      <td>${pct(s.near)}</td>
+      <td class="mono">${s.w.toFixed(2)}</td>
+      <td>
+        <div class="lb-bar">
+          <div class="lb-bar-bg">
+            <div class="lb-bar-fill" style="width:${barW}%; background:${rowColor};"></div>
+          </div>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('lbCard').classList.remove('hidden');
+}
+
+function renderTrainLog() {
+  const div = document.getElementById('histBody');
+  if (!S.trainLog.length) { div.innerHTML='<p class="text-muted text-sm mono">No sessions yet.</p>'; return; }
+  div.innerHTML = S.trainLog.slice(-6).reverse().map(h=>`
+    <div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid var(--line); font-family:var(--mono); font-size:12px;">
+      <span style="color:var(--A)">Session #${h.n}</span>
+      <span class="text-muted">${h.rows} rows · ${new Date(h.at).toLocaleString()}</span>
+    </div>
+  `).join('');
+  document.getElementById('histCard').classList.remove('hidden');
+}
+
+function renderTrainMeta() {
+  document.getElementById('trainMeta').innerHTML =
+    `Training sessions: <span style="color:var(--A)">${S.trainCount}</span> &nbsp;|&nbsp; `+
+    `Dataset rows: <span style="color:var(--B)">${S.dataset.length}</span> &nbsp;|&nbsp; `+
+    `Last saved: <span style="color:var(--muted)">${S.savedAt ? new Date(S.savedAt).toLocaleString() : 'never'}</span>`;
+}
+
+function renderAll() {
+  renderDataTable();
+  renderTrainMeta();
+  if (S.trainCount > 0) { renderLeaderboard(); renderTrainLog(); }
+}
+
+// ────────────────────────────────────────────────────
+// STATUS HELPERS
+// ────────────────────────────────────────────────────
+function setStatus(msg, type='ok') {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusTxt');
+  dot.className = type;
+  txt.textContent = msg;
+}
+function setCloudMsg(msg) { document.getElementById('cloudMsg').textContent = msg; }
+
+// ────────────────────────────────────────────────────
+// KEYBOARD SHORTCUTS
+// ────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.activeElement?.id === 'inD') addRow();
+});
+
+// ────────────────────────────────────────────────────
+// INIT
+// ────────────────────────────────────────────────────
+(function init() {
+  loadConfig();
+  renderAll();
+  setStatus('Ready', 'ok');
+  // Auto-load cloud if both keys present
+  if (CFG.apiKey && CFG.binId) setTimeout(loadFromCloud, 600);
+  // Auto-set today's date
+  document.getElementById('rowNum').value = new Date().getDate();
+})();
+</script>
+</body>
+</html>
