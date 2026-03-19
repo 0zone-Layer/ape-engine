@@ -1277,6 +1277,7 @@ export default function App(){
   const[weightsMsg,setWeightsMsg]=useState("");
   const[showCalib,setShowCalib]=useState(false);
   const[autoGenLog,setAutoGenLog]=useState([]);
+  const[missingPreds,setMissingPreds]=useState({});
 
   const st=(t,c)=>setMsg({t,c:c||"ok"});
 
@@ -1454,21 +1455,76 @@ export default function App(){
     setTimeout(()=>st("Predictions ready ✓"),300);
   }
 
+  // Run full prediction for unknown columns using known values as cross-col hints
+  function predictMissingCols(){
+    const known={};
+    let hasKnown=false;
+    COLS.forEach(col=>{
+      const raw=acts[col].trim();
+      if(raw&&raw.toUpperCase()!=="XX"&&!isNaN(parseInt(raw))&&parseInt(raw)>=0&&parseInt(raw)<=99){
+        known[col]=parseInt(raw);
+        hasKnown=true;
+      }
+    });
+    if(!hasKnown){st("Enter at least one known column value first","warn");return;}
+    const missing=COLS.filter(col=>known[col]==null);
+    if(!missing.length){st("All columns already filled","warn");return;}
+    st("Predicting missing columns…","busy");
+
+    // Build a temporary dataset that includes a partial row with known values
+    // so cross-col algorithms can use known values as hints
+    const tempRow={row:S.predRow||0};
+    COLS.forEach(col=>{
+      tempRow[col]=known[col]!=null?known[col]:null;
+    });
+    const tempDataset=[...rows,tempRow];
+
+    const newActs={...acts};
+    const partialPreds={};
+
+    missing.forEach(col=>{
+      // Run full prediction engine with the partial row included
+      const pred=predictCol(col,tempDataset,S.weights[col],S.customs);
+      if(pred&&pred.top5[0]){
+        const top=pred.top5[0].value;
+        newActs[col]=String(top).padStart(2,"0");
+        partialPreds[col]=pred;
+      }
+    });
+
+    setActs(newActs);
+    // Store partial predictions so user can see top-5 for each missing col
+    setMissingPreds(partialPreds);
+    const knownStr=Object.entries(known).map(([c,v])=>c+"="+pad2(v)).join(", ");
+    setTimeout(()=>st("Predicted "+missing.join(",")+" using "+knownStr+" as cross-col hint ✓"),300);
+  }
+
   function checkAndLearn(){
     if(!S.preds){st("Run prediction first","warn");return;}
     const actuals={};
+    const knownCols=[];
     for(let i=0;i<COLS.length;i++){
       const col=COLS[i],raw=acts[col].trim();
-      if(!raw){st("Enter actual "+col,"warn");return;}
-      const n=parseInt(raw);if(isNaN(n)||n<0||n>99){st(col+" must be 00–99","warn");return;}
+      // Allow XX or empty = unknown column
+      if(!raw||raw.toUpperCase()==="XX"){actuals[col]=null;continue;}
+      const n=parseInt(raw);if(isNaN(n)||n<0||n>99){st(col+" must be 00–99 or XX","warn");return;}
       actuals[col]=n;
+      knownCols.push(col);
     }
+    // Need at least 1 known column to learn
+    if(knownCols.length===0){st("Enter at least one actual value (use XX for unknown)","warn");return;}
     const results={};let exactCount=0;
     COLS.forEach(col=>{
+      if(actuals[col]===null){
+        // Unknown: mark as skipped, use top prediction as placeholder
+        const top1=S.preds[col]&&S.preds[col].top5[0]?S.preds[col].top5[0].value:null;
+        results[col]={predicted:top1,actual:null,exact:false,near:false,skipped:true};
+        return;
+      }
       const top1=S.preds[col]&&S.preds[col].top5[0]?S.preds[col].top5[0].value:null;
       const actual=actuals[col];
       const ex=top1===actual,nr=!ex&&M.near(top1!=null?top1:-1,actual,2);
-      results[col]={predicted:top1,actual,exact:ex,near:nr};
+      results[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
       if(ex)exactCount++;
     });
     setCheckRes(results);
@@ -1476,14 +1532,16 @@ export default function App(){
       const nw={...prev.weights};
       const nc={...prev.calibration||{A:{},B:{},C:{},D:{}}};
       COLS.forEach(col=>{
+        // Only update weights for columns where we know the actual
+        if(actuals[col]===null)return;
         let updated=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow);
-        // Apply forgetting curve to global weights
         updated.global=applyForgetting(updated.global,prev.accLog);
         nw[col]=updated;
         const pred=prev.preds[col];
         if(pred)nc[col]=updateCalibration(pred.conf,actuals[col]===pred.top5[0]?.value,nc[col]||{});
       });
-      const entry={at:new Date().toISOString(),targetRow:prev.predRow,preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]&&prev.preds[c].top5[0]?prev.preds[c].top5[0].value:null])),actuals,results,exactCount};
+      const knownCount=knownCols.length;
+      const entry={at:new Date().toISOString(),targetRow:prev.predRow,preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]&&prev.preds[c].top5[0]?prev.preds[c].top5[0].value:null])),actuals,results,exactCount,knownCount};
       // Auto-prune weak generated algos
       const curRows=prev.datasets&&prev.datasets[prev.active]?prev.datasets[prev.active].rows:[];
       const {pruned,removed}=pruneWeakAlgos(prev.customs||[],nw,curRows);
@@ -1492,9 +1550,9 @@ export default function App(){
         setAutoGenLog(p=>[...p.slice(-(5-msgs.length)),...msgs]);
       }
 
-      // Auto-add actual result as new dataset row
+      // Auto-add actual result as new dataset row (null for unknown cols)
       const autoRow={row:prev.predRow};
-      COLS.forEach(col=>{autoRow[col]=actuals[col];});
+      COLS.forEach(col=>{autoRow[col]=actuals[col]!=null?actuals[col]:null;});
       const dsKey=prev.active;
       const existingRows=prev.datasets[dsKey]?prev.datasets[dsKey].rows:[];
       const newRows=[...existingRows.filter(r=>r.row!==prev.predRow),autoRow].sort((a,b)=>a.row-b.row);
@@ -1753,21 +1811,52 @@ export default function App(){
           <Card style={{marginBottom:14}}>
             <SL>{S.preds?"Enter Actual for Row "+pad2(S.predRow||0):"Run prediction first"}</SL>
             {S.preds&&<div>
-              <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",marginBottom:14}}>
-                {COLS.map(col=><div key={col}>
-                  <div style={{fontSize:9,color:CLR[col],marginBottom:3,letterSpacing:2}}>Actual {col}</div>
-                  <div style={{fontSize:9,color:"#2d3158",marginBottom:3}}>Pred: <b style={{color:CLR[col]}}>{S.preds[col]&&S.preds[col].top5[0]?pad2(S.preds[col].top5[0].value):"?"}</b></div>
-                  <input type="text" inputMode="numeric" maxLength={2} value={acts[col]} onChange={e=>setActs(p=>({...p,[col]:e.target.value.replace(/\D/g,"").slice(0,2)}))} placeholder="00" style={{width:54,background:"#060709",border:"1px solid "+CLR[col]+"44",color:CLR[col],padding:"8px",borderRadius:6,fontSize:15,fontFamily:"monospace",textAlign:"center",outline:"none",fontWeight:700}}/>
-                </div>)}
-                <PB onClick={checkAndLearn}>✅ Check and Learn</PB>
+              <div style={{marginBottom:8,fontSize:10,color:"#4a4e6a",background:"rgba(167,139,250,.04)",border:"1px solid rgba(167,139,250,.12)",borderRadius:6,padding:"6px 10px",lineHeight:1.7}}>
+                💡 Enter values you know. Type <b style={{color:"#a78bfa"}}>XX</b> or leave blank for unknown columns. APE learns only from known values and fills missing ones from historical patterns.
               </div>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",marginBottom:10}}>
+                {COLS.map(col=>{
+                  const isXX=acts[col].toUpperCase()==="XX"||acts[col]==="";
+                  const borderClr=isXX?"#2d3158":CLR[col]+"44";
+                  return <div key={col}>
+                    <div style={{fontSize:9,color:isXX?"#2d3158":CLR[col],marginBottom:3,letterSpacing:2}}>Actual {col}{isXX?" (XX)":""}</div>
+                    <div style={{fontSize:9,color:"#2d3158",marginBottom:3}}>Pred: <b style={{color:CLR[col]}}>{S.preds[col]&&S.preds[col].top5[0]?pad2(S.preds[col].top5[0].value):"?"}</b></div>
+                    <input type="text" inputMode="numeric" maxLength={2} value={acts[col]}
+                      onChange={e=>{const v=e.target.value.toUpperCase();setActs(p=>({...p,[col]:v==="X"||v==="XX"?"XX":v.replace(/[^0-9]/g,"").slice(0,2);}));}}
+                      placeholder="XX" style={{width:54,background:isXX?"#0c0e1a":"#060709",border:"1px solid "+borderClr,color:isXX?"#2d3158":CLR[col],padding:"8px",borderRadius:6,fontSize:15,fontFamily:"monospace",textAlign:"center",outline:"none",fontWeight:700,opacity:isXX?0.5:1}}/>
+                  </div>;
+                })}
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+                <PB onClick={checkAndLearn}>✅ Check and Learn</PB>
+                <GB onClick={predictMissingCols}>🔮 Predict Missing Cols</GB>
+                <GB onClick={()=>{setActs({A:"",B:"",C:"",D:""});setMissingPreds({});}}>✕ Clear All</GB>
+              </div>
+              {Object.keys(missingPreds).length>0&&<div style={{background:"rgba(167,139,250,.06)",border:"1px solid rgba(167,139,250,.2)",borderRadius:8,padding:12,marginBottom:12}}>
+                <div style={{fontSize:9,color:"#a78bfa",letterSpacing:3,textTransform:"uppercase",marginBottom:10}}>Predictions for Missing Columns</div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}}>
+                  {Object.entries(missingPreds).map(([col,pred])=>{
+                    const maxV=pred.top5[0]?pred.top5[0].votes:1;
+                    return <MissingColPred key={col} col={col} pred={pred} maxV={maxV}/>;
+                  })}
+                </div>
+                <div style={{fontSize:9,color:"#2d3158",marginTop:8}}>These predictions used known column values as cross-col hints. Top pick is auto-filled in the input above.</div>
+              </div>}
               {checkRes&&<div style={{background:"rgba(52,211,153,.04)",border:"1px solid rgba(52,211,153,.15)",borderRadius:8,padding:12}}>
                 <SL style={{color:"#34d399"}}>Result</SL>
                 <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:10}}>
                   {COLS.map(col=><CheckCard key={col} col={col} res={checkRes[col]}/>)}
                 </div>
-                <div style={{fontSize:10,color:"#4a4e6a",lineHeight:1.8}}>Bayesian momentum + per-row + per-range weights updated. Exact×1.4, Near×1.1, Miss×0.8. Forgetting curve applied.</div>
-                <div style={{marginTop:6,fontSize:10,color:"#34d399",background:"rgba(52,211,153,.06)",border:"1px solid rgba(52,211,153,.2)",borderRadius:5,padding:"4px 10px"}}>✅ Row {pad2(S.predRow||0)} automatically added to your dataset with actual values.</div>
+                <div style={{fontSize:10,color:"#4a4e6a",lineHeight:1.8}}>
+                  {checkRes&&Object.values(checkRes).some(r=>r.skipped)?
+                    <span>Partial learn: weights updated only for known columns. Unknown columns kept at current weights.</span>:
+                    <span>Full learn: Bayesian momentum + per-row + per-range weights updated. Exact×1.4, Near×1.1, Miss×0.8.</span>
+                  }
+                </div>
+                <div style={{marginTop:6,fontSize:10,color:"#34d399",background:"rgba(52,211,153,.06)",border:"1px solid rgba(52,211,153,.2)",borderRadius:5,padding:"4px 10px"}}>
+                  ✅ Row {pad2(S.predRow||0)} added to dataset.
+                  {checkRes&&Object.values(checkRes).some(r=>r.skipped)?" Unknown columns stored as XX (blank) — fill them in Data tab when you get the values.":""}
+                </div>
               </div>}
             </div>}
           </Card>
@@ -1783,8 +1872,8 @@ export default function App(){
                   <td style={{padding:"4px 7px",color:"#252840",fontSize:9,textAlign:"center"}}>{new Date(entry.at).toLocaleTimeString()}</td>
                   <td style={{padding:"4px 7px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(entry.targetRow||0)}</td>
                   {COLS.map(c=><td key={c} style={{padding:"4px 7px",color:CLR[c],textAlign:"center",fontWeight:700}}>{pad2(entry.preds[c]||0)}</td>)}
-                  {COLS.map(c=><td key={c} style={{padding:"4px 7px",color:"#c8d0e8",textAlign:"center"}}>{pad2(entry.actuals[c])}</td>)}
-                  <td style={{padding:"4px 7px",textAlign:"center"}}><span style={{color:entry.exactCount>=3?"#34d399":entry.exactCount>=1?"#fbbf24":"#f87171",fontWeight:700}}>{entry.exactCount}/4</span></td>
+                  {COLS.map(c=><td key={c} style={{padding:"4px 7px",color:entry.actuals[c]!=null?"#c8d0e8":"#2d3158",textAlign:"center"}}>{entry.actuals[c]!=null?pad2(entry.actuals[c]):"XX"}</td>)}
+                  <td style={{padding:"4px 7px",textAlign:"center"}}><span style={{color:entry.exactCount>=(entry.knownCount||4)*0.75?"#34d399":entry.exactCount>=1?"#fbbf24":"#f87171",fontWeight:700}}>{entry.exactCount}/{entry.knownCount||4}</span></td>
                 </tr>)}</tbody>
               </table>
             </div>
@@ -1989,14 +2078,37 @@ function PredCell(p){
     </span>:<span style={{color:"#1a1e35"}}>—</span>}
   </td>;
 }
+function MissingColPred(p){
+  const {col,pred,maxV}=p;
+  const clr=CLR[col];
+  return <div style={{background:"#0c0e1a",border:"1px solid "+clr+"33",borderTop:"2px solid "+clr,borderRadius:8,padding:10}}>
+    <div style={{fontSize:12,fontWeight:900,color:clr,marginBottom:6}}>Col {col}</div>
+    <div style={{fontSize:9,color:"#2d3158",marginBottom:6}}>Confidence: <span style={{color:pred.confClr,fontWeight:700}}>{pred.conf}</span> · {pred.algoCount} algos</div>
+    {pred.top5.map((p2,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:5,marginBottom:i<4?4:0}}>
+      <span style={{fontWeight:700,fontSize:i===0?16:10,color:i===0?clr:"#4a4e6a",minWidth:i===0?30:22,fontFamily:"monospace"}}>{i===0?"▶":" "+(i+1)} {pad2(p2.value)}</span>
+      <div style={{flex:1,height:i===0?4:2,background:"#1a1e35",borderRadius:99,overflow:"hidden"}}>
+        <div style={{height:"100%",width:Math.round(p2.votes/maxV*100)+"%",background:i===0?clr:"#1a1e35",borderRadius:99}}/>
+      </div>
+      <span style={{fontSize:9,color:"#2d3158",minWidth:22,textAlign:"right"}}>{p2.pct}%</span>
+    </div>)}
+  </div>;
+}
 function CheckCard(p){
   const r=p.res;
   if(!r)return null;
+  if(r.skipped){
+    return <div style={{background:"rgba(37,40,64,.5)",border:"1px solid #1a1e35",borderRadius:8,padding:"8px 12px",textAlign:"center",minWidth:78,opacity:0.5}}>
+      <div style={{fontSize:18,marginBottom:3}}>⬜</div>
+      <div style={{fontSize:9,color:"#4a4e6a",marginBottom:2}}>Col {p.col}</div>
+      <div style={{fontSize:11,color:"#2d3158"}}>XX</div>
+      <div style={{fontSize:9,color:"#2d3158",marginTop:2}}>SKIPPED</div>
+    </div>;
+  }
   const clr=r.exact?"#34d399":r.near?"#fbbf24":"#f87171";
   return <div style={{background:clr+"12",border:"1px solid "+clr+"33",borderRadius:8,padding:"8px 12px",textAlign:"center",minWidth:78}}>
     <div style={{fontSize:18,marginBottom:3}}>{r.exact?"✅":r.near?"🟡":"❌"}</div>
     <div style={{fontSize:9,color:"#4a4e6a",marginBottom:2}}>Col {p.col}</div>
-    <div style={{fontSize:11}}><span style={{color:clr,fontWeight:700}}>{pad2(r.predicted||0)}</span>→<span style={{color:"#c8d0e8",fontWeight:700}}>{pad2(r.actual)}</span></div>
+    <div style={{fontSize:11}}><span style={{color:clr,fontWeight:700}}>{pad2(r.predicted||0)}</span>→<span style={{color:"#c8d0e8",fontWeight:700}}>{pad2(r.actual!=null?r.actual:0)}</span></div>
     <div style={{fontSize:9,color:clr,marginTop:2,fontWeight:700}}>{r.exact?"EXACT":r.near?"NEAR ±2":"MISS"}</div>
   </div>;
 }
