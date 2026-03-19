@@ -1,271 +1,1102 @@
-<!DOCTYPE html><html lang="en">
+<!DOCTYPE html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>APE v8 — Strategy Intelligence System (Full UI)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>APE v3 — Adaptive Prediction Engine</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
-body{background:#0e1018;color:#cdd6f4;font-family:monospace;padding:16px}
-.card{background:#141720;padding:14px;margin-bottom:12px;border-radius:10px}
-button{margin:4px;padding:8px}
-input{margin:4px;padding:6px;width:70px}
-pre{background:#000;padding:10px;max-height:300px;overflow:auto}
-.table-wrap{max-height:260px;overflow:auto;border:1px solid #2a3050;border-radius:8px}
-table{width:100%;border-collapse:collapse}
-th,td{padding:6px 8px;border-bottom:1px solid #2a3050}
-th{position:sticky;top:0;background:#141720}
-.actions button{padding:4px 8px;font-size:12px}
-.badge{padding:2px 6px;border-radius:6px;background:#2a3050}
+:root {
+  --ink:#07080d; --paper:#0b0d14; --panel:#12151f; --line:#1c2035;
+  --dim:#252a40; --muted:#4a5580; --soft:#8892b0; --text:#cdd6f4;
+  --A:#7c6dfa; --B:#3dd68c; --C:#f5a623; --D:#f25f5c;
+  --gA:rgba(124,109,250,0.18); --gB:rgba(61,214,140,0.15);
+  --gC:rgba(245,166,35,0.15);  --gD:rgba(242,95,92,0.15);
+  --mono:'Space Mono',monospace; --sans:'Syne',sans-serif;
+  --r:10px; --rs:6px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--ink);color:var(--text);font-family:var(--sans);font-size:14px;min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(124,109,250,.03)1px,transparent 1px),linear-gradient(90deg,rgba(124,109,250,.03)1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+.wrap{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:14px 14px 80px}
+
+/* HEADER */
+.header{text-align:center;padding:28px 0 20px;border-bottom:1px solid var(--line);margin-bottom:18px}
+.header-eye{font-size:10px;letter-spacing:4px;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-bottom:6px}
+.header h1{font-size:clamp(22px,5vw,40px);font-weight:800;background:linear-gradient(135deg,var(--A),#b8b1ff 45%,var(--B));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:-1px;line-height:1}
+.header p{color:var(--muted);font-size:11px;font-family:var(--mono);margin-top:6px}
+
+/* CARDS */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:12px;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--A),transparent);opacity:.35}
+.card-title{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card-title::after{content:'';flex:1;height:1px;background:var(--line)}
+
+/* GRID */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
+@media(max-width:600px){.g2{grid-template-columns:1fr}.g4{grid-template-columns:1fr 1fr}}
+
+/* FORMS */
+label{display:block;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-bottom:4px}
+input,textarea,select{background:var(--ink);border:1px solid var(--dim);color:var(--text);padding:10px 12px;border-radius:var(--rs);font-size:14px;font-family:var(--mono);width:100%;outline:none;transition:border-color .15s,box-shadow .15s;-webkit-appearance:none;appearance:none}
+input:focus,textarea:focus{border-color:var(--A);box-shadow:0 0 0 3px var(--gA)}
+input.err{border-color:var(--D);box-shadow:0 0 0 3px var(--gD)}
+
+/* BUTTONS */
+button{border:none;cursor:pointer;font-family:var(--mono);font-size:12px;font-weight:700;padding:10px 16px;border-radius:var(--rs);transition:all .15s;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+.btn-a{background:var(--A);color:#fff}
+.btn-a:active{background:#5a4de0}
+.btn-b{background:var(--B);color:#041a0c}
+.btn-b:active{background:#28b870}
+.btn-ghost{background:transparent;border:1px solid var(--dim);color:var(--soft)}
+.btn-ghost:active{border-color:var(--A);color:var(--A)}
+.btn-sm{padding:8px 13px;font-size:11px}
+.btn-xs{padding:3px 8px;font-size:10px}
+.btn-d{background:var(--D);color:#fff}
+
+/* BADGES */
+.badge{display:inline-block;padding:2px 7px;border-radius:99px;font-size:13px;font-family:var(--mono);font-weight:700}
+.ba{background:var(--gA);color:var(--A);border:1px solid rgba(124,109,250,.3)}
+.bb{background:var(--gB);color:var(--B);border:1px solid rgba(61,214,140,.25)}
+.bc{background:var(--gC);color:var(--C);border:1px solid rgba(245,166,35,.25)}
+.bd{background:var(--gD);color:var(--D);border:1px solid rgba(242,95,92,.25)}
+.chip{display:inline-block;padding:1px 6px;background:var(--dim);border-radius:4px;font-size:10px;color:var(--soft);font-family:var(--mono);margin:1px}
+
+/* TABLE */
+.tbl{overflow-x:auto;max-height:260px;overflow-y:auto}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px}
+th{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:1.5px;padding:6px 10px;text-align:left;position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line)}
+td{padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.03)}
+tr:hover td{background:rgba(124,109,250,.04)}
+tr:last-child td{border-bottom:none}
+
+/* PREDICTION CARDS */
+.pred-panel{background:var(--ink);border:1px solid var(--line);border-radius:var(--r);padding:13px}
+.pred-panel.cA{border-top:2px solid var(--A)}.pred-panel.cB{border-top:2px solid var(--B)}
+.pred-panel.cC{border-top:2px solid var(--C)}.pred-panel.cD{border-top:2px solid var(--D)}
+.pred-col{font-size:26px;font-weight:800;margin-bottom:9px}
+.pred-row{display:flex;align-items:center;gap:8px;padding:3px 0}
+.pred-val{font-family:var(--mono);font-size:17px;font-weight:700;min-width:28px}
+.pred-bg{flex:1;height:5px;background:var(--dim);border-radius:3px;overflow:hidden}
+.pred-fg{height:100%;border-radius:3px;transition:width .5s cubic-bezier(.23,1,.32,1)}
+.pred-pct{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:30px;text-align:right}
+.pred-tag{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:1px;margin-bottom:5px}
+
+/* STATUS BAR */
+#statusBar{position:fixed;bottom:0;left:0;right:0;height:38px;display:flex;align-items:center;padding:0 16px;background:var(--panel);border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);z-index:100;gap:10px}
+#dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:background .3s}
+#dot.ok{background:var(--B);box-shadow:0 0 6px var(--B)}
+#dot.warn{background:var(--C);box-shadow:0 0 6px var(--C)}
+#dot.err{background:var(--D);box-shadow:0 0 6px var(--D)}
+#dot.busy{background:var(--A);animation:pulse .8s ease-in-out infinite alternate}
+@keyframes pulse{to{box-shadow:0 0 10px var(--A)}}
+
+/* DETAILS */
+details{margin-top:8px}
+summary{cursor:pointer;font-size:11px;color:var(--A);font-family:var(--mono);padding:5px 0;user-select:none;list-style:none}
+summary::before{content:'▸ '}
+details[open] summary::before{content:'▾ '}
+.db{padding:10px 0 4px}
+
+/* MISC */
+.hidden{display:none!important}
+.mono{font-family:var(--mono)}
+.dim{color:var(--muted)}
+.sm{font-size:12px}
+a{color:var(--A);text-decoration:none}
+.insight{background:rgba(124,109,250,.06);border:1px solid rgba(124,109,250,.2);border-radius:var(--rs);padding:10px 14px;font-size:12px;font-family:var(--mono);color:var(--soft);margin-bottom:12px;line-height:1.6}
+.err-box{display:none;color:var(--D);font-family:var(--mono);font-size:11px;margin:6px 0 8px;padding:7px 12px;background:rgba(242,95,92,.1);border:1px solid rgba(242,95,92,.3);border-radius:var(--rs)}
+.ok-box{display:none;color:var(--B);font-family:var(--mono);font-size:11px;margin:6px 0 8px;padding:7px 12px;background:rgba(61,214,140,.08);border:1px solid rgba(61,214,140,.2);border-radius:var(--rs)}
+.lb-bg{flex:1;height:4px;background:var(--dim);border-radius:2px;overflow:hidden}
+.lb-fill{height:100%;border-radius:2px;background:var(--A)}
 </style>
 </head>
 <body>
-<h2>APE v8 — Strategy Intelligence (Dataset UI + Edit/Delete)</h2><div class="card">
-  Row <input id="row" type="number" min="1" max="31">
-  A <input id="A" type="number" min="0" max="99">
-  B <input id="B" type="number" min="0" max="99">
-  C <input id="C" type="number" min="0" max="99">
-  D <input id="D" type="number" min="0" max="99">
-  <button onclick="addRow()">Add / Update</button>
-  <button onclick="clearInputs()">Clear Inputs</button>
-</div><div class="card">
-  <strong>Dataset</strong>
-  <div class="table-wrap">
+<div class="wrap">
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-eye">Adaptive · Prediction · Engine</div>
+  <h1>APE v3</h1>
+  <p>28 algorithms · self-learning · localStorage + cloud · mod-100</p>
+</div>
+
+<!-- CLOUD CONFIG -->
+<div class="card">
+  <div class="card-title">☁ Cloud Storage — JSONBin.io (Free)</div>
+  <div class="g2" style="margin-bottom:10px">
+    <div>
+      <label>Master API Key</label>
+      <input type="text" id="cfgKey" placeholder="$2b$10$xxxxxxx" autocomplete="off">
+    </div>
+    <div>
+      <label>Bin ID (auto-created on first push)</label>
+      <input type="text" id="cfgBin" placeholder="Leave blank → auto-create">
+    </div>
+  </div>
+  <div class="row">
+    <button class="btn-a btn-sm" onclick="saveConfig()">💾 Save Config</button>
+    <button class="btn-ghost btn-sm" onclick="loadFromCloud()">↓ Load Cloud</button>
+    <button class="btn-ghost btn-sm" onclick="pushToCloud()">↑ Push Cloud</button>
+    <span id="cloudMsg" class="sm dim mono" style="align-self:center"></span>
+  </div>
+  <p class="sm dim mono" style="margin-top:8px;line-height:1.7">
+    Get free key → <a href="https://jsonbin.io" target="_blank">jsonbin.io</a> → Register → API Keys → Copy Master Key.
+    All data also auto-saved to <strong style="color:var(--B)">localStorage</strong> on every entry — survives refresh without cloud.
+  </p>
+</div>
+
+<!-- DATASET MANAGER -->
+<div class="card">
+  <div class="card-title">📊 Dataset Manager</div>
+
+  <!-- ENTRY ROW -->
+  <div style="background:rgba(124,109,250,.05);border:1px solid rgba(124,109,250,.15);border-radius:var(--rs);padding:14px;margin-bottom:10px">
+    <div class="row" style="margin-bottom:8px">
+      <div style="flex:0 0 auto">
+        <label>Row # (01–31)</label>
+        <input type="text" inputmode="numeric" id="rowNum" style="width:68px" maxlength="2" placeholder="01">
+      </div>
+      <div style="flex:0 0 auto">
+        <label>A (00–99)</label>
+        <input type="text" inputmode="numeric" id="inA" style="width:62px" maxlength="2" placeholder="00">
+      </div>
+      <div style="flex:0 0 auto">
+        <label>B (00–99)</label>
+        <input type="text" inputmode="numeric" id="inB" style="width:62px" maxlength="2" placeholder="00">
+      </div>
+      <div style="flex:0 0 auto">
+        <label>C (00–99)</label>
+        <input type="text" inputmode="numeric" id="inC" style="width:62px" maxlength="2" placeholder="00">
+      </div>
+      <div style="flex:0 0 auto">
+        <label>D (00–99 / XX)</label>
+        <input type="text" inputmode="numeric" id="inD" style="width:70px" maxlength="2" placeholder="00/XX">
+      </div>
+      <div style="flex:0 0 auto;display:flex;gap:6px;align-items:flex-end">
+        <button class="btn-b" onclick="addRow()" style="padding:10px 18px;font-size:13px">＋ Add Row</button>
+        <button class="btn-ghost btn-sm" onclick="autoDate()">📅 Today</button>
+      </div>
+    </div>
+    <div id="errBox" class="err-box"></div>
+    <div id="okBox" class="ok-box"></div>
+    <p class="sm dim mono">Enter XX for unknown/missing values. Press Enter to move between fields. Tab+Enter to submit.</p>
+  </div>
+
+  <!-- API FETCH -->
+  <details>
+    <summary>🌐 Auto-fetch Row # from API</summary>
+    <div class="db">
+      <div class="g2" style="margin-bottom:8px">
+        <div>
+          <label>API URL</label>
+          <input type="text" id="apiUrl" placeholder="https://your-api.com/row">
+        </div>
+        <div>
+          <label>JSON Field</label>
+          <input type="text" id="apiField" value="row" style="width:90px">
+        </div>
+      </div>
+      <button class="btn-ghost btn-sm" onclick="fetchRowAPI()">Fetch Row #</button>
+    </div>
+  </details>
+
+  <!-- BULK IMPORT -->
+  <details>
+    <summary>📋 Bulk CSV Import (row,A,B,C,D per line — XX for unknown)</summary>
+    <div class="db">
+      <textarea id="bulk" rows="5" style="font-size:12px" placeholder="2,91,10,30,68&#10;3,06,13,17,49&#10;19,XX,XX,XX,50"></textarea>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="btn-ghost btn-sm" onclick="bulkImport()">Import</button>
+        <button class="btn-ghost btn-sm" onclick="loadSample()">Load Sample</button>
+      </div>
+    </div>
+  </details>
+
+  <!-- DATA TABLE -->
+  <div class="tbl" style="margin-top:14px">
     <table>
-      <thead>
-        <tr>
-          <th>#</th><th>Row</th><th>A</th><th>B</th><th>C</th><th>D</th><th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="dataBody"></tbody>
+      <thead><tr><th>#</th><th>Row</th><th style="color:var(--A)">A</th><th style="color:var(--B)">B</th><th style="color:var(--C)">C</th><th style="color:var(--D)">D</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
     </table>
   </div>
-  <div id="dataInfo" style="margin-top:6px"></div>
-</div><div class="card">
-  <button onclick="trainModel()">Train</button>
-  <button onclick="runPredict()">Predict</button>
-  <button onclick="clearAll()">Reset All</button>
-</div><div class="card"><h3>Predictions</h3><pre id="pred"></pre></div>
-<div class="card"><h3>Strategy</h3><pre id="strategy"></pre></div>
-<div class="card"><h3>Confidence</h3><pre id="confidence"></pre></div><script>
+  <div id="dataInfo" class="sm dim mono" style="margin-top:8px"></div>
+</div>
+
+<!-- ENGINE CONTROLS -->
+<div class="card">
+  <div class="card-title">⚡ Engine Controls</div>
+  <div class="row" style="gap:8px;flex-wrap:wrap">
+    <button class="btn-a" onclick="runPredict()">🔮 Predict Next</button>
+    <button class="btn-b" onclick="trainModel()">🧠 Train Model</button>
+    <button class="btn-ghost btn-sm" onclick="resetWeights()">♻ Reset Weights</button>
+    <button class="btn-ghost btn-sm" onclick="clearAll()">🗑 Clear All</button>
+    <button class="btn-ghost btn-sm" onclick="exportJSON()">↗ Export</button>
+  </div>
+  <div id="trainMeta" class="sm dim mono" style="margin-top:10px;line-height:1.9"></div>
+</div>
+
+<!-- PREDICTIONS -->
+<div class="card hidden" id="predCard">
+  <div class="card-title">🎯 Predictions</div>
+  <div id="insight" class="insight"></div>
+  <div class="g4" id="predGrid"></div>
+</div>
+
+<!-- LEADERBOARD -->
+<div class="card hidden" id="lbCard">
+  <div class="card-title">🏆 Algorithm Leaderboard</div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Algorithm</th><th>Exact%</th><th>Near±2%</th><th>Weight</th><th>Bar</th></tr></thead>
+      <tbody id="lbBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- TRAINING LOG -->
+<div class="card hidden" id="histCard">
+  <div class="card-title">📈 Training Log</div>
+  <div id="histBody"></div>
+</div>
+
+</div><!-- /wrap -->
+
+<!-- STATUS BAR -->
+<div id="statusBar">
+  <div id="dot"></div>
+  <span id="stxt">Loading…</span>
+</div>
+
+<script>
 'use strict';
+// ═══════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════
+let CFG = { apiKey:'', binId:'', epsilon:0.08, decayFactor:0.82, minRows:3 };
+const COLS = ['A','B','C','D'];
+const LS_STATE = 'ape_v3_state';
+const LS_CFG   = 'ape_v3_cfg';
 
-const COLS=['A','B','C','D'];
-const CFG={epsilon:0.02,decay:0.9,lr:0.25};
+const ALGOS = [
+  // ── Intra-column ──────────────────────────────────────
+  'Reverse','DigitSumTf','ReverseSumTf','MirrorDiff',
+  'LinearTime','KShift','Recurrence2','Markov',
+  'FreqDecay','LCGFit','CyclicPattern','XorHeuristic',
+  'RollingMean','DigitalRoot',
+  // ── Cross-column batch 1 ──────────────────────────────
+  'CrossColumn','RowSumCascade','CDmod','ABmod','BDmod',
+  'ValueEcho','ComplementPair','RevCrossCol','ColDiffCascade',
+  // ── Cross-column batch 2 (18-row confirmed) ───────────
+  'RevLagCross','DigiSumColChain','SubtractColMod','StickyEcho','PairSumLag',
+];
 
-let S={dataset:[],weights:{},markov:{},freq:{},autoAlgos:[],metaTrust:{}};
+// ═══════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════
+let S = freshState();
 
-const BASE_ALGOS=['Reverse','DigitSumTf','RowSumCascade','Markov','FreqDecay'];
-
-const M={
-  mod:n=>((Math.round(n)%100)+100)%100,
-  ds:n=>Math.floor(n/10)+n%10,
-  rev:n=>{let s=String(M.mod(n)).padStart(2,'0');return +s[1]+s[0]},
-  cdist:(a,b)=>Math.min(Math.abs(a-b),100-Math.abs(a-b))
-};
-
-function init(){
-  COLS.forEach(c=>{
-    S.weights[c]={};
-    S.markov[c]={};
-    S.freq[c]={};
-    S.metaTrust[c]=1;
-    BASE_ALGOS.forEach(a=>S.weights[c][a]=1);
-  });
-  renderDataset();
+function freshState() {
+  return {
+    dataset:[], weights:initWeights(),
+    markov:{A:{},B:{},C:{},D:{}}, freqTable:{A:{},B:{},C:{},D:{}},
+    trainLog:[], trainCount:0, savedAt:null
+  };
+}
+function initWeights() {
+  const w={};
+  COLS.forEach(c=>{ w[c]={}; ALGOS.forEach(a=>w[c][a]=1.0); });
+  return w;
 }
 
-function getInputNumber(id){
-  const el=document.getElementById(id);
-  return Number(el.value);
+// ═══════════════════════════════════════════════════
+// LOCAL STORAGE — PRIMARY PERSISTENCE
+// ═══════════════════════════════════════════════════
+function saveLocal() {
+  try { localStorage.setItem(LS_STATE, JSON.stringify(S)); } catch(e){}
 }
 
-function clearInputs(){
-  ['row','A','B','C','D'].forEach(id=>document.getElementById(id).value='');
+function loadLocal() {
+  try {
+    const raw = localStorage.getItem(LS_STATE);
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    if (saved.dataset?.length)  S.dataset    = saved.dataset;
+    if (saved.weights)          S.weights    = saved.weights;
+    if (saved.markov)           S.markov     = saved.markov;
+    if (saved.freqTable)        S.freqTable  = saved.freqTable;
+    if (saved.trainLog)         S.trainLog   = saved.trainLog;
+    if (saved.trainCount)       S.trainCount = saved.trainCount;
+    if (saved.savedAt)          S.savedAt    = saved.savedAt;
+    // Backfill weights for any new algos not in saved state
+    COLS.forEach(c => {
+      if (!S.weights[c]) S.weights[c] = {};
+      ALGOS.forEach(a => { if (S.weights[c][a] === undefined) S.weights[c][a] = 1.0; });
+    });
+    return true;
+  } catch(e) { return false; }
 }
 
-function addRow(){
-  const r = { row: getInputNumber('row') };
-  COLS.forEach(c=> r[c]=getInputNumber(c));
+// ═══════════════════════════════════════════════════
+// CLOUD STORAGE
+// ═══════════════════════════════════════════════════
+function saveConfig() {
+  CFG.apiKey = $('cfgKey').value.trim();
+  CFG.binId  = $('cfgBin').value.trim();
+  localStorage.setItem(LS_CFG, JSON.stringify({apiKey:CFG.apiKey,binId:CFG.binId}));
+  st('Config saved to localStorage','ok');
+}
 
-  if (!Number.isFinite(r.row) || COLS.some(c=>!Number.isFinite(r[c]))) {
-    alert('Enter valid numbers in all fields');
-    return;
+function loadConfig() {
+  try {
+    const c = JSON.parse(localStorage.getItem(LS_CFG)||'{}');
+    CFG.apiKey = c.apiKey||''; CFG.binId = c.binId||'';
+    $('cfgKey').value = CFG.apiKey; $('cfgBin').value = CFG.binId;
+  } catch(e){}
+}
+
+async function loadFromCloud() {
+  if (!CFG.apiKey||!CFG.binId) { st('Enter API Key + Bin ID first','warn'); return; }
+  cm('⏳ Loading…'); st('Fetching from cloud…','busy');
+  try {
+    const r = await fetch(`https://api.jsonbin.io/v3/b/${CFG.binId}/latest`,
+      {headers:{'X-Master-Key':CFG.apiKey}});
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    if (d.record) {
+      mergeCloud(d.record);
+      saveLocal();
+      cm('✅ Loaded ' + new Date(d.record.savedAt||Date.now()).toLocaleTimeString());
+      st(`Cloud loaded — ${S.dataset.length} rows`,'ok');
+      renderAll();
+    }
+  } catch(e) { cm('❌ '+e.message); st('Cloud load failed: '+e.message,'err'); }
+}
+
+async function pushToCloud() {
+  if (!CFG.apiKey) { st('Enter API key first','warn'); return; }
+  cm('⏳ Saving…'); st('Pushing to cloud…','busy');
+  S.savedAt = new Date().toISOString();
+  try {
+    let url,method;
+    if (!CFG.binId) { url='https://api.jsonbin.io/v3/b'; method='POST'; }
+    else { url=`https://api.jsonbin.io/v3/b/${CFG.binId}`; method='PUT'; }
+    const headers={'Content-Type':'application/json','X-Master-Key':CFG.apiKey};
+    if (method==='POST') headers['X-Bin-Name']='APE-Engine-v3';
+    const r = await fetch(url,{method,headers,body:JSON.stringify({...S,version:'3.0'})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.message||`HTTP ${r.status}`);
+    if (method==='POST'&&d.metadata?.id) {
+      CFG.binId=d.metadata.id; $('cfgBin').value=CFG.binId;
+      localStorage.setItem(LS_CFG,JSON.stringify({apiKey:CFG.apiKey,binId:CFG.binId}));
+    }
+    saveLocal();
+    cm('✅ Saved '+new Date().toLocaleTimeString());
+    st('Pushed to cloud ✓','ok');
+  } catch(e) { cm('❌ '+e.message); st('Cloud push failed: '+e.message,'err'); }
+}
+
+function mergeCloud(rec) {
+  if (rec.dataset?.length) {
+    const map={};
+    S.dataset.forEach(r=>map[r.row]=r);
+    rec.dataset.forEach(r=>map[r.row]=r);
+    S.dataset=Object.values(map).sort((a,b)=>a.row-b.row);
   }
+  if (rec.weights)    S.weights    = rec.weights;
+  if (rec.markov)     S.markov     = rec.markov;
+  if (rec.freqTable)  S.freqTable  = rec.freqTable;
+  if (rec.trainLog)   S.trainLog   = rec.trainLog;
+  if (rec.trainCount) S.trainCount = rec.trainCount;
+  COLS.forEach(c => { if(!S.weights[c]) S.weights[c]={}; ALGOS.forEach(a=>{if(S.weights[c][a]===undefined)S.weights[c][a]=1.0;}); });
+}
 
-  // replace if same row
-  S.dataset = S.dataset.filter(x=>x.row!==r.row);
-  S.dataset.push(r);
+// ═══════════════════════════════════════════════════
+// DATA ENTRY — FIXED VALIDATION
+// ═══════════════════════════════════════════════════
+function pv(id) { // parse value: returns number | null (XX) | undefined (error)
+  const raw = $(id).value.trim();
+  if (!raw || raw.toUpperCase()==='XX') return null;
+  const n = parseInt(raw,10);
+  if (isNaN(n) || n<0 || n>99 || String(n)!==raw.replace(/^0+/,'')||raw.length>2) return undefined;
+  return n;
+}
+
+// More lenient parser — accepts "09" etc
+function pvSafe(id) {
+  const raw = $(id).value.trim();
+  if (!raw || raw.toUpperCase()==='XX') return null;
+  const n = parseInt(raw,10);
+  if (isNaN(n) || n<0 || n>99) return undefined;
+  return n;
+}
+
+function showErr(msg) { $('errBox').textContent=msg; $('errBox').style.display=msg?'block':'none'; $('okBox').style.display='none'; }
+function showOk(msg)  { $('okBox').textContent=msg;  $('okBox').style.display=msg?'block':'none';  $('errBox').style.display='none'; }
+
+function addRow() {
+  showErr('');
+  // --- Parse row number ---
+  const rowRaw = $('rowNum').value.trim();
+  const row = parseInt(rowRaw,10);
+  if (!rowRaw || isNaN(row) || row<1 || row>31) {
+    showErr('❌ Row # must be 01–31'); $('rowNum').focus(); return;
+  }
+  // --- Parse A B C D ---
+  const keys=['A','B','C','D'], ids=['inA','inB','inC','inD'];
+  const vals={};
+  for (let i=0;i<4;i++) {
+    const v = pvSafe(ids[i]);
+    if (v===undefined) { showErr(`❌ ${keys[i]} must be 00–99 or XX`); $(ids[i]).focus(); return; }
+    vals[keys[i]] = v;
+  }
+  // --- Need at least one real value ---
+  if (Object.values(vals).every(v=>v===null)) { showErr('❌ Enter at least one value. Use XX for unknown.'); return; }
+
+  // --- Upsert ---
+  S.dataset = S.dataset.filter(r=>r.row!==row);
+  S.dataset.push({row, A:vals.A, B:vals.B, C:vals.C, D:vals.D});
   S.dataset.sort((a,b)=>a.row-b.row);
 
-  renderDataset();
+  // ✅ SAVE TO LOCALSTORAGE IMMEDIATELY
+  saveLocal();
+
+  // Clear inputs + advance row
+  $('rowNum').value = Math.min(31,row+1);
+  ids.forEach(id=>$(id).value='');
+  $('inA').focus();
+
+  showOk(`✅ Row ${String(row).padStart(2,'0')} saved! Total: ${S.dataset.length} rows`);
+  renderTable(); renderTrainMeta();
+  st(`Row ${String(row).padStart(2,'0')} saved — ${S.dataset.length} rows in localStorage`,'ok');
+
+  if (CFG.apiKey && CFG.binId && S.dataset.length%10===0) pushToCloud();
 }
 
-function editRow(rowId){
-  const r = S.dataset.find(x=>x.row===rowId);
-  if(!r) return;
-  document.getElementById('row').value = r.row;
-  COLS.forEach(c=> document.getElementById(c).value = r[c]);
+function autoDate() {
+  const d=new Date().getDate();
+  $('rowNum').value=String(d).padStart(2,'0');
+  $('inA').focus();
+  st(`Row set to today: ${d}`,'ok');
 }
 
-function deleteRow(rowId){
-  if(!confirm('Delete row '+rowId+'?')) return;
-  S.dataset = S.dataset.filter(x=>x.row!==rowId);
-  renderDataset();
+async function fetchRowAPI() {
+  const url=$('apiUrl').value.trim(), field=$('apiField').value.trim()||'row';
+  if (!url) { autoDate(); return; }
+  st('Fetching from API…','busy');
+  try {
+    const r=await fetch(url); const d=await r.json();
+    const val=d[field]??d.date??new Date().getDate();
+    $('rowNum').value=parseInt(String(val).replace(/\D/g,''),10)||new Date().getDate();
+    st(`Row fetched: ${val}`,'ok');
+  } catch(e) { autoDate(); st('API failed — using today','warn'); }
 }
 
-function renderDataset(){
-  const tb = document.getElementById('dataBody');
-  tb.innerHTML='';
-  S.dataset.forEach((r,idx)=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML = `
-      <td>${idx+1}</td>
-      <td><span class="badge">${r.row}</span></td>
-      <td>${pad2(r.A)}</td>
-      <td>${pad2(r.B)}</td>
-      <td>${pad2(r.C)}</td>
-      <td>${pad2(r.D)}</td>
-      <td class="actions">
-        <button onclick="editRow(${r.row})">Edit</button>
-        <button onclick="deleteRow(${r.row})">Delete</button>
-      </td>`;
-    tb.appendChild(tr);
+function bulkImport() {
+  const lines=$('bulk').value.trim().split('\n').filter(l=>l.trim());
+  let added=0,errs=0;
+  for (const line of lines) {
+    const parts=line.split(',').map(p=>p.trim());
+    if (parts.length<5) { errs++; continue; }
+    const row=parseInt(parts[0],10);
+    if (isNaN(row)||row<1||row>31) { errs++; continue; }
+    const abcd=parts.slice(1,5).map(p=>{
+      if (!p||p.toUpperCase()==='XX') return null;
+      const n=parseInt(p,10);
+      return (isNaN(n)||n<0||n>99)?undefined:n;
+    });
+    if (abcd.some(v=>v===undefined)) { errs++; continue; }
+    const [A,B,C,D]=abcd;
+    S.dataset=S.dataset.filter(r=>r.row!==row);
+    S.dataset.push({row,A,B,C,D}); added++;
+  }
+  S.dataset.sort((a,b)=>a.row-b.row);
+  saveLocal(); // ✅
+  renderTable(); renderTrainMeta();
+  $('bulk').value='';
+  st(`Imported ${added} rows${errs?`, ${errs} skipped`:''}`, errs?'warn':'ok');
+}
+
+function loadSample() {
+  const s=[[1,2,10,92,null],[2,91,10,30,68],[3,6,13,17,49],[4,66,65,90,19],
+    [5,7,46,74,54],[6,36,2,45,36],[7,62,60,22,38],[8,29,78,51,45],
+    [9,46,26,99,65],[10,79,74,64,49],[11,28,58,24,9],[12,90,18,9,25],
+    [13,49,72,20,3],[14,82,75,74,95],[15,39,27,82,39],[16,68,12,17,28],
+    [17,58,26,45,47],[18,90,76,76,82]];
+  s.forEach(([row,A,B,C,D])=>{
+    S.dataset=S.dataset.filter(r=>r.row!==row);
+    S.dataset.push({row,A,B,C,D});
   });
-  document.getElementById('dataInfo').textContent = `${S.dataset.length} rows`;
+  S.dataset.sort((a,b)=>a.row-b.row);
+  saveLocal(); // ✅
+  renderTable(); renderTrainMeta();
+  st(`Sample loaded — ${S.dataset.length} rows`,'ok');
 }
 
-function pad2(n){ return String(M.mod(n)).padStart(2,'0'); }
-
-function build(c){return S.dataset.map(r=>r[c]);}
-
-function trainModel(){
-  buildStats();
-  autoDiscover();
-  reinforce();
-  metaLearn();
+function deleteRow(row) {
+  if (!confirm(`Delete row ${String(row).padStart(2,'0')}?`)) return;
+  S.dataset=S.dataset.filter(r=>r.row!==row);
+  saveLocal(); // ✅
+  renderTable(); renderTrainMeta();
+  st(`Row ${row} deleted`,'warn');
 }
 
-function buildStats(){
-  COLS.forEach(c=>{
-    let s=build(c);
-    S.markov[c]={};
-    S.freq[c]={};
+function resetWeights() {
+  if (!confirm('Reset model weights? Dataset stays.')) return;
+  S.weights=initWeights(); S.markov={A:{},B:{},C:{},D:{}}; S.freqTable={A:{},B:{},C:{},D:{}};
+  S.trainLog=[]; S.trainCount=0;
+  saveLocal(); // ✅
+  renderTrainMeta();
+  $('lbCard').classList.add('hidden'); $('histCard').classList.add('hidden');
+  st('Weights reset — dataset preserved','warn');
+}
+
+function clearAll() {
+  if (!confirm('Clear ALL data? Cannot undo.')) return;
+  S=freshState(); localStorage.removeItem(LS_STATE); // ✅ wipe local
+  renderAll();
+  $('predCard').classList.add('hidden'); $('lbCard').classList.add('hidden'); $('histCard').classList.add('hidden');
+  st('All cleared','err');
+}
+
+function exportJSON() {
+  const b=new Blob([JSON.stringify(S,null,2)],{type:'application/json'});
+  const u=URL.createObjectURL(b), a=document.createElement('a');
+  a.href=u; a.download=`ape-${Date.now()}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u);
+}
+
+// ═══════════════════════════════════════════════════
+// MATH UTILS
+// ═══════════════════════════════════════════════════
+const M = {
+  mod: n => ((Math.round(n)%100)+100)%100,
+  d1:  n => Math.floor(Math.abs(Math.round(n))%100/10),
+  d2:  n => Math.abs(Math.round(n))%10,
+  ds:  n => M.d1(n)+M.d2(n),
+  dp:  n => M.d1(n)*M.d2(n),
+  dr:  n => { let s=M.ds(n); return s===0?0:(s<10?s:M.ds(s)); },
+  rev: n => { const s=String(M.mod(n)).padStart(2,'0'); return parseInt(s[1]+s[0],10); },
+  mean:arr => arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0,
+  pad2:n => String(M.mod(n)).padStart(2,'0'),
+  cd:  (a,b) => Math.min(Math.abs(a-b),100-Math.abs(a-b)),
+  near:(p,a,t=2) => M.cd(p,a)<=t,
+  softmax: obj => {
+    const ks=Object.keys(obj), vs=ks.map(k=>obj[k]), mx=Math.max(...vs);
+    const ex=vs.map(v=>Math.exp(Math.min((v-mx)*3,20))), sum=ex.reduce((a,b)=>a+b,0)||1;
+    const r={}; ks.forEach((k,i)=>r[k]=ex[i]/sum); return r;
+  }
+};
+
+function buildSeries(col) {
+  return S.dataset.filter(r=>r[col]!==null&&r[col]!==undefined&&!isNaN(r[col])).map(r=>r[col]);
+}
+
+// ═══════════════════════════════════════════════════
+// ALGORITHM IMPLEMENTATIONS
+// ═══════════════════════════════════════════════════
+function algo_Reverse(s)       { return [M.rev(s[s.length-1])]; }
+function algo_DigitSumTf(s)    { const v=s[s.length-1]; return [M.mod(v+M.ds(v))]; }
+function algo_ReverseSumTf(s)  { const v=s[s.length-1]; return [M.mod(v+M.rev(v))]; }
+function algo_MirrorDiff(s)    { const v=s[s.length-1]; return [M.mod(Math.abs(M.d1(v)-M.d2(v))*11)]; }
+function algo_DigitalRoot(s)   { return [M.mod(M.dr(s[s.length-1])*11)]; }
+
+function algo_LinearTime(s) {
+  const n=s.length; let best={sc:-1,pred:s[n-1]};
+  for (let a=0;a<20;a++) for (let b=0;b<100;b+=5) {
+    let sc=0; for (let i=0;i<n;i++) if (M.mod(a*i+b)===s[i]) sc++;
+    if (sc>best.sc) best={sc,pred:M.mod(a*n+b)};
+  }
+  return [best.pred];
+}
+
+function algo_KShift(s) {
+  if (s.length<2) return [s[0]||0];
+  let ws=0,wd=0;
+  for (let i=1;i<s.length;i++) {
+    const w=Math.pow(1.4,i-1); let d=s[i]-s[i-1];
+    if (d>50) d-=100; if (d<-50) d+=100;
+    ws+=w; wd+=d*w;
+  }
+  return [M.mod(s[s.length-1]+Math.round(wd/ws))];
+}
+
+function algo_Recurrence2(s) {
+  if (s.length<3) return [s[s.length-1]];
+  const n=s.length; let best={sc:-1,pred:s[n-1]};
+  for (const a of [1,2,3,5,-1,-2]) for (const b of [0,1,-1,2,-2]) for (const c of [0,1,-1,3,-3,7,-7]) {
+    let sc=0; for (let i=2;i<n;i++) if (M.mod(a*s[i-1]+b*s[i-2]+c)===s[i]) sc++;
+    if (sc>best.sc) best={sc,pred:M.mod(a*s[n-1]+b*s[n-2]+c)};
+  }
+  return [best.pred];
+}
+
+function algo_Markov(s,col) {
+  const tm=S.markov[col], k=String(s[s.length-1]);
+  if (!tm[k]||!Object.keys(tm[k]).length) return [s[s.length-1]];
+  return Object.entries(tm[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v,10));
+}
+
+function algo_FreqDecay(s,col) {
+  const ft=S.freqTable[col], ks=Object.keys(ft);
+  if (!ks.length) {
+    const t={}; s.forEach(v=>{t[v]=(t[v]||0)+1;});
+    return Object.entries(t).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v,10));
+  }
+  return Object.entries(ft).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v,10));
+}
+
+function algo_LCGFit(s) {
+  if (s.length<3) return [s[s.length-1]];
+  const n=s.length; let best={sc:-1,a:1,c:0};
+  for (const a of [1,2,3,5,7,11,13,17,21,31,41,51,71,91])
+    for (const c of [0,1,3,7,13,17,23,31,37,41,53,61,71,83,97]) {
+      let sc=0; for (let i=1;i<n;i++) if (M.mod(a*s[i-1]+c)===s[i]) sc++;
+      if (sc>best.sc) best={sc,a,c};
+    }
+  return [M.mod(best.a*s[n-1]+best.c)];
+}
+
+function algo_CyclicPattern(s) {
+  if (s.length<4) return [s[s.length-1]];
+  const n=s.length; let best={sc:-1,period:1,pred:s[n-1]};
+  for (let p=2;p<=Math.min(10,Math.floor(n/2));p++) {
+    let sc=0; for (let i=p;i<n;i++) if (M.cd(s[i],s[i-p])<=2) sc++;
+    const ns=sc/(n-p);
+    if (ns>best.sc) {
+      const pos=n%p, pv=pos>0?s[n-pos]:s[n-p];
+      best={sc:ns,period:p,pred:M.mod(pv||s[n-1])};
+    }
+  }
+  return [best.pred];
+}
+
+function algo_XorHeuristic(s) {
+  if (s.length<2) return [s[0]||0];
+  const l=s[s.length-1], p=s[s.length-2];
+  return [(M.d1(l)^M.d1(p))%10*10+(M.d2(l)^M.d2(p))%10];
+}
+
+function algo_RollingMean(s) {
+  if (s.length<2) return [s[0]||0];
+  return [...new Set([2,3,5].map(w=>M.mod(Math.round(M.mean(s.slice(-w))))))];
+}
+
+function algo_CrossColumn(s,col) {
+  if (!S.dataset.length) return [s[s.length-1]];
+  const src=COLS[(COLS.indexOf(col)+3)%4], last=S.dataset[S.dataset.length-1];
+  if (last[src]===null||last[src]===undefined) return [s[s.length-1]];
+  return [M.mod(last[col]+M.ds(last[src]))];
+}
+
+// ── Cross-column batch 1 ──────────────────────────
+function algo_RowSumCascade(s,col) {
+  const ds=S.dataset; if (!ds.length) return [s[s.length-1]];
+  const l=ds[ds.length-1];
+  if ([l.A,l.B,l.C,l.D].some(v=>v===null||isNaN(v))) return [s[s.length-1]];
+  const full=M.mod(l.A+l.B+l.C+l.D);
+  const pm={A:M.mod(l.C+l.D),B:M.mod(l.A+l.D),C:M.mod(l.A+l.B),D:M.mod(l.B+l.C)};
+  return [...new Set([full,pm[col]])];
+}
+
+function algo_CDmod(s,col) {
+  const ds=S.dataset; if (!ds.length) return [s[s.length-1]];
+  const l=ds[ds.length-1];
+  if (l.C===null||l.D===null||isNaN(l.C)||isNaN(l.D)) return [s[s.length-1]];
+  return [M.mod(l.C+l.D)];
+}
+
+function algo_ABmod(s,col) {
+  const ds=S.dataset; if (!ds.length) return [s[s.length-1]];
+  const l=ds[ds.length-1];
+  if (l.A===null||l.B===null||isNaN(l.A)||isNaN(l.B)) return [s[s.length-1]];
+  return [M.mod(l.A+l.B)];
+}
+
+function algo_BDmod(s,col) {
+  const ds=S.dataset; if (!ds.length) return [s[s.length-1]];
+  const l=ds[ds.length-1];
+  if (l.B===null||l.D===null||isNaN(l.B)||isNaN(l.D)) return [s[s.length-1]];
+  return [M.mod(l.B+l.D)];
+}
+
+function algo_ValueEcho(s,col) {
+  const freq={};
+  S.dataset.forEach(r=>COLS.forEach(c=>{
+    const v=r[c]; if (v!==null&&v!==undefined&&!isNaN(v)) freq[v]=(freq[v]||0)+1;
+  }));
+  buildSeries(col).forEach(v=>{freq[v]=(freq[v]||0)+0.5;});
+  const res=Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([v])=>parseInt(v,10));
+  return res.length?res:[s[s.length-1]];
+}
+
+function algo_ComplementPair(s) {
+  const l=s[s.length-1];
+  return [...new Set([M.mod(100-l),M.mod(100-l+M.ds(l))])];
+}
+
+function algo_RevCrossCol(s,col) {
+  if (!S.dataset.length) return [s[s.length-1]];
+  const l=S.dataset[S.dataset.length-1], ci=COLS.indexOf(col);
+  const pv=COLS[(ci+3)%4], nv=COLS[(ci+1)%4];
+  const rp=l[pv]!==null&&!isNaN(l[pv])?M.rev(l[pv]):s[s.length-1];
+  const rn=l[nv]!==null&&!isNaN(l[nv])?M.rev(l[nv]):s[s.length-1];
+  return [...new Set([rp,rn])];
+}
+
+function algo_ColDiffCascade(s,col) {
+  if (S.dataset.length<2) return [s[s.length-1]];
+  const l=S.dataset[S.dataset.length-1], ci=COLS.indexOf(col);
+  const nxt=COLS[(ci+1)%4], prv=COLS[(ci+3)%4];
+  const lv=s[s.length-1];
+  const safe=(a,b)=>(a!==null&&b!==null&&!isNaN(a)&&!isNaN(b));
+  const cands=new Set();
+  if (safe(l[col],l[nxt])) cands.add(M.mod(l[col]-l[nxt]));
+  if (safe(l[col],l[prv])) cands.add(M.mod(l[col]-l[prv]));
+  const diffs=S.dataset.slice(-5).map(r=>{
+    if (!safe(r[col],r[nxt])) return 0;
+    let d=r[col]-r[nxt]; if(d>50)d-=100; if(d<-50)d+=100; return d;
+  });
+  cands.add(M.mod(lv+Math.round(diffs.reduce((a,b)=>a+b,0)/diffs.length)));
+  return [...cands];
+}
+
+// ── Cross-column batch 2 ──────────────────────────
+function algo_RevLagCross(s,col) {
+  if (S.dataset.length<2) return [s[s.length-1]];
+  const prev=S.dataset[S.dataset.length-2], ci=COLS.indexOf(col);
+  const pv=COLS[(ci+3)%4], nv=COLS[(ci+1)%4];
+  const safe=v=>v!==null&&!isNaN(v);
+  const cands=new Set();
+  if (safe(prev[col]))  cands.add(M.rev(prev[col]));
+  if (safe(prev[pv]))   cands.add(M.rev(prev[pv]));
+  if (safe(prev[nv]))   cands.add(M.rev(prev[nv]));
+  // Single-digit * 10 special case (e.g. 9 → 90)
+  const d=prev['D']; if (safe(d)&&d<10) cands.add(d*10);
+  return [...cands];
+}
+
+function algo_DigiSumColChain(s,col) {
+  if (!S.dataset.length) return [s[s.length-1]];
+  const l=S.dataset[S.dataset.length-1], ci=COLS.indexOf(col);
+  const srcL=COLS[(ci+3)%4], srcR=COLS[(ci+1)%4];
+  const cands=new Set();
+  const add=(v)=>{ if(v!==null&&!isNaN(v)){ cands.add(M.mod(v+M.ds(v))); cands.add(M.mod(v-M.ds(v))); }};
+  add(l[srcL]); add(l[srcR]);
+  const v=s[s.length-1]; cands.add(M.mod(v+M.ds(v))); cands.add(M.mod(v-M.ds(v)));
+  return [...cands];
+}
+
+function algo_SubtractColMod(s,col) {
+  if (!S.dataset.length) return [s[s.length-1]];
+  const {A,B,C,D}=S.dataset[S.dataset.length-1];
+  if ([A,B,C,D].some(v=>v===null||isNaN(v))) return [s[s.length-1]];
+  const ci=COLS.indexOf(col), adjL=COLS[(ci+3)%4], adjR=COLS[(ci+1)%4];
+  const l=S.dataset[S.dataset.length-1];
+  const cands=new Set([
+    M.mod(A-B),M.mod(B-A),M.mod(B-C),M.mod(C-B),
+    M.mod(C-D),M.mod(D-C),M.mod(A-C),M.mod(A-D),M.mod(B-D),
+    M.mod(l[adjL]-l[adjR]),M.mod(l[adjR]-l[adjL])
+  ]);
+  return [...cands].slice(0,4);
+}
+
+function algo_StickyEcho(s,col) {
+  if (!S.dataset.length) return [s[s.length-1]];
+  const gf={};
+  S.dataset.forEach(r=>COLS.forEach(c=>{
+    const v=r[c]; if(v!==null&&!isNaN(v)) gf[v]=(gf[v]||0)+1;
+  }));
+  buildSeries(col).forEach(v=>{gf[v]=(gf[v]||0)+0.8;});
+  return Object.entries(gf).filter(([,c])=>c>=2).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([v])=>parseInt(v,10));
+}
+
+function algo_PairSumLag(s,col) {
+  if (S.dataset.length<1) return [s[s.length-1]];
+  const l=S.dataset[S.dataset.length-1];
+  const {A,B,C,D}=l; const cands=new Set();
+  const ok=v=>v!==null&&!isNaN(v);
+  if (ok(B)&&ok(D)) cands.add(M.mod(B+D));
+  if (ok(C)&&ok(D)) cands.add(M.mod(C+D));
+  if (ok(A)&&ok(B)) cands.add(M.mod(A+B));
+  if (ok(A)&&ok(C)) cands.add(M.mod(A+C));
+  if ([A,B,C,D].every(ok)) cands.add(M.mod(A+B+C+D));
+  return [...cands];
+}
+
+// ═══════════════════════════════════════════════════
+// DISPATCHER
+// ═══════════════════════════════════════════════════
+function dispatch(name,s,col) {
+  try {
+    switch(name) {
+      case 'Reverse':         return algo_Reverse(s);
+      case 'DigitSumTf':      return algo_DigitSumTf(s);
+      case 'ReverseSumTf':    return algo_ReverseSumTf(s);
+      case 'MirrorDiff':      return algo_MirrorDiff(s);
+      case 'LinearTime':      return algo_LinearTime(s);
+      case 'KShift':          return algo_KShift(s);
+      case 'Recurrence2':     return algo_Recurrence2(s);
+      case 'Markov':          return algo_Markov(s,col);
+      case 'FreqDecay':       return algo_FreqDecay(s,col);
+      case 'LCGFit':          return algo_LCGFit(s);
+      case 'CyclicPattern':   return algo_CyclicPattern(s);
+      case 'XorHeuristic':    return algo_XorHeuristic(s);
+      case 'RollingMean':     return algo_RollingMean(s);
+      case 'DigitalRoot':     return algo_DigitalRoot(s);
+      case 'CrossColumn':     return algo_CrossColumn(s,col);
+      case 'RowSumCascade':   return algo_RowSumCascade(s,col);
+      case 'CDmod':           return algo_CDmod(s,col);
+      case 'ABmod':           return algo_ABmod(s,col);
+      case 'BDmod':           return algo_BDmod(s,col);
+      case 'ValueEcho':       return algo_ValueEcho(s,col);
+      case 'ComplementPair':  return algo_ComplementPair(s);
+      case 'RevCrossCol':     return algo_RevCrossCol(s,col);
+      case 'ColDiffCascade':  return algo_ColDiffCascade(s,col);
+      case 'RevLagCross':     return algo_RevLagCross(s,col);
+      case 'DigiSumColChain': return algo_DigiSumColChain(s,col);
+      case 'SubtractColMod':  return algo_SubtractColMod(s,col);
+      case 'StickyEcho':      return algo_StickyEcho(s,col);
+      case 'PairSumLag':      return algo_PairSumLag(s,col);
+      default: return [s[s.length-1]];
+    }
+  } catch(e) { return [s[s.length-1]||0]; }
+}
+
+// ═══════════════════════════════════════════════════
+// BACKTEST
+// ═══════════════════════════════════════════════════
+function backtest(name,s,col) {
+  if (s.length<4) return {exact:0,near:0};
+  const win=Math.min(10,s.length-2); let ex=0,nr=0;
+  for (let i=s.length-win;i<s.length;i++) {
+    if (i<2) continue;
+    const hist=s.slice(0,i), preds=dispatch(name,hist,col), actual=s[i];
+    if (preds.some(p=>p===actual)) ex++;
+    if (preds.some(p=>M.near(p,actual,2))) nr++;
+  }
+  return {exact:ex/win,near:nr/win};
+}
+
+// ═══════════════════════════════════════════════════
+// ENSEMBLE PREDICT
+// ═══════════════════════════════════════════════════
+function predictCol(col) {
+  const s=buildSeries(col); if (s.length<CFG.minRows) return null;
+  const bt={}, comb={};
+  for (const a of ALGOS) { const b=backtest(a,s,col); bt[a]=b.exact*.65+b.near*.35; }
+  for (const a of ALGOS) { const w=S.weights[col][a]||1; comb[a]=w*(.5+bt[a]*3); }
+  const norm=M.softmax(comb);
+  const votes={}, contrib={};
+  for (const a of ALGOS) {
+    let w=norm[a]; if (Math.random()<CFG.epsilon) w*=(1+Math.random()*.5);
+    dispatch(a,s,col).forEach((raw,rank)=>{
+      const p=M.mod(raw), v=w/(rank+1);
+      votes[p]=(votes[p]||0)+v;
+      if (!contrib[p]) contrib[p]=[];
+      if (!contrib[p].includes(a)) contrib[p].push(a);
+    });
+  }
+  const tot=Object.values(votes).reduce((a,b)=>a+b,0)||1;
+  const sorted=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([v,vt])=>({
+    value:parseInt(v,10), conf:Math.round(vt/tot*100), algos:(contrib[v]||[]).slice(0,3)
+  }));
+  const avg=ALGOS.reduce((s,a)=>s+bt[a],0)/ALGOS.length;
+  const top=Object.entries(norm).sort((a,b)=>b[1]-a[1])[0][0];
+  return {preds:sorted,mode:avg>0.08?'structured':'probabilistic',topAlgo:top,topAlgoW:Math.round(norm[top]*100),avgScore:Math.round(avg*100),bt,norm};
+}
+
+// ═══════════════════════════════════════════════════
+// MARKOV + FREQUENCY
+// ═══════════════════════════════════════════════════
+function rebuildMarkov() {
+  COLS.forEach(col=>{
+    S.markov[col]={};
+    const s=buildSeries(col);
+    for (let i=1;i<s.length;i++) {
+      const f=String(s[i-1]),t=String(s[i]);
+      if (!S.markov[col][f]) S.markov[col][f]={};
+      S.markov[col][f][t]=(S.markov[col][f][t]||0)+1;
+    }
+  });
+}
+
+function rebuildFreq() {
+  COLS.forEach(col=>{
+    S.freqTable[col]={};
+    const s=buildSeries(col);
     s.forEach((v,i)=>{
-      let w=Math.pow(CFG.decay,s.length-i);
-      S.freq[c][v]=(S.freq[c][v]||0)+w;
-      if(i>0){
-        let p=s[i-1];
-        if(!S.markov[c][p])S.markov[c][p]={};
-        S.markov[c][p][v]=(S.markov[c][p][v]||0)+1;
-      }
+      const w=Math.pow(CFG.decayFactor,s.length-1-i);
+      S.freqTable[col][String(v)]=(S.freqTable[col][String(v)]||0)+w;
     });
   });
 }
 
-function autoDiscover(){
-  S.autoAlgos=[];
-  if(S.dataset.length<6)return;
+// ═══════════════════════════════════════════════════
+// TRAIN
+// ═══════════════════════════════════════════════════
+function trainModel() {
+  if (S.dataset.length<CFG.minRows) { st(`Need ≥${CFG.minRows} rows`,'warn'); return; }
+  st('Training…','busy');
+  rebuildMarkov(); rebuildFreq();
   COLS.forEach(col=>{
-    let s=build(col);
-    let diffs=s.slice(1).map((v,i)=>M.mod(v-s[i]));
-    let f={}; diffs.forEach(d=>f[d]=(f[d]||0)+1);
-    let best=Object.entries(f).sort((a,b)=>b[1]-a[1])[0];
-    if(best && best[1]>3){
-      let d=+best[0];
-      S.autoAlgos.push({name:'AutoDiff_'+col, fn:(series)=>[M.mod(series.at(-1)+d)]});
-    }
+    const s=buildSeries(col);
+    ALGOS.forEach(a=>{
+      const bt=backtest(a,s,col), perf=bt.exact*.7+bt.near*.3, ow=S.weights[col][a]||1;
+      S.weights[col][a]=Math.max(.05,.7*ow+.3*(.1+perf*4));
+    });
   });
+  S.trainCount++; S.trainLog.push({at:new Date().toISOString(),rows:S.dataset.length,n:S.trainCount});
+  saveLocal(); // ✅
+  if (CFG.apiKey&&CFG.binId&&S.trainCount%5===0) pushToCloud();
+  renderLeaderboard(); renderTrainLog(); renderTrainMeta();
+  $('lbCard').classList.remove('hidden'); $('histCard').classList.remove('hidden');
+  st(`✅ Training #${S.trainCount} done — ${S.dataset.length} rows`,'ok');
 }
 
-function reinforce(){
-  let ALL=[...BASE_ALGOS,...S.autoAlgos.map(a=>a.name)];
-  for(let i=3;i<S.dataset.length;i++){
-    let prev=S.dataset.slice(0,i);
-    let actual=S.dataset[i];
-    COLS.forEach(col=>{
-      let s=prev.map(r=>r[col]);
-      ALL.forEach(a=>{
-        let preds=runAlgo(s,col,a);
-        let hit=preds.some(p=>M.cdist(p,actual[col])<=2);
-        if(!S.weights[col][a])S.weights[col][a]=1;
-        if(hit) S.weights[col][a]+=CFG.lr;
-        else S.weights[col][a]*=0.95;
-      });
-    });
+// ═══════════════════════════════════════════════════
+// PREDICT
+// ═══════════════════════════════════════════════════
+function runPredict() {
+  if (S.dataset.length<CFG.minRows) { st(`Need ≥${CFG.minRows} rows first`,'warn'); return; }
+  st('Computing predictions…','busy');
+  rebuildMarkov(); rebuildFreq();
+  const results={}, dom=[], modes=[];
+  for (const col of COLS) {
+    const res=predictCol(col);
+    if (!res) { st(`Not enough data for ${col}`,'warn'); return; }
+    results[col]=res; dom.push(`${col}→${res.topAlgo}`); modes.push(res.mode);
   }
+  S.lastPred=results;
+  renderPredictions(results); renderLeaderboard();
+  const ms=modes.includes('structured')?'✅ Structured pattern detected':'⚠ Probabilistic mode — low signal';
+  $('insight').innerHTML=`${ms} &nbsp;|&nbsp; ${dom.join(' · ')} &nbsp;|&nbsp; ${S.dataset.length} rows`;
+  $('predCard').classList.remove('hidden'); $('lbCard').classList.remove('hidden');
+  st('Predictions ready','ok');
 }
 
-function metaLearn(){
-  COLS.forEach(col=>{
-    let trust=1;
-    let s=build(col);
-    for(let i=2;i<s.length;i++){
-      if(M.cdist(s[i-1],s[i])<=2) trust+=0.1;
-      else trust*=0.95;
-    }
-    S.metaTrust[col]=trust;
-  });
+// ═══════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════
+function vBadge(v,cls) {
+  if (v===null||v===undefined) return `<span class="dim mono" style="font-size:12px">XX</span>`;
+  return `<span class="badge ${cls}">${String(v).padStart(2,'0')}</span>`;
 }
 
-function runAlgo(s,col,a){
-  let last=s.at(-1)||0;
-  let r=S.dataset.at(-1)||{};
-  let auto=S.autoAlgos.find(x=>x.name===a);
-  if(auto) return auto.fn(s);
-  switch(a){
-    case 'Reverse':return [M.rev(last)];
-    case 'DigitSumTf':return [M.mod(last+M.ds(last))];
-    case 'RowSumCascade':return [M.mod(r.A+r.B+r.C+r.D)];
-    case 'Markov':{
-      let m=S.markov[col][last];
-      return m?Object.entries(m).sort((a,b)=>b[1]-a[1]).map(x=>+x[0]):[last];
+function renderTable() {
+  $('tbody').innerHTML = S.dataset.map((r,i)=>`
+    <tr>
+      <td class="dim mono">${i+1}</td>
+      <td><strong class="mono">${String(r.row).padStart(2,'0')}</strong></td>
+      <td>${vBadge(r.A,'ba')}</td><td>${vBadge(r.B,'bb')}</td>
+      <td>${vBadge(r.C,'bc')}</td><td>${vBadge(r.D,'bd')}</td>
+      <td><button class="btn-ghost btn-xs" onclick="deleteRow(${r.row})">✕</button></td>
+    </tr>`).join('');
+  $('dataInfo').textContent = S.dataset.length
+    ? `${S.dataset.length} rows · ✓ auto-saved · Rows: ${S.dataset.map(r=>r.row).join(', ')}`
+    : 'No data yet. Add rows above.';
+}
+
+function renderPredictions(res) {
+  $('predGrid').innerHTML = COLS.map(col=>{
+    const r=res[col]; if (!r) return '';
+    const mx=r.preds[0]?.conf||1;
+    const rowsHtml=r.preds.map((p,i)=>`
+      <div class="pred-row">
+        <span class="pred-val" style="color:${i===0?`var(--${col})`:'var(--soft)'}">${M.pad2(p.value)}</span>
+        <div class="pred-bg"><div class="pred-fg" style="width:${Math.round(p.conf/mx*100)}%;background:${i===0?`var(--${col})`:'var(--dim)'}"></div></div>
+        <span class="pred-pct">${p.conf}%</span>
+      </div>${i===0?`<div class="pred-tag">${p.algos.join(' · ')}</div>`:''}`).join('');
+    return `<div class="pred-panel c${col}">
+      <div class="pred-col" style="color:var(--${col})">${col}</div>
+      ${rowsHtml}
+      <div style="margin-top:7px;font-size:10px;color:var(--muted);font-family:var(--mono)">${r.mode} · ${r.topAlgo}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderLeaderboard() {
+  const scores={};
+  for (const a of ALGOS) {
+    let se=0,sn=0,sw=0,n=0;
+    for (const col of COLS) {
+      const s=buildSeries(col); if (s.length<4) continue;
+      const bt=backtest(a,s,col); se+=bt.exact; sn+=bt.near; sw+=S.weights[col][a]||1; n++;
     }
-    case 'FreqDecay':return Object.entries(S.freq[col]).sort((a,b)=>b[1]-a[1]).map(x=>+x[0]);
+    scores[a]=n?{exact:se/n,near:sn/n,w:sw/n}:{exact:0,near:0,w:1};
   }
-  return [last];
+  const sorted=Object.entries(scores).sort((a,b)=>b[1].exact-a[1].exact);
+  const md=['🥇','🥈','🥉'];
+  $('lbBody').innerHTML=sorted.map(([a,s],i)=>{
+    const pct=v=>(v*100).toFixed(0)+'%', bw=Math.round(s.exact*100);
+    const c=s.exact>.15?'var(--B)':s.exact>.05?'var(--C)':'var(--muted)';
+    return `<tr><td>${md[i]||''} <span class="mono">${a}</span></td>
+      <td style="color:${c}">${pct(s.exact)}</td><td>${pct(s.near)}</td>
+      <td class="mono">${s.w.toFixed(2)}</td>
+      <td><div style="display:flex;align-items:center;gap:4px;width:80px"><div class="lb-bg"><div class="lb-fill" style="width:${bw}%;background:${c}"></div></div></div></td></tr>`;
+  }).join('');
+  $('lbCard').classList.remove('hidden');
 }
 
-function runPredict(){
-  let ALL=[...Object.keys(S.weights.A),...S.autoAlgos.map(a=>a.name)];
-  let result={},confidence={},strategy={};
-
-  COLS.forEach(col=>{
-    let s=build(col);
-    let votes={};
-
-    ALL.forEach(a=>{
-      let preds=runAlgo(s,col,a);
-      let w=S.weights[col][a]||1;
-      preds.forEach(p=>votes[p]=(votes[p]||0)+(w/preds.length));
-    });
-
-    let sorted=Object.entries(votes).sort((a,b)=>b[1]-a[1]);
-    let top=sorted.slice(0,5);
-    result[col]=top.map(x=>x[0]);
-
-    let total=Object.values(votes).reduce((a,b)=>a+b,0);
-    let entropy=0;
-    Object.values(votes).forEach(v=>{ let p=v/total; if(p>0) entropy-=p*Math.log2(p); });
-    let conf=(1/(1+entropy))*S.metaTrust[col];
-    confidence[col]=conf.toFixed(3);
-
-    let safe=top[0]?.[0];
-    let risky=top[top.length-1]?.[0];
-    let mid=top[Math.floor(top.length/2)]?.[0];
-    let tier='LOW'; if(conf>0.7) tier='HIGH'; else if(conf>0.4) tier='MEDIUM';
-
-    strategy[col]={ safest:safe, balanced:mid, risky:risky, confidenceTier:tier };
-  });
-
-  document.getElementById('pred').textContent=JSON.stringify(result,null,2);
-  document.getElementById('confidence').textContent=JSON.stringify(confidence,null,2);
-  document.getElementById('strategy').textContent=JSON.stringify(strategy,null,2);
+function renderTrainLog() {
+  if (!S.trainLog.length) { $('histBody').innerHTML='<p class="dim sm mono">No sessions yet.</p>'; return; }
+  $('histBody').innerHTML=S.trainLog.slice(-8).reverse().map(h=>`
+    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px">
+      <span style="color:var(--A)">Session #${h.n}</span>
+      <span class="dim">${h.rows} rows · ${new Date(h.at).toLocaleString()}</span>
+    </div>`).join('');
+  $('histCard').classList.remove('hidden');
 }
 
-function clearAll(){
-  S={dataset:[],weights:{},markov:{},freq:{},autoAlgos:[],metaTrust:{}};
-  init();
+function renderTrainMeta() {
+  $('trainMeta').innerHTML=
+    `Rows in memory: <span style="color:var(--B)">${S.dataset.length}</span> &nbsp;|&nbsp;`+
+    `Training sessions: <span style="color:var(--A)">${S.trainCount}</span> &nbsp;|&nbsp;`+
+    `<span style="color:var(--B)">localStorage: ✓ auto-saved on every entry</span> &nbsp;|&nbsp;`+
+    `Cloud last: <span class="dim">${S.savedAt?new Date(S.savedAt).toLocaleString():'never'}</span>`;
 }
 
-init();
-</script></body>
+function renderAll() { renderTable(); renderTrainMeta(); if (S.trainCount>0){renderLeaderboard();renderTrainLog();} }
+
+// ═══════════════════════════════════════════════════
+// STATUS + HELPERS
+// ═══════════════════════════════════════════════════
+function st(msg,type='ok') { $('dot').className=type; $('stxt').textContent=msg; }
+function cm(msg) { $('cloudMsg').textContent=msg; }
+function $(id) { return document.getElementById(id); }
+
+// ═══════════════════════════════════════════════════
+// KEYBOARD — Enter moves between A→B→C→D→Add
+// ═══════════════════════════════════════════════════
+document.addEventListener('keydown',e=>{
+  if (e.key==='Enter') {
+    const id=document.activeElement?.id;
+    const chain={rowNum:'inA',inA:'inB',inB:'inC',inC:'inD',inD:null};
+    if (id in chain) {
+      if (chain[id]) $(chain[id]).focus();
+      else addRow();
+      e.preventDefault();
+    }
+  }
+});
+
+// ═══════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════
+(function init() {
+  loadConfig();
+  const had=loadLocal();
+  renderAll();
+  if (had && S.dataset.length>0)
+    st(`✅ Restored ${S.dataset.length} rows from localStorage`,'ok');
+  else
+    st('Ready — enter data or load from cloud','ok');
+  if (CFG.apiKey && CFG.binId) setTimeout(loadFromCloud, 900);
+  $('rowNum').value=String(new Date().getDate()).padStart(2,'0');
+})();
+</script>
+</body>
 </html>
