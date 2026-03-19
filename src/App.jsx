@@ -1603,6 +1603,11 @@ export default function App(){
   const accLog=S.accLog||[];
   const totalExact=accLog.reduce((s,e)=>s+e.exactCount,0);
   const overallPct=accLog.length?Math.round(totalExact/(accLog.length*4)*100):0;
+  function handleActChange(col,val){
+    const v=val.toUpperCase();
+    const cleaned=v==="X"||v==="XX"?"XX":v.replace(/\D/g,"").slice(0,2);
+    setActs(p=>({...p,[col]:cleaned}));
+  }
   const stClr=msg.c==="ok"?"#34d399":msg.c==="err"?"#f87171":msg.c==="warn"?"#fbbf24":msg.c==="busy"?"#a78bfa":"#4a4e6a";
   const dsKeys=Object.keys(S.datasets||{});
   const customs=S.customs||[];
@@ -1815,17 +1820,7 @@ export default function App(){
                 💡 Enter values you know. Type <b style={{color:"#a78bfa"}}>XX</b> or leave blank for unknown columns. APE learns only from known values and fills missing ones from historical patterns.
               </div>
               <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",marginBottom:10}}>
-                {COLS.map(col=>{
-                  const isXX=acts[col].toUpperCase()==="XX"||acts[col]==="";
-                  const borderClr=isXX?"#2d3158":CLR[col]+"44";
-                  return <div key={col}>
-                    <div style={{fontSize:9,color:isXX?"#2d3158":CLR[col],marginBottom:3,letterSpacing:2}}>Actual {col}{isXX?" (XX)":""}</div>
-                    <div style={{fontSize:9,color:"#2d3158",marginBottom:3}}>Pred: <b style={{color:CLR[col]}}>{S.preds[col]&&S.preds[col].top5[0]?pad2(S.preds[col].top5[0].value):"?"}</b></div>
-                    <input type="text" inputMode="numeric" maxLength={2} value={acts[col]}
-                      onChange={e=>{const v=e.target.value.toUpperCase();setActs(p=>({...p,[col]:v==="X"||v==="XX"?"XX":v.replace(/[^0-9]/g,"").slice(0,2);}));}}
-                      placeholder="XX" style={{width:54,background:isXX?"#0c0e1a":"#060709",border:"1px solid "+borderClr,color:isXX?"#2d3158":CLR[col],padding:"8px",borderRadius:6,fontSize:15,fontFamily:"monospace",textAlign:"center",outline:"none",fontWeight:700,opacity:isXX?0.5:1}}/>
-                  </div>;
-                })}
+                {COLS.map(col=><ActInput key={col} col={col} val={acts[col]} pred={S.preds[col]} onChg={handleActChange}/>)}
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
                 <PB onClick={checkAndLearn}>✅ Check and Learn</PB>
@@ -2077,6 +2072,19 @@ function PredCell(p){
       {pad2(item.value)}{p.rank===0&&<span style={{fontSize:9,color:"#2d3158",marginLeft:3}}>{item.pct}%</span>}
     </span>:<span style={{color:"#1a1e35"}}>—</span>}
   </td>;
+}
+function ActInput(p){
+  const isXX=p.val.toUpperCase()==="XX"||p.val==="";
+  const borderClr=isXX?"#2d3158":CLR[p.col]+"44";
+  const predVal=p.pred&&p.pred.top5[0]?pad2(p.pred.top5[0].value):"?";
+  return <div>
+    <div style={{fontSize:9,color:isXX?"#2d3158":CLR[p.col],marginBottom:3,letterSpacing:2}}>Actual {p.col}{isXX?" (XX)":""}</div>
+    <div style={{fontSize:9,color:"#2d3158",marginBottom:3}}>Pred: <b style={{color:CLR[p.col]}}>{predVal}</b></div>
+    <input type="text" inputMode="numeric" maxLength={2} value={p.val}
+      onChange={e=>p.onChg(p.col,e.target.value)}
+      placeholder="XX"
+      style={{width:54,background:isXX?"#0c0e1a":"#060709",border:"1px solid "+borderClr,color:isXX?"#2d3158":CLR[p.col],padding:"8px",borderRadius:6,fontSize:15,fontFamily:"monospace",textAlign:"center",outline:"none",fontWeight:700,opacity:isXX?0.5:1}}/>
+  </div>;
 }
 function MissingColPred(p){
   const {col,pred,maxV}=p;
