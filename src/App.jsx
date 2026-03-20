@@ -102,32 +102,37 @@ const A={
   LCGFit:         s=>{
     if(s.length<3)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,a:1,c:0};
-    // Wider search: comprehensive LCG parameter space
-    for(const a of[1,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,61,71,73,79,83,89,97])
+    const perfect=n-1; // max achievable exact score
+    outer:for(const a of[1,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,61,71,73,79,83,89,97])
       for(const c of[0,1,3,5,7,11,13,17,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97]){
         let sc=0;
         for(let i=1;i<n;i++){
           const pred=M.mod(a*s[i-1]+c);
           if(pred===s[i])sc+=1;
           else if(M.near(pred,s[i],1))sc+=0.3;
+          // Early-abort: remaining steps can't beat best even if all exact
+          else if(sc+(n-i)<best.sc)break;
         }
-        if(sc>best.sc)best={sc,a,c};
+        if(sc>best.sc){best={sc,a,c};if(sc>=perfect)break outer;}
       }
     return[M.mod(best.a*s[n-1]+best.c)];
   },
   Recurrence2:    s=>{
     if(s.length<3)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,pred:s[n-1]};
-    for(const a of[1,2,3,-1,-2,5,-3])
+    const perfect=(n-2)*1.4; // approx max with recency weights
+    outer2:for(const a of[1,2,3,-1,-2,5,-3])
       for(const b of[0,1,-1,2,-2,3])
         for(const c of[0,1,-1,3,-3,7,-7,11,-11,13,-13]){
           let sc=0;
           for(let i=2;i<n;i++){
             const p=M.mod(a*s[i-1]+b*s[i-2]+c);
-            if(p===s[i])sc+=1;
-            else if(M.near(p,s[i],1))sc+=0.4;
+            const rw=i>=n-5?1.5:1.0; // recency weight
+            if(p===s[i])sc+=1.0*rw;
+            else if(M.near(p,s[i],1))sc+=0.4*rw;
+            else if(sc+(n-i)*1.5<best.sc)break;
           }
-          if(sc>best.sc)best={sc,pred:M.mod(a*s[n-1]+b*s[n-2]+c)};
+          if(sc>best.sc){best={sc,pred:M.mod(a*s[n-1]+b*s[n-2]+c)};if(sc>=perfect)break outer2;}
         }
     return[best.pred];
   },
@@ -152,21 +157,23 @@ const A={
   AR3:            s=>{
     if(s.length<4)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,pred:s[n-1]};
-    for(const a of[0.2,0.4,0.5,0.6,0.7,0.8,1.0,1.2])
+    outer3:for(const a of[0.2,0.4,0.5,0.6,0.7,0.8,1.0,1.2])
       for(const b of[-0.4,-0.2,-0.1,0,0.1,0.2,0.4])
         for(const c of[-0.3,-0.1,0,0.1,0.3]){
           let sc=0;
           for(let i=3;i<n;i++){
             const p=M.mod(Math.round(a*s[i-1]+b*s[i-2]+c*s[i-3]));
-            if(p===s[i])sc+=1;
-            else if(M.near(p,s[i],2))sc+=0.3;
+            const rw=i>=n-5?1.5:1.0;
+            if(p===s[i])sc+=1.0*rw;
+            else if(M.near(p,s[i],2))sc+=0.3*rw;
+            else if(sc+(n-i)*1.5<best.sc)break;
           }
-          if(sc>best.sc)best={sc,pred:M.mod(Math.round(a*s[n-1]+b*s[n-2]+c*s[n-3]))};
+          if(sc>best.sc){best={sc,pred:M.mod(Math.round(a*s[n-1]+b*s[n-2]+c*s[n-3]))};if(sc>=(n-3)*1.4)break outer3;}
         }
     return[best.pred];
   },
   MovReg:         s=>{const sl=s.slice(-6),n=sl.length;let sx=0,sy=0,sxy=0,sx2=0;sl.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});const D=n*sx2-sx*sx;if(!D)return[sl[n-1]];const a=(n*sxy-sx*sy)/D,b=(sy-a*sx)/n;return[M.mod(Math.round(a*n+b))];},
-  LogMap:         s=>{if(s.length<3)return[s[s.length-1]];const x=s[s.length-1]/99;let bestR=3.5,bestSc=-1;for(let r=2.5;r<=3.99;r+=0.1){let sc=0,xr=s[0]/99;for(let i=1;i<s.length;i++){xr=r*xr*(1-xr);if(Math.abs(xr*99-s[i])<5)sc++;}if(sc>bestSc){bestSc=sc;bestR=r;}}return[M.mod(Math.round(bestR*(x)*(1-x)*99))];},
+  LogMap:         s=>{if(s.length<3)return[s[s.length-1]];const x=s[s.length-1]/99;let bestR=3.5,bestSc=-1;for(let r=2.5;r<=3.99;r+=0.04){let sc=0,xr=s[0]/99;for(let i=1;i<s.length;i++){xr=r*xr*(1-xr);if(Math.abs(xr*99-s[i])<4)sc++;}if(sc>bestSc){bestSc=sc;bestR=r;if(sc>=s.length-2)break;}}return[M.mod(Math.round(bestR*(x)*(1-x)*99))];},
   PhaseNN:        s=>{if(s.length<6)return[s[s.length-1]];const n=s.length;let best={dist:Infinity,next:s[n-1]};for(let i=2;i<n-1;i++){const d=M.cd(s[i],s[n-1])+M.cd(s[i-1],s[n-2])+M.cd(s[i-2],s[n-3]);if(d<best.dist)best={dist:d,next:s[i+1]};}return[best.next];},
   FreqDecay:      s=>{
     const freq={};
@@ -181,20 +188,21 @@ const A={
   Markov:         s=>{
     if(s.length<2)return[s[0]||0];
     const tr={};
-    const trDec={}; // decade-level fallback
-    for(let i=1;i<s.length;i++){
-      const k=s[i-1],w=i>s.length-4?2:1;
+    const trDec={};
+    const n=s.length;
+    for(let i=1;i<n;i++){
+      const k=s[i-1];
+      // Exponential recency: last 4 = weight 4, next 4 = weight 2, rest = 1
+      const w=i>=n-4?4:i>=n-8?2:1;
       if(!tr[k])tr[k]={};
       tr[k][s[i]]=(tr[k][s[i]]||0)+w;
-      // Also track decade transitions for fallback
       const dk=Math.floor(s[i-1]/10);
       if(!trDec[dk])trDec[dk]={};
       trDec[dk][Math.floor(s[i]/10)]=(trDec[dk][Math.floor(s[i]/10)]||0)+w;
     }
-    const k=s[s.length-1];
+    const k=s[n-1];
     if(tr[k]&&Object.keys(tr[k]).length>0)
       return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
-    // Decade fallback: find most likely target decade, return its mean from history
     const dk=Math.floor(k/10);
     if(trDec[dk]&&Object.keys(trDec[dk]).length>0){
       const bestDecade=parseInt(Object.entries(trDec[dk]).sort((a,b)=>b[1]-a[1])[0][0]);
@@ -369,37 +377,45 @@ const A={
 
   // ── NEW PRNG FAMILIES (v14 additions) ────────────
 
-  // ICG (Inverse Congruential Generator): x[n+1] = (a * x[n]^-1 + c) mod p
-  // Modular inverse via Fermat's little theorem (p must be prime).
-  // Different mathematical family from LCG — fits generators using reciprocal maps.
+  // ICG (Inverse Congruential Generator)
   ICG:            s=>{
     if(s.length<3)return[s[s.length-1]];
     function modInv(x,p){if(x===0)return 0;let r=1,b=p-2,base=x%p;while(b>0){if(b&1)r=r*base%p;base=base*base%p;b>>=1;}return r;}
     const n=s.length;let best={sc:-1,a:1,c:0,p:97};
-    for(const p of[97,89,83,79,73,71,67,61,59,53,47,43,41])
+    const primes=[97,89,83,79,73,71,67,61,59,53,47,43,41];
+    outerICG:for(const p of primes){
+      // Pre-compute all inverses for this prime once
+      const inv=new Array(n);for(let i=0;i<n;i++)inv[i]=modInv(s[i],p);
       for(const a of[1,2,3,5,7,11,13,17,19,23])
-      for(const c of[0,1,3,7,11,13,17,23,29,31]){
-        let sc=0;
-        for(let i=1;i<n;i++){const inv=modInv(s[i-1],p);if(M.mod(a*inv+c)===s[i])sc++;}
-        if(sc>best.sc)best={sc,a,c,p};
-      }
+        for(const c of[0,1,3,7,11,13,17,23,29,31]){
+          let sc=0;
+          for(let i=1;i<n;i++){
+            if(M.mod(a*inv[i-1]+c)===s[i])sc++;
+            else if(sc+(n-i)<best.sc)break;
+          }
+          if(sc>best.sc){best={sc,a,c,p};if(sc>=n-1)break outerICG;}
+        }
+    }
     const inv=modInv(s[n-1],best.p);
     return[M.mod(best.a*inv+best.c)];
   },
 
   // TruncLCG: state=(a*state+c)%M_big, output=floor(state/shift) mod 100
-  // Catches generators whose internal state space is larger than the output range.
-  // Fundamentally different from plain LCGFit (which uses modulus=100 directly).
   TruncLCG:       s=>{
     if(s.length<3)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,a:3,c:11,M:967,shift:10};
-    for(const a of[3,5,7,11,13,17,19,23,29,31])
+    const perfect=n-1;
+    outerTL:for(const a of[3,5,7,11,13,17,19,23,29,31])
       for(const c of[1,3,7,11,13,17,23,29])
       for(const Mb of[997,991,983,977,971,967,953,947,941,937,929,919,911])
       for(const shift of[1,2,3,5,7,10,13]){
         let sc=0,state=s[0];
-        for(let i=1;i<n;i++){state=(a*state+c)%Mb;if(M.mod(Math.floor(state/shift))===s[i])sc++;}
-        if(sc>best.sc)best={sc,a,c,M:Mb,shift};
+        for(let i=1;i<n;i++){
+          state=(a*state+c)%Mb;
+          if(M.mod(Math.floor(state/shift))===s[i])sc++;
+          else if(sc+(n-i)<best.sc)break;
+        }
+        if(sc>best.sc){best={sc,a,c,M:Mb,shift};if(sc>=perfect)break outerTL;}
       }
     let state=s[n-1];state=(best.a*state+best.c)%best.M;
     return[M.mod(Math.floor(state/best.shift))];
@@ -427,22 +443,22 @@ const A={
     return[M.mod(diff)];
   },
 
-  // PCGLike (Permuted Congruential Generator): LCG state + XOR-shift output permutation
-  // More statistically sound than plain LCG — harder to detect but still fittable.
-  // The non-linear output scrambling distinguishes it from CombinedLCG.
+  // PCGLike (Permuted Congruential Generator)
   PCGLike:        s=>{
     if(s.length<3)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,a:5,c:11,M:256,k:5};
-    for(const a of[3,5,7,11,13,17,21,29,37])
+    const perfect=n-1;
+    outerPCG:for(const a of[3,5,7,11,13,17,21,29,37])
       for(const c of[1,3,5,7,11,13,17,23])
       for(const Mb of[128,256,512,1024,2048])
-      for(const k of[2,3,4,5,6,7]){
+      for(const k of[2,3,4,5,6,7,8,9]){
         let sc=0,state=s[0];
         for(let i=1;i<n;i++){
           state=(a*state+c)%Mb;
           if(M.mod(state^(state>>k))===s[i])sc++;
+          else if(sc+(n-i)<best.sc)break;
         }
-        if(sc>best.sc)best={sc,a,c,M:Mb,k};
+        if(sc>best.sc){best={sc,a,c,M:Mb,k};if(sc>=perfect)break outerPCG;}
       }
     let state=s[n-1];state=(best.a*state+best.c)%best.M;
     return[M.mod(state^(state>>best.k))];
@@ -464,12 +480,11 @@ const A={
   },
 
   // RowSeedLCG: x[row]=(a*row + b*row² + c) mod 100
-  // Detects stateless per-row generators (seed=row/date, not x[n-1]).
-  // Fundamentally different from all sequence-based algos — fits table-lookup PRNGs.
   RowSeedLCG:     s=>{
     if(s.length<4)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,a:1,b:0,c:0};
-    for(const a of[1,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97])
+    const perfect=n*1.4;
+    outerRS:for(const a of[1,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97])
       for(const b of[0,1,2,3,5,7,11,13])
       for(const c of[0,1,3,7,11,13,17,23,29,37,43,53,61,71,79,89,97]){
         let sc=0;
@@ -478,8 +493,9 @@ const A={
           const p=M.mod(a*row+b*row*row+c);
           if(p===s[i])sc+=1;
           else if(M.near(p,s[i],2))sc+=0.4;
+          else if(sc+(n-i)*1.4<best.sc)break;
         }
-        if(sc>best.sc)best={sc,a,b,c};
+        if(sc>best.sc){best={sc,a,b,c};if(sc>=perfect)break outerRS;}
       }
     const nextRow=n+1;
     return[M.mod(best.a*nextRow+best.b*nextRow*nextRow+best.c)];
@@ -957,21 +973,36 @@ const A={
   // Bimodal detector: series oscillates between two clusters (low and high band)
   BimodalBounce:  s=>{
     if(s.length<6)return[s[s.length-1]];
-    const sorted=[...s].sort((a,b)=>a-b);
     const mid=M.median(s);
     const low=s.filter(v=>v<mid),high=s.filter(v=>v>=mid);
     if(low.length<2||high.length<2)return[s[s.length-1]];
-    // Is the series alternating between clusters?
+    const loMean=M.mean(low),hiMean=M.mean(high);
+    // Empirical: across all months every col splits lo≈25, hi≈75 with ~45-55 gap
+    // Count recent band transitions (last 8 values)
+    const recent=s.slice(-8);
     let switches=0;
-    for(let i=1;i<s.length;i++){if((s[i]<mid)!==(s[i-1]<mid))switches++;}
-    const switchRate=switches/(s.length-1);
-    if(switchRate>0.5){
-      // Strong bimodal alternation — predict opposite cluster's mean
-      const lastLow=s[s.length-1]<mid;
+    for(let i=1;i<recent.length;i++){if((recent[i]<mid)!==(recent[i-1]<mid))switches++;}
+    const switchRate=switches/(recent.length-1);
+    const lastLow=s[s.length-1]<mid;
+    if(switchRate>0.45){
+      // Alternating — predict opposite cluster
+      // Return both the mean AND the most frequent value in target cluster
       const targetCluster=lastLow?high:low;
-      return[M.mod(Math.round(M.mean(targetCluster)))];
+      const tMean=M.mod(Math.round(M.mean(targetCluster)));
+      const freq={};targetCluster.forEach(v=>{freq[v]=(freq[v]||0)+1;});
+      const tMode=parseInt(Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0]);
+      return tMean===tMode?[tMean]:[tMean,tMode];
     }
-    return[s[s.length-1]];
+    if(switchRate<0.2&&s.length>=8){
+      // Sticky in current band — continue, predict within same cluster
+      const sameCluster=lastLow?low:high;
+      return[M.mod(Math.round(M.mean(sameCluster)))];
+    }
+    // Mixed regime: predict whichever band has higher recent frequency
+    const recentLow=recent.filter(v=>v<mid).length;
+    const recentHigh=recent.filter(v=>v>=mid).length;
+    if(recentLow>recentHigh)return[M.mod(Math.round(loMean))];
+    return[M.mod(Math.round(hiMean))];
   },
 
     SumConstraint:  s=>{
@@ -1089,10 +1120,150 @@ const A={
       .slice(0,2)
       .map(([v])=>parseInt(v));
   },
-};
+  // ── BimodalBandPredict: uses fitted lo/hi cluster to predict next band ──
+  // Empirical: every col in every month has lo≈25 and hi≈75 bands (std<22 each).
+  BimodalBandPredict: s=>{
+    if(s.length<8)return[s[s.length-1]];
+    const sorted=[...s].sort((a,b)=>a-b);
+    const mid=sorted[Math.floor(sorted.length/2)];
+    const lo=s.filter(v=>v<mid),hi=s.filter(v=>v>=mid);
+    if(lo.length<3||hi.length<3)return[s[s.length-1]];
+    const loMean=M.mean(lo),hiMean=M.mean(hi);
+    if(hiMean-loMean<20)return[s[s.length-1]];
+    const isLo=v=>v<mid;
+    let runLen=1;
+    for(let i=s.length-2;i>=0&&isLo(s[i])===isLo(s[s.length-1]);i--)runLen++;
+    // Estimate average run length from history
+    let runTotal=0,runCount=0,cur=1;
+    for(let i=1;i<s.length;i++){if(isLo(s[i])===isLo(s[i-1]))cur++;else{runTotal+=cur;runCount++;cur=1;}}
+    if(cur>0){runTotal+=cur;runCount++;}
+    const avgRun=runCount>1?runTotal/runCount:2;
+    const currentLo=isLo(s[s.length-1]);
+    if(runLen>=Math.max(1,Math.round(avgRun))){
+      const targetCluster=currentLo?hi:lo;
+      const freq={};targetCluster.forEach(v=>{freq[v]=(freq[v]||0)+1;});
+      const mode=parseInt(Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0]);
+      const tmean=M.mod(Math.round(currentLo?hiMean:loMean));
+      return tmean===mode?[tmean]:[tmean,mode];
+    }
+    const curCluster=currentLo?lo:hi;
+    return[M.mod(Math.round(M.mean(curCluster)))];
+  },
 
-ALGO_COUNT=Object.keys(A).length;
+  // ── PairComplementAlgo: standalone complement-pair candidate generator ──
+  // Empirical: A+B≈100 in 17.2% of all rows. Any pair near 100 at ~7-8% each.
+  PairComplementAlgo: s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const v=s[s.length-1];
+    return[M.mod(100-v),M.mod(99-v),M.mod(101-v)];
+  },
+
+  // ── DigSumPairTarget: ds(pair sum) concentrates on 2-3 values per month ──
+  // Empirical: Apr ds(A+B) top=[4(6x),9(6x)]; May top=[8(6x),5(5x)].
+  DigSumPairTarget: s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const n=s.length;
+    const ds=v=>{let x=Math.abs(v%100);let r=0;while(x>0){r+=x%10;x=Math.floor(x/10);}return r<10?r:Math.floor(r/10)+r%10;};
+    const freq={};
+    for(let i=1;i<n;i++)freq[ds(s[i-1]+s[i])]=(freq[ds(s[i-1]+s[i])]||0)+1;
+    const topDs=parseInt(Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0]);
+    const last=s[n-1],avg=M.mean(s);
+    const candidates=[];
+    for(let x=0;x<=99;x++){if(ds(last+x)===topDs)candidates.push(x);}
+    if(!candidates.length)return[s[n-1]];
+    candidates.sort((a,b)=>Math.abs(a-avg)-Math.abs(b-avg));
+    return candidates.slice(0,2);
+  },
+
+  // ── StickyPeriod: detects values that repeat at a consistent interval ──
+  // Empirical basis: Feb C shows 84 at gap=4 twice, 95 at gap=4 twice → period-4 structure.
+  // Feb D shows 88 at gap=5. This finds the dominant repeat gap and predicts accordingly.
+  StickyPeriod:   s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const n=s.length;
+    // For each value in recent history, collect all gaps between occurrences
+    const gapVotes={};
+    const recentWindow=s.slice(-Math.min(n,20));
+    recentWindow.forEach(v=>{
+      const positions=[];
+      for(let i=0;i<n;i++)if(M.cd(s[i],v)<=2)positions.push(i);
+      if(positions.length<2)return;
+      for(let i=1;i<positions.length;i++){
+        const g=positions[i]-positions[i-1];
+        if(g>=2&&g<=18){ // realistic period range
+          const rw=positions[i]>n-8?2.0:1.0; // recent gaps matter more
+          gapVotes[g]=(gapVotes[g]||0)+rw;
+        }
+      }
+    });
+    if(!Object.keys(gapVotes).length)return[s[n-1]];
+    // Top 2 gap candidates
+    const topGaps=Object.entries(gapVotes).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([g])=>parseInt(g));
+    const preds=[];
+    topGaps.forEach(g=>{
+      const srcIdx=n-1-g;
+      if(srcIdx>=0){
+        // What value came AFTER the last occurrence of s[srcIdx]?
+        const srcVal=s[srcIdx];
+        const prevOcc=[];
+        for(let i=0;i<n-1;i++)if(M.cd(s[i],srcVal)<=2)prevOcc.push(i);
+        // Vote on what follows the source value
+        const nexts={};
+        prevOcc.forEach(pos=>{if(s[pos+1]!=null)nexts[s[pos+1]]=(nexts[s[pos+1]]||0)+1;});
+        const topNext=Object.entries(nexts).sort((a,b)=>b[1]-a[1])[0];
+        if(topNext)preds.push(parseInt(topNext[0]));
+        else preds.push(M.mod(srcVal));
+      }
+    });
+    return preds.length?preds:[s[n-1]];
+  },
+
+  // ── DecadeSticky: recent values cluster in a decade; predict within that decade ──
+  // Empirical basis: Row02 B consistently in 90s (91,90,96); Row14 B in 80s (82,84,89).
+  // Identifies the "home decade" of recent values and predicts within it.
+  DecadeSticky:   s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const recent=s.slice(-10);
+    // Weight decades by recency
+    const decFreq={};
+    recent.forEach((v,i)=>{
+      const dec=Math.floor(v/10);
+      decFreq[dec]=(decFreq[dec]||0)+Math.pow(1.6,i);
+    });
+    const topDec=parseInt(Object.entries(decFreq).sort((a,b)=>b[1]-a[1])[0][0]);
+    // Within that decade, find the historically most frequent values
+    const decVals=s.filter(v=>Math.floor(v/10)===topDec);
+    if(decVals.length<2)return[topDec*10+5];
+    const valFreq={};
+    decVals.forEach((v,i)=>{
+      const rw=i>=decVals.length-4?2.0:1.0;
+      valFreq[v]=(valFreq[v]||0)+rw;
+    });
+    const topVals=Object.entries(valFreq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+    return topVals.length?topVals:[M.mod(Math.round(M.mean(decVals)))];
+  },
+};
 console.log("Algo count:",ALGO_COUNT);
+
+// ── ALGO FAMILY MAP ───────────────────────────────
+// Diversity bonus: when multiple INDEPENDENT families agree on a value, boost it.
+// This prevents a cluster of similar algos from dominating just by sheer count.
+const _FAM={};
+const _FAMS={
+  stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt","RetraceRebound","SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend"],
+  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget"],
+  momentum:["WtdMomentum","SecondDiff","LastGap","AutoCorr","Cyclic","AR3","LCGFit","Recurrence2","LogMap","XorChain","ModSearch","BestStep","ArithSeqDetect","StepAccelerate","ZigZag","DFTPeriod","ALFG","CrossLagSelf","FreqMomentum"],
+  transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur","RevLag2","SymmetricMirror","BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget"],
+  prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong"],
+};
+Object.entries(_FAMS).forEach(([fam,names])=>names.forEach(n=>{_FAM[n]=fam;}));
+function _getFamily(name){
+  if(_FAM[name])return _FAM[name];
+  if(name.startsWith("Lin_")||name.startsWith("Gap_")||name.startsWith("Cyc_")||name.startsWith("Rec2_")||name.startsWith("ModStep_"))return"momentum";
+  if(name.startsWith("DsChain_")||name.startsWith("Cross_"))return"transform";
+  if(name.startsWith("Mut_"))return"seq";
+  return"other";
+}
 
 // ══════════════════════════════════════════════════
 // ── DATE-AWARE ENGINE ─────────────────────────────
@@ -1325,40 +1496,61 @@ function getDateSignals(col,data,targetDateStr){
 }
 
 // Weight multiplier for date signals — calibrated to not overpower per-series algos
+// NOTE: Anniversary boosted to 2.4 — same day+month cross-year is DOMINANT in this data
+// (Row02 B: 91,90,96 std=3.2; Row14 B: 82,84,89 std=3.6)
 const DATE_SIGNAL_WEIGHTS={
   "DOW_Bias":1.4,"DOW_HighDay":1.2,"DOW_LowDay":1.2,"DOW_Seq":1.3,
-  "Month_Avg":1.5,"Month_DsShift":1.1,"Month_Seq":1.3,
+  "Month_Avg":1.8,"Month_DsShift":1.1,"Month_Seq":1.5,
   "Season_Winter":1.2,"Season_Spring":1.2,"Season_Summer":1.2,"Season_Fall":1.2,
   "Lunar_NewMoon":1.0,"Lunar_WaxingQ":1.0,"Lunar_FullMoon":1.1,"Lunar_WaningQ":1.0,
   "DateSum_Mod":1.3,"DateSum_Rev":1.0,"DateSum_Ds":1.0,
   "DateDR_Match":1.4,"DateDR_x11":0.9,
-  "DayRange_Avg":1.4,"WOM_Avg":1.3,"DayParity_Avg":1.1,"MonthHalf_Avg":1.2,
+  "DayRange_Avg":1.5,"WOM_Avg":1.4,"DayParity_Avg":1.1,"MonthHalf_Avg":1.2,
   "Weekend_Avg":1.2,"Weekday_Avg":1.2,
   "YearCycle7":1.1,
   "DxM_Mod":0.9,"DpM_Ds":0.8,"Day_x3_M":0.8,
   "Day_Rev":1.1,"Day_Ds":1.0,"Day_Comp":0.8,"Day_x3Mod":0.8,"Day_x7Mod":0.8,
-  "Anniversary":1.6, // same day+month from past years — strong signal
+  "Anniversary":2.4, // same day+month from past years — empirically the strongest single signal
 };
 
 // ── SAME-ROW HISTORY ──────────────────────────
 // Row 15 in Jan, Feb, Mar all tend toward similar values.
-// Since row = day-of-month and data cycles every ~31 rows,
-// this directly exploits the monthly recurrence pattern.
-// Returns predicted value + confidence based on sample size.
+// EMPIRICALLY strongest signal: Row02 B=91,90,96 (std=3.2); Row14 B=82,84,89 (std=3.6).
 function getSameRowHistory(col,data,predRow){
   const res={};
-  // Collect all past values for this exact row number
   const sameRow=data.filter(r=>r.row===predRow&&ok(r[col]));
   if(sameRow.length<2)return res;
   const vals=sameRow.map(r=>r[col]);
   const avg=M.mean(vals);
   const std=M.std(vals);
+
+  // SameRowAvg: simple mean of all historical occurrences at this row
   res["SameRowAvg"]=[M.mod(Math.round(avg))];
-  // If values are tightly clustered (low std), high confidence
+
+  // SameRowTight: when std < 5 across 3+ months, this is near-deterministic
+  // e.g. Row02 B: [91,90,96] std=3.2 → almost always ~92
+  if(std<5&&vals.length>=3){
+    res["SameRowTight"]=[M.mod(Math.round(avg))];
+  }
+  // SameRowSnug: slightly looser tight cluster (std<8, still very predictive)
+  if(std>=5&&std<8&&vals.length>=3){
+    res["SameRowSnug"]=[M.mod(Math.round(M.median(vals)))];
+  }
+  // SameRowMed: median for robustness against outliers (any tightness)
   if(std<8&&vals.length>=3){
     res["SameRowMed"]=[M.mod(Math.round(M.median(vals)))];
   }
-  // Trend across occurrences: is row 15 creeping up or down over time?
+  // SameRowLast: most recent occurrence — often better than mean (regime drift)
+  if(vals.length>=2){
+    res["SameRowLast"]=[M.mod(vals[vals.length-1])];
+  }
+  // SameRowWtd: exponentially-recency-weighted average (recent months count more)
+  if(vals.length>=3){
+    let ws=0,wv=0;
+    vals.forEach((v,i)=>{const w=Math.pow(2,i);ws+=w;wv+=v*w;});
+    res["SameRowWtd"]=[M.mod(Math.round(wv/ws))];
+  }
+  // Trend across occurrences: is this row creeping up or down over time?
   if(vals.length>=3){
     const n=vals.length;
     let g=vals[n-1]-vals[n-2];
@@ -1382,7 +1574,8 @@ function getRowSumSignal(col,data,knownPreds){
   const avgSum=M.mean(sums);
   const stdSum=M.std(sums);
   // Only use this signal if sum is reasonably stable
-  if(stdSum>40)return res;
+  // Empirical: May has tightest std=39.2; Jan has loosest std=67.5 — relax threshold to 70
+  if(stdSum>70)return res;
   // Known values for this prediction round (other cols already predicted)
   const otherCols=COLS.filter(c=>c!==col);
   const knownSum=otherCols.reduce((acc,c)=>{
@@ -1650,6 +1843,28 @@ function getTemporalChain(targetCol,data){
   });
   if(bestCol&&ok(last[bestCol]))res["Corr_"+bestCol]=[M.mod(last[bestCol])];
 
+  // 8. ── CROSS-COL COMPLEMENT PAIR DETECTOR ──────────────────────────────
+  // Empirical: A+B≈100 in 17.2% of all rows (strongest pair), CD≈100 in 14.8%.
+  // Tests targets 98-102 for each pair to find the most consistent sum.
+  {
+    const pairs=COLS.filter(c=>c!==targetCol);
+    let bestPairCol=null,bestPairHits=0,bestTarget=100;
+    const complete=data.filter(r=>COLS.every(c=>ok(r[c])));
+    if(complete.length>=5){
+      pairs.forEach(partnerCol=>{
+        for(const target of[98,99,100,101,102]){
+          let hits=0;
+          complete.forEach(r=>{if(Math.abs(r[targetCol]+r[partnerCol]-target)<=3)hits++;});
+          if(hits>bestPairHits){bestPairHits=hits;bestPairCol=partnerCol;bestTarget=target;}
+        }
+      });
+      const threshold=Math.max(3,Math.ceil(complete.length*0.12));
+      if(bestPairCol&&bestPairHits>=threshold&&ok(last[bestPairCol])){
+        res["ComplementPair_"+bestPairCol]=[M.mod(bestTarget-last[bestPairCol])];
+      }
+    }
+  }
+
   return res;
 }
 
@@ -1660,18 +1875,18 @@ function getCross(col,data){return getTemporalChain(col,data);}
 function btScore(fn,series){
   const n=series.length;if(n<5)return 0.05;
   const from=Math.max(3,n-31);let score=0,cnt=0;
-  // Avoid series.slice(0,i) allocation per iter — use a growing view via subarray trick
-  // We reuse the same array, passing a Proxy-free approach: build history once and truncate
-  const hist=series.slice(0,from); // start with initial history
+  const hist=series.slice(0,from);
   for(let i=from;i<n;i++){
     try{
       const p=fn(hist),a=series[i];
       const precisionMult=p.length===1?1.0:p.length===2?0.8:p.length===3?0.65:0.5;
-      if(p.some(v=>v===a))score+=1.0*precisionMult;
-      else if(p.some(v=>M.near(v,a,2)))score+=0.4*precisionMult;
-      if(p[0]===a)score+=0.25;
-      cnt++;
-      hist.push(series[i]); // extend history incrementally (O(1) amortized)
+      // Recency weight: last 6 steps count 2x, giving better signal for recent regime
+      const recencyW=i>=n-6?2.0:i>=n-12?1.4:1.0;
+      if(p.some(v=>v===a))score+=(1.0*precisionMult)*recencyW;
+      else if(p.some(v=>M.near(v,a,2)))score+=(0.4*precisionMult)*recencyW;
+      if(p[0]===a)score+=0.25*recencyW;
+      cnt+=recencyW;
+      hist.push(series[i]);
     }catch(e){hist.push(series[i]);}
   }
   return cnt?score/cnt:0.05;
@@ -1717,14 +1932,12 @@ function makeCustomFn(code){
 }
 
 // ── STACKED META-LEARNER ──────────────────────
-// Learns which LINEAR COMBINATION of algos works best on YOUR data
-// ── FIX 1: REAL META-LEARNER ──────────────────────
-// Uses stored per-algo predictions from accLog.algoDetails
-// (populated in checkAndLearn — fix 3). Computes each algo's
-// real historical hit rate and uses it to boost/penalise votes.
+// EMA-based: recent sessions count exponentially more than old ones.
+// alpha=0.25 → half-life ≈ 3 sessions (fast adaptation).
 function buildMetaModel(accLog){
   if(!accLog||accLog.length<3)return null;
-  const hits={},totals={};
+  const ema={},count={};
+  const alpha=0.25;
   accLog.forEach(entry=>{
     if(!entry.algoDetails)return;
     COLS.forEach(col=>{
@@ -1734,16 +1947,18 @@ function buildMetaModel(accLog){
       if(!details)return;
       Object.entries(details).forEach(([name,pred])=>{
         if(!ok(pred))return;
-        totals[name]=(totals[name]||0)+1;
+        count[name]=(count[name]||0)+1;
         const ex=M.mod(Math.round(pred))===actual;
         const nr=!ex&&M.near(M.mod(Math.round(pred)),actual,2);
-        hits[name]=(hits[name]||0)+(ex?1:nr?0.4:0);
+        const hit=ex?1:nr?0.4:0;
+        // EMA: new = alpha*hit + (1-alpha)*old; initialise to 0.15 (prior)
+        ema[name]=count[name]===1?0.15*(1-alpha)+alpha*hit:(1-alpha)*(ema[name]||0.15)+alpha*hit;
       });
     });
   });
   const weights={};
-  Object.keys(totals).forEach(name=>{
-    weights[name]=totals[name]>=3?hits[name]/totals[name]:null;
+  Object.keys(count).forEach(name=>{
+    weights[name]=count[name]>=2?ema[name]:null;
   });
   return{weights,trained:accLog.length};
 }
@@ -1830,23 +2045,25 @@ function getRegime(series){
   if(avgGap<3)return"flat";
   if(avgGap>20)return"trending";
   // Bimodal detection: if values cluster strongly in two separate bands
-  if(series.length>=8){
-    const mid=M.median(series);
-    const low=series.filter(v=>v<mid),high=series.filter(v=>v>=mid);
+  // Empirical: ALL columns in ALL months show bimodal with gap≈45-55
+  if(series.length>=6){
+    const med=M.median(series);
+    const low=series.filter(v=>v<med),high=series.filter(v=>v>=med);
     if(low.length>=3&&high.length>=3){
       const gapBetween=M.mean(high)-M.mean(low);
       const spreadLow=M.std(low),spreadHigh=M.std(high);
-      if(gapBetween>20&&spreadLow<12&&spreadHigh<12)return"bimodal";
+      // Lower thresholds: gap>20 and each cluster std<25 (empirically justified)
+      if(gapBetween>20&&spreadLow<25&&spreadHigh<25)return"bimodal";
     }
   }
   return"normal";
 }
 // Regime-gated algo pool: FULL exclusion not just multipliers
 const REGIME_POOLS={
-  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod"]),
-  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf"]),
+  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget"]),
+  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod"]),
   trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG"]),
-  bimodal:null, // bimodal is shape-only — allow ALL algos (same as normal), BimodalBounce gets extra regime boost
+  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5"]),
   normal:null
 };
 function algoAllowed(name,regime){
@@ -1860,6 +2077,10 @@ const TEMPORAL_BOOST={
   "TempBlend":2.2,"NearestCol":2.0,"NearestRev":1.7,"NearestDs":1.7,"NearestComp":1.5,
   "D_to_nextA":2.5,"D_to_nextA_Rev":1.8,"D_to_nextA_Ds":1.8,"B_to_nextA":1.6,"C_to_nextA":1.7,
   "TempRecency":1.9,"SharedDR":1.6,"SameDs_AB":1.5,"SameDs_BC":1.5,"SameDs_CD":1.5,
+  // Complement pair: empirically strong when pair sum ≈ 100 consistently
+  "ComplementPair_A":2.2,"ComplementPair_B":2.2,"ComplementPair_C":2.2,"ComplementPair_D":2.2,
+  // BimodalBandPredict: strong empirical signal — every col in every month is bimodal
+  "BimodalBandPredict":1.8,"BimodalBounce":1.6,
 };
 
 // ── PREDICT ────────────────────────────────────
@@ -1912,7 +2133,7 @@ function predictCol(col,data,W,customs,targetDate){
       const ranW=rnw[curRange]?rnw[curRange][name]!=null?rnw[curRange][name]:1:1;
       const regW=rgw[name]!=null?rgw[name]:1;
       const nScore=ns[name]!=null?ns[name]:0;
-      const nMult=nScore>1.5?1.6:nScore>0.5?1.3:nScore>0?1.1:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
+      const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
       const btFactor=0.2+Math.sqrt(bt)*3.5;
       const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult;
       const preds=fn(series);
@@ -1970,8 +2191,15 @@ function predictCol(col,data,W,customs,targetDate){
     const sameRowSigs=getSameRowHistory(col,data,predRow);
     Object.entries(sameRowSigs).forEach(([name,preds])=>{
       const lw=gw[name]!=null?gw[name]:1;
-      // SameRowAvg gets high base weight — it's a direct monthly recurrence signal
-      const baseW=name==="SameRowAvg"?2.2:name==="SameRowMed"?2.0:1.6;
+      // SameRowTight: std<5 across months = near-deterministic → highest weight
+      // SameRowAvg/Wtd/Last: strong monthly recurrence signals
+      const baseW=name==="SameRowTight"?4.2
+        :name==="SameRowSnug"?3.2
+        :name==="SameRowAvg"?2.8
+        :name==="SameRowWtd"?2.6
+        :name==="SameRowLast"?2.4
+        :name==="SameRowMed"?2.2
+        :1.8; // SameRowTrend
       const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
       details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"rowhistory"};
@@ -2015,7 +2243,7 @@ function predictCol(col,data,W,customs,targetDate){
       const ranW=rnw[curRange]?rnw[curRange][ca.name]!=null?rnw[curRange][ca.name]:1:1;
       const regW=rgw[ca.name]!=null?rgw[ca.name]:1;
       const nScore=ns[ca.name]!=null?ns[ca.name]:0;
-      const nMult=nScore>1.5?1.6:nScore>0.5?1.3:nScore>0?1.1:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
+      const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
       const btFactor=0.2+Math.sqrt(_bt)*3.5;
       const w=btFactor*_wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult;
       const preds=fn(series);
@@ -2026,6 +2254,26 @@ function predictCol(col,data,W,customs,targetDate){
   // Adaptive: redistribute tiny votes (< 1% of max) to reduce noise
   const maxVote=Math.max(...Object.values(votes));
   Object.keys(votes).forEach(v=>{if(votes[v]<maxVote*0.01)delete votes[v];});
+
+  // ── FAMILY DIVERSITY BONUS ─────────────────────────────────
+  // When algos from different mathematical families agree on the same value,
+  // that agreement is much stronger evidence than many similar algos agreeing.
+  // 2 families → 1.25x, 3 families → 1.55x, 4+ families → 1.85x, 5 → 2.2x
+  const votesByFamily={};
+  Object.entries(details).forEach(([name,info])=>{
+    const v=info.pred!=null?M.mod(Math.round(info.pred)):-1;
+    if(v<0||!votes[v])return;
+    const fam=_getFamily(name);
+    if(!votesByFamily[v])votesByFamily[v]=new Set();
+    votesByFamily[v].add(fam);
+  });
+  const FAM_MULT=[1,1,1.25,1.55,1.85,2.2];
+  Object.keys(votesByFamily).forEach(v=>{
+    const vi=parseInt(v);
+    const nFam=votesByFamily[v].size;
+    if(nFam>=2&&votes[vi])votes[vi]*=FAM_MULT[Math.min(nFam,5)];
+  });
+
   // ── CONSENSUS FILTER: weighted agreement (high-weight algos count more) ──
   const algoAgreement={};
   Object.entries(details).forEach(([,info])=>{
@@ -2047,7 +2295,8 @@ function predictCol(col,data,W,customs,targetDate){
       supporters.forEach(([name])=>{
         const rate=metaModel.weights[name];
         if(rate==null)return;
-        const mult=rate>0.5?1.35:rate>0.3?1.1:rate<0.10?0.65:0.9;
+        // Sharper curve: top performers get bigger boost, poor performers get harder penalty
+        const mult=rate>0.55?1.5:rate>0.40?1.25:rate>0.25?1.05:rate<0.08?0.5:0.8;
         votes[vInt]*=mult;
       });
     });
@@ -2064,23 +2313,26 @@ function predictCol(col,data,W,customs,targetDate){
   });
 
   // ── DEAD-ZONE BIAS CORRECTION ──────────────────────
-  // If last 5 predictions all missed in same direction → apply systematic correction
-  if(W._accLog&&W._accLog.length>=5){
-    const recentErrs=W._accLog.slice(-5).map(e=>{
+  // If recent predictions consistently miss in same direction → apply systematic correction
+  if(W._accLog&&W._accLog.length>=4){
+    const recentErrs=W._accLog.slice(-6).map(e=>{
       const pred=e.preds&&e.preds[col];const act=e.actuals&&e.actuals[col];
       if(!ok(pred)||!ok(act))return null;
       let err=act-pred;if(err>50)err-=100;if(err<-50)err+=100;
       return err;
     }).filter(e=>e!=null);
     if(recentErrs.length>=4){
-      const allPos=recentErrs.every(e=>e>2);
-      const allNeg=recentErrs.every(e=>e<-2);
-      if(allPos||allNeg){
-        const avgErr=Math.round(M.mean(recentErrs)*0.5); // apply 50% correction
+      const posCount=recentErrs.filter(e=>e>2).length;
+      const negCount=recentErrs.filter(e=>e<-2).length;
+      const n=recentErrs.length;
+      // Trigger at 4/6 or better (was requiring ALL); scale correction by consistency
+      if(posCount>=Math.ceil(n*0.66)||negCount>=Math.ceil(n*0.66)){
+        const consistencyRatio=Math.max(posCount,negCount)/n; // 0.66–1.0
+        const avgErr=Math.round(M.mean(recentErrs)*0.5*consistencyRatio);
         Object.keys(votes).forEach(v=>{
           const shifted=M.mod(parseInt(v)+avgErr);
           if(votes[parseInt(v)]&&shifted!==parseInt(v)){
-            votes[shifted]=(votes[shifted]||0)+votes[parseInt(v)]*0.4;
+            votes[shifted]=(votes[shifted]||0)+votes[parseInt(v)]*0.5;
           }
         });
       }
@@ -2107,8 +2359,14 @@ function predictCol(col,data,W,customs,targetDate){
   // Scale: 30 algos→40%/20%, 100 algos→25%/12%, 150 algos→18%/9%
   const highThr=Math.max(12,40-ac*0.18);
   const medThr=Math.max(6,20-ac*0.09);
+  // Diversity check: how many algo families support top-1 prediction?
+  const top1FamSupport=top5[0]?((votesByFamily[top5[0].value]||new Set()).size):0;
   // Ensemble variance override: high spread = MAX MED confidence
-  const conf=_ensembleVar>25?"LOW":t1pct>highThr&&_ensembleVar<12?"HIGH":t1pct>medThr?"MED":"LOW";
+  // HIGH requires: vote share + multi-family agreement + low variance
+  const conf=_ensembleVar>25?"LOW"
+    :t1pct>highThr&&_ensembleVar<12&&top1FamSupport>=2?"HIGH"
+    :t1pct>medThr||top1FamSupport>=3?"MED"
+    :"LOW";
   const confClr=conf==="HIGH"?"#34d399":conf==="MED"?"#fbbf24":"#f87171";
   const allP=Object.values(details).map(d=>d.pred).filter(ok);
   const sAllP=[...allP].sort((a,b)=>a-b);
@@ -2122,21 +2380,33 @@ function predictCol(col,data,W,customs,targetDate){
   const dateSigList=Object.entries(details).filter(([,d])=>d.type==="date"&&ok(d.pred)).map(([name,d])=>({name,pred:M.mod(Math.round(d.pred)),w:d.w,match:topVal!=null&&M.mod(Math.round(d.pred))===topVal}));
   const dateAgree=dateSigList.filter(s=>s.match).length;
   const dateTotal=dateSigList.length;
-  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal};
+  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport};
 }
 
 // ── NEURAL RUNNING SCORE (per-algo accuracy tracker) ──
-// Fix 12: adaptive neural alpha by regime
+// Tiered rewards + streak multiplier: consecutive hits compound.
 function updateNeuralScores(pred,actual,prevScores,regime){
   const next={...prevScores};
   if(!pred)return next;
+  // Adaptive learning rate by regime
   const alpha=regime==="volatile"?0.35:regime==="flat"?0.12:0.20;
+  // Streak counters stored with _ prefix
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
     const ex=p===actual;
     const nr=!ex&&M.nearR(p,actual,regime);
-    const reward=ex?3:nr?1:-0.5;
+    const close=!ex&&!nr&&M.cd(p,actual)<=5;
+    // Tiered reward: exact=+3, near=+1, close=+0.2, miss=-0.6
+    const baseReward=ex?3:nr?1:close?0.2:-0.6;
+    // Streak tracking per algo
+    const streakKey="_s_"+name;
+    const curStreak=next[streakKey]||0;
+    const newStreak=ex?(curStreak>=0?curStreak+1:1):nr?Math.max(0,curStreak):(curStreak<=0?curStreak-1:-1);
+    next[streakKey]=Math.max(-5,Math.min(8,newStreak));
+    // Streak multiplier: up to 1.6x boost for 4+ consecutive hits
+    const streakMult=newStreak>=4?1.6:newStreak>=2?1.3:newStreak<=-3?0.7:1.0;
+    const reward=baseReward*streakMult;
     const prev=next[name]!=null?next[name]:0;
     next[name]=+((1-alpha)*prev+alpha*reward).toFixed(3);
   });
@@ -2179,7 +2449,9 @@ function updateW(pred,actual,W,predRow,regime,calibration){
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
     const prev=gw[name]!=null?gw[name]:1;
     const decay=prev>1?0.96:0.98;
-    gw[name]=Math.min(6,Math.max(0.04,prev*newMom))*decay+(1-decay);
+    // Cold-streak dampening: if momentum < 0.85 for 2+ misses, increase decay speed
+    const coldDamp=newMom<0.82?0.92:decay;
+    gw[name]=Math.min(6,Math.max(0.04,prev*newMom))*coldDamp+(1-coldDamp);
     const rp=rw[predRow][name]!=null?rw[predRow][name]:1;
     rw[predRow][name]=Math.min(5,Math.max(0.05,rp*(ex?1.5:nr?1.15:0.75)));
     const rn=rnw[cr][name]!=null?rnw[cr][name]:1;
@@ -2223,31 +2495,47 @@ function generateAlgos(data,existing){
   COLS.forEach(col=>{
     const s=getSeries(col,data),n=s.length;
     if(n<6)return;
-    // best linear
+
+    // ── 1. best linear: a*s[i-1]+b mod 100 ──
     let bl={sc:-1,a:1,b:0};
-    for(let a=1;a<10;a++)for(let b=0;b<100;b+=3){let sc=0;for(let i=1;i<n;i++)if(M.mod(a*s[i-1]+b)===s[i])sc++;if(sc>bl.sc)bl={sc,a,b};}
+    for(let a=1;a<10;a++)for(let b=0;b<100;b+=3){
+      let sc=0;
+      for(let i=1;i<n;i++){if(M.mod(a*s[i-1]+b)===s[i])sc++;}
+      if(sc>bl.sc)bl={sc,a,b};
+    }
     if(bl.sc>1){const nm="Lin_"+col+"_"+bl.a+"x"+bl.b;if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod("+bl.a+"*s[s.length-1]+"+bl.b+")]",desc:"Auto linear col "+col,enabled:true,generated:true,createdAt:Date.now()});}
-    // best cyclic
+
+    // ── 2. best cyclic: exact period detection with recency ──
     let bc={sc:-1,p:2};
-    for(let p=2;p<=8;p++){let sc=0;for(let i=p;i<n;i++)if(M.cd(s[i],s[i-p])<=2)sc++;if(sc/(n-p)>bc.sc)bc={sc:sc/(n-p),p};}
+    for(let p=2;p<=10;p++){
+      let sc=0;
+      for(let i=p;i<n;i++){
+        const rw=i>=n-4?2.0:1.0;
+        if(M.cd(s[i],s[i-p])<=2)sc+=rw;
+      }
+      if(sc/(n-p)>bc.sc)bc={sc:sc/(n-p),p};
+    }
     if(bc.sc>0.35){const nm="Cyc_"+col+"_p"+bc.p;if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>{const n=s.length,p="+bc.p+",b=n%p||p;return[M.mod(s[n-b]||s[n-1])];}",desc:"Auto cyclic p"+bc.p+" col "+col,enabled:true,generated:true,createdAt:Date.now()});}
-    // avg gap
+
+    // ── 3. avg gap (recent-biased) ──
     const gaps=[];for(let i=1;i<n;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gaps.push(g);}
     const avgGap=Math.round(M.mean(gaps.slice(-6)));
     if(avgGap!==0){const nm="Gap_"+col+"_"+(avgGap>0?"+":"")+avgGap;if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(s[s.length-1]+("+avgGap+"))]",desc:"Auto gap "+(avgGap>0?"+":"")+avgGap+" col "+col,enabled:true,generated:true,createdAt:Date.now()});}
-    // crossover: blend top 2 algo predictions
-    const scored=Object.entries(A).map(([nm,fn])=>({nm,sc:btScore(fn,s)})).sort((a,b)=>b.sc-a.sc);
-    if(scored.length>=2&&scored[0].sc>0.15){
+
+    // ── 4. crossover: blend top-2 built-in predictions DYNAMICALLY ──
+    const scoredBI=Object.entries(A).map(([nm,fn])=>({nm,sc:btScore(fn,s)})).sort((a,b)=>b.sc-a.sc);
+    if(scoredBI.length>=2&&scoredBI[0].sc>0.15){
       try{
-        const p1=A[scored[0].nm](s);
-        const p2=A[scored[1].nm](s);
-        const blended=M.mod(Math.round((p1[0]+p2[0])/2));
-        const offset=((blended-s[s.length-1]+150)%100)-50;
-        const nm="Cross_"+col+"_"+scored[0].nm.slice(0,4)+"_"+scored[1].nm.slice(0,4);
-        if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(s[s.length-1]+("+offset+"))]",desc:"Auto crossover "+scored[0].nm+"+"+scored[1].nm+" col "+col,enabled:true,generated:true,createdAt:Date.now()});
+        // Store names not fixed offset — code is re-evaluated each prediction
+        const n1=scoredBI[0].nm,n2=scoredBI[1].nm;
+        const nm="Cross_"+col+"_"+n1.slice(0,4)+"_"+n2.slice(0,4);
+        if(!existing.has(nm))out.push({name:nm,
+          code:"(s,M)=>{try{const A="+JSON.stringify({[n1]:true,[n2]:true})+";const p1=("+A[n1].toString()+")(s)[0],p2=("+A[n2].toString()+")(s)[0];return[M.mod(Math.round((p1+p2)/2))];}catch(e){return[s[s.length-1]];}}",
+          desc:"Auto crossover "+n1+"+"+n2+" col "+col,enabled:true,generated:true,createdAt:Date.now()});
       }catch(e){}
     }
-    // Fix 5a: digit-sum chain — find best k such that ds(v)*k+c fits series
+
+    // ── 5. digit-sum chain ──
     if(n>=5){
       let dsb={sc:-1,k:1,c:0};
       for(let k=1;k<=11;k++)for(let c=0;c<100;c+=5){
@@ -2257,7 +2545,8 @@ function generateAlgos(data,existing){
       if(dsb.sc>=2){const nm="DsChain_"+col+"_k"+dsb.k+"c"+dsb.c;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(M.ds(s[s.length-1])*"+dsb.k+"+"+dsb.c+")]",desc:"Auto digit-sum chain col "+col,enabled:true,generated:true,createdAt:Date.now()});}
     }
-    // Fix 5b: two-step recurrence — v[i] = a*v[i-1] + b*v[i-2] + c (mod 100)
+
+    // ── 6. two-step recurrence ──
     if(n>=6){
       let r2b={sc:-1,a:1,b:0,c:0};
       for(const a of[1,2,-1,3])for(const b of[0,1,-1,2])for(const c of[0,3,7,11,-3,-7]){
@@ -2267,7 +2556,8 @@ function generateAlgos(data,existing){
       if(r2b.sc>=3){const nm="Rec2_"+col+"_a"+r2b.a+"b"+r2b.b;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>{const n=s.length;return[M.mod("+(r2b.a)+"*s[n-1]+"+(r2b.b)+"*s[n-2]+"+(r2b.c)+")];}",desc:"Auto 2-step recurrence col "+col,enabled:true,generated:true,createdAt:Date.now()});}
     }
-    // Fix 5c: modular step — v[i] = (v[i-1]*a + c) mod m, remapped
+
+    // ── 7. modular step ──
     if(n>=5){
       let msb={sc:-1,a:1,c:1,m:97};
       for(const a of[2,3,5,7,11])for(const c of[1,3,7,13,17])for(const m of[97,89,83,79]){
@@ -2277,8 +2567,41 @@ function generateAlgos(data,existing){
       if(msb.sc>=2){const nm="ModStep_"+col+"_a"+msb.a+"m"+msb.m;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(("+msb.a+"*s[s.length-1]+"+msb.c+")%"+msb.m+")]",desc:"Auto modular step col "+col,enabled:true,generated:true,createdAt:Date.now()});}
     }
+
+    // ── 8. NEW: XOR-lag detector — s[i] = s[i-j] XOR s[i-k] ──
+    if(n>=6){
+      let xb={sc:-1,j:2,k:1};
+      for(let j=2;j<=Math.min(6,n-1);j++)for(let k=1;k<j;k++){
+        let sc=0;for(let i=j;i<n;i++)if((s[i-j]^s[i-k])===s[i]||(M.mod(s[i-j]^s[i-k])===s[i]))sc++;
+        if(sc>xb.sc)xb={sc,j,k};
+      }
+      if(xb.sc>=3){const nm="XorLag_"+col+"_j"+xb.j+"k"+xb.k;
+        if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>{const n=s.length;return[M.mod(s[n-"+xb.j+"]^s[n-"+xb.k+"])];}",desc:"Auto XOR-lag col "+col,enabled:true,generated:true,createdAt:Date.now()});}
+    }
+
+    // ── 9. NEW: mod-period shift — s[i] = (s[i-p] + k) mod 100 ──
+    if(n>=6){
+      let mpb={sc:-1,p:2,k:0};
+      for(let p=2;p<=Math.min(8,n-1);p++)for(let k=0;k<100;k+=2){
+        let sc=0;for(let i=p;i<n;i++)if(M.mod(s[i-p]+k)===s[i])sc++;
+        if(sc>mpb.sc)mpb={sc,p,k};
+      }
+      if(mpb.sc>=3){const nm="MPShift_"+col+"_p"+mpb.p+"k"+mpb.k;
+        if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(s[s.length-"+mpb.p+"]+"+(mpb.k)+")]",desc:"Auto mod-period shift col "+col,enabled:true,generated:true,createdAt:Date.now()});}
+    }
+
+    // ── 10. NEW: complement-chain — s[i] = (100 - s[i-1]*a + c) mod 100 ──
+    if(n>=5){
+      let ccb={sc:-1,a:1,c:0};
+      for(const a of[1,2,3])for(let c=0;c<100;c+=5){
+        let sc=0;for(let i=1;i<n;i++)if(M.mod(100-a*s[i-1]+c)===s[i])sc++;
+        if(sc>ccb.sc)ccb={sc,a,c};
+      }
+      if(ccb.sc>=3){const nm="CompChain_"+col+"_a"+ccb.a+"c"+ccb.c;
+        if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(100-"+ccb.a+"*s[s.length-1]+"+ccb.c+")]",desc:"Auto complement-chain col "+col,enabled:true,generated:true,createdAt:Date.now()});}
+    }
   });
-  return out.slice(0,24);
+  return out.slice(0,32); // slightly larger batch per run
 }
 // Bug 11 fix: hard cap enforced at generate time + prune time
 const MAX_GENERATED_ALGOS=60;
@@ -2345,13 +2668,19 @@ function runTournament(customs,data,weights){
 }
 
 // ── AUTO-GENERATE TRIGGER ──────────────────────
-// Returns true if conditions are met to auto-generate
 function shouldAutoGenerate(rows,genN,lastAutoGenRows,currentAlgoCount){
   if(rows<4)return false;
-  // Count only active (non-benched) generated algos against cap
   if((currentAlgoCount||0)>=MAX_GENERATED_ALGOS)return false;
-  const rowsSinceLast=(lastAutoGenRows||0);
-  return(rows-rowsSinceLast)>=2;
+  const rowsSinceLast=rows-(lastAutoGenRows||0);
+  // Generate more aggressively early on, slow down as algo pool fills
+  const interval=currentAlgoCount<20?2:currentAlgoCount<40?3:5;
+  return rowsSinceLast>=interval;
+}
+// ── AUTO-PRUNE TRIGGER ──────────────────────────
+// Prune on every row add when pool is large enough, not just checkAndLearn
+function shouldAutoPrune(customs,rows){
+  const gen=(customs||[]).filter(a=>a.generated);
+  return gen.length>=8&&rows>=6;
 }
 
 // ── AUTO-PRUNE: remove worst generated algo every session ──────
@@ -2360,11 +2689,14 @@ function scoreAlgo(ca,weights,rows){
   if(ca.benched)return -0.1; // benched algos get a neutral-low score, not -999 (preserve for potential recovery)
   const fn=makeCustomFn(ca.code);
   if(!fn)return -999;
-  // Composite: neural(50%) + backtest(30%) + walkFwd(20%)
-  let totalNs=0,nsCount=0,totalBt=0,totalWf=0,btCnt=0;
+  // Composite: neural(40%) + streak(20%) + backtest(25%) + walkFwd(15%)
+  let totalNs=0,totalStreak=0,nsCount=0,totalBt=0,totalWf=0,btCnt=0;
   COLS.forEach(col=>{
     const ns=weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
     if(ns[ca.name]!=null){totalNs+=ns[ca.name];nsCount++;}
+    // streak key stored by updateNeuralScores
+    const sk=ns["_s_"+ca.name];
+    if(sk!=null)totalStreak+=sk;
     const s=getSeries(col,rows);
     if(s.length>=5){
       totalBt+=btScore(fn,s);
@@ -2373,9 +2705,10 @@ function scoreAlgo(ca,weights,rows){
     }
   });
   const avgNs=nsCount?totalNs/nsCount:0;
+  const avgStreak=nsCount?totalStreak/nsCount:0;
   const avgBt=btCnt?totalBt/btCnt:0.05;
   const avgWf=btCnt?totalWf/btCnt:0.05;
-  return avgNs*0.5+avgBt*2.5+avgWf*1.5;
+  return avgNs*0.40+avgStreak*0.20+avgBt*2.0+avgWf*1.2;
 }
 
 // Fix 10: redundancy detection — find algos that always predict same value
@@ -2403,7 +2736,6 @@ function detectRedundant(customs,rows){
 }
 
 // Fix 11: algo benching — disable weak algos instead of deleting
-// Fix 6+11: prune up to 3 weak algos per session, bench borderline ones
 function pruneWeakAlgos(customs,weights,rows){
   if(!customs||customs.length===0)return{pruned:customs,removed:[]};
   const generated=customs.filter(ca=>ca.generated);
@@ -2412,40 +2744,45 @@ function pruneWeakAlgos(customs,weights,rows){
   if(rows.length<4)return{pruned:customs,removed:[]};
 
   const redundant=detectRedundant(generated,rows);
-  const scored=generated.map(ca=>({ca,score:scoreAlgo(ca,weights,rows)}));
-  scored.sort((a,b)=>a.score-b.score);
-  // Bug 11 fix: if over cap, mark excess (lowest scoring) for removal
-  const overCap=Math.max(0,generated.length-MAX_GENERATED_ALGOS);
+  // Pre-score all in one pass
+  const scored=generated.map((ca,idx)=>({ca,score:scoreAlgo(ca,weights,rows),origIdx:idx}));
+  scored.sort((a,b)=>a.score-b.score); // ascending: worst first
 
-  const threshold=rows.length>=20?0.10:rows.length>=10?0.00:-0.50;
-  const benchThreshold=threshold+0.15; // soft zone → bench not delete
+  // Pre-build index map — O(1) lookup, fixes O(n²) bug
+  const scoreRank=new Map(scored.map((x,i)=>[x.ca.name,i]));
+
+  const overCap=Math.max(0,generated.length-MAX_GENERATED_ALGOS);
+  // Dynamic threshold: scales with data — more rows = higher bar
+  const threshold=rows.length>=25?0.15:rows.length>=15?0.08:rows.length>=10?0.00:-0.50;
+  const benchThreshold=threshold+0.12;
+
   const removed=[];
   const benched=[];
   const kept=[];
 
   scored.forEach(({ca,score})=>{
-    // Fix 10: remove redundant regardless of score
+    // Always remove redundant
     if(redundant.has(ca.name)){
       removed.push({name:ca.name,reason:"redundant"});
       return;
     }
-    // Bug 11: remove excess lowest-scoring algos if over cap
-    const removeIdx=scored.indexOf(scored.find(x=>x.ca.name===ca.name));
-    if(overCap>0&&removeIdx<overCap&&removed.length<overCap+3){
+    // Remove over-cap (lowest ranked first) — use pre-built rank map
+    const rank=scoreRank.get(ca.name)??999;
+    if(overCap>0&&rank<overCap&&removed.length<overCap+3){
       removed.push({name:ca.name,reason:"over_cap"});
       return;
     }
-    // Fix 6: remove hard failures
-    if(score<threshold&&removed.length<3){
+    // Remove hard failures (max 4 per cycle to avoid mass deletion)
+    if(score<threshold&&removed.length<4){
       removed.push({name:ca.name,reason:"score:"+score.toFixed(2)});
       return;
     }
-    // Fix 11: bench borderline algos (disable, keep for regime recovery)
+    // Bench borderline algos
     if(score<benchThreshold&&!ca.benched){
       benched.push({...ca,enabled:false,benched:true,benchedAt:Date.now()});
       return;
     }
-    // Re-enable benched algos that improved
+    // Re-enable benched algos that recovered
     if(ca.benched&&score>=benchThreshold){
       kept.push({...ca,enabled:true,benched:false});
       return;
@@ -2658,19 +2995,45 @@ function AppInner(){
         setS(cur=>{
           const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
           const _genCount=(cur.customs||[]).filter(a=>a.generated&&!a.benched).length;
+          let next=cur;
+          // ── Auto-generate new algos ──
           if(shouldAutoGenerate(curRows.length,cur.genN,cur.lastAutoGenRows,_genCount)){
             const existing=new Set([...Object.keys(A),...(cur.customs||[]).map(a=>a.name)]);
             const newAlgos=generateAlgos(curRows,existing);
             if(newAlgos.length>0){
               const log=cur.autoGenLog||[];
-              const msg="+"+newAlgos.length+" algos auto-generated ("+curRows.length+" rows)";
-              const next={...cur,customs:[...(cur.customs||[]),...newAlgos],genN:(cur.genN||0)+1,lastAutoGenRows:curRows.length,autoGenLog:[...log.slice(-9),{at:new Date().toISOString(),msg}]};
-              saveS(next);
+              const msg="+"+newAlgos.length+" algos generated ("+curRows.length+" rows)";
+              next={...next,customs:[...(next.customs||[]),...newAlgos],genN:(next.genN||0)+1,lastAutoGenRows:curRows.length,autoGenLog:[...log.slice(-9),{at:new Date().toISOString(),msg}]};
               setAutoGenLog(p=>[...p.slice(-4),msg]);
-              return next;
             }
           }
-          return cur;
+          // ── Auto-prune on every row add (lightweight: only if pool big enough) ──
+          if(shouldAutoPrune(next.customs,curRows.length)){
+            const {pruned,removed}=pruneWeakAlgos(next.customs||[],next.weights||cur.weights,curRows);
+            if(removed.length>0){
+              setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
+              next={...next,customs:pruned};
+            }
+          }
+          // ── Re-fit stale Gap/Lin algos: update offset if series drifted ──
+          if(curRows.length>=8&&curRows.length%4===0){
+            next={...next,customs:(next.customs||[]).map(ca=>{
+              if(!ca.generated||ca.benched)return ca;
+              // Re-fit Gap_ algos to current recent average gap
+              if(ca.name.startsWith("Gap_")){
+                const col=ca.name.split("_")[1];
+                const s=getSeries(col,curRows);if(s.length<4)return ca;
+                const gs=[];for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gs.push(g);}
+                const ng=Math.round(M.mean(gs.slice(-6)));
+                if(ng!==0&&Math.abs(ng-(parseInt(ca.name.split("_")[2])||0))>2){
+                  return{...ca,code:"(s,M)=>[M.mod(s[s.length-1]+("+ng+"))]",updatedAt:Date.now()};
+                }
+              }
+              return ca;
+            })};
+          }
+          if(next!==cur)saveS(next);
+          return next;
         });
       },100);
       return updated;
@@ -2971,7 +3334,15 @@ function AppInner(){
       const existingRows=prev.datasets[dsKey]?prev.datasets[dsKey].rows:[];
       const newRows=[...existingRows.filter(r=>r.row!==prev.predRow),autoRow].sort((a,b)=>a.row-b.row);
       const newDs={...prev.datasets,[dsKey]:{...prev.datasets[dsKey],rows:newRows}};
-      return{...prev,weights:nw,calibration:nc,customs:pruned,datasets:newDs,accLog:[...(prev.accLog||[]).slice(-50),entry]};
+      // ── Post-learn auto-generate: new row means new patterns may be detectable ──
+      let finalCustoms=pruned;
+      const _gc3=finalCustoms.filter(a=>a.generated&&!a.benched).length;
+      if(shouldAutoGenerate(newRows.length,(prev.genN||0)+1,prev.lastAutoGenRows||0,_gc3)){
+        const existing2=new Set([...Object.keys(A),...finalCustoms.map(a=>a.name)]);
+        const freshAlgos=generateAlgos(newRows,existing2);
+        if(freshAlgos.length>0)finalCustoms=[...finalCustoms,...freshAlgos];
+      }
+      return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,accLog:[...(prev.accLog||[]).slice(-50),entry],lastAutoGenRows:newRows.length};
     });
     st("Learned! "+exactCount+"/4 exact — weights saved ✓");
   }
@@ -3162,6 +3533,7 @@ function AppInner(){
                       <div style={{fontSize:8,color:confClr,fontWeight:700}}>{conf}</div>
                       {regime!=="normal"&&<div style={{fontSize:7,color:"#fbbf24"}}>{regime}</div>}
                       {streaks[col]>=2&&<div style={{fontSize:8,color:"#34d399"}}>🔥{streaks[col]}</div>}
+                      {S.preds[col]&&S.preds[col].familyAgreement>=3&&<div style={{fontSize:7,color:"#a78bfa",marginTop:1}}>{"★".repeat(Math.min(S.preds[col].familyAgreement,5))} cross-family</div>}
                     </div>;
                   })}
                 </div>
