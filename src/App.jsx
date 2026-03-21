@@ -57,7 +57,60 @@ const _TC={
   sp:{},      // getSharedRowProps: "col_len"
   cg:{},      // getColGapSignals:  "col_len"
   gs:{},      // getGlobalSeries:   "col_totalLen"
+  trainingMode:false, // freeze cache during batch training to avoid per-row invalidation
   clear(){this.tx={};this.sp={};this.cg={};this.gs={};}
+};
+
+// ── BATCHED AUTO-TRAINING CONTROLLER ─────────────────────────────
+// Processes rows in small batches with requestIdleCallback to avoid
+// UI blocking. Freezes cache during batch to avoid per-row invalidation.
+// ══════════════════════════════════════════════════════════════════
+const TrainingController={
+  queue:[],
+  processing:false,
+  async processBatch(rows,onProgress){
+    if(!rows||rows.length===0)return;
+    this.queue=rows;
+    this.processing=true;
+    _TC.trainingMode=true;
+    
+    const batchSize=Math.max(1,Math.ceil(rows.length/10)); // 10 batches
+    let processed=0;
+    
+    return new Promise(resolve=>{
+      const processNextBatch=()=>{
+        if(processed>=rows.length){
+          _TC.trainingMode=false;
+          this.processing=false;
+          resolve();
+          return;
+        }
+        const end=Math.min(processed+batchSize,rows.length);
+        // Process rows in this batch (algos will cache results)
+        for(let i=processed;i<end;i++){
+          const r=rows[i];
+          // Trigger all algos for this row (they cache internally)
+          COLS.forEach(col=>{
+            const series=getSeries(col,rows.slice(0,i+1));
+            if(series.length>0){
+              Object.keys(A).forEach(aname=>{
+                try{A[aname](series);}catch(e){}
+              });
+            }
+          });
+        }
+        processed=end;
+        if(onProgress)onProgress(Math.round(100*processed/rows.length));
+        // Use requestIdleCallback if available, else setTimeout
+        if(typeof requestIdleCallback==='function'){
+          requestIdleCallback(processNextBatch,{timeout:50});
+        }else{
+          setTimeout(processNextBatch,10);
+        }
+      };
+      processNextBatch();
+    });
+  }
 };
 
 // ── BUILT-IN ALGORITHMS (count auto-tracked in ALGO_COUNT) ───────
@@ -3911,8 +3964,9 @@ function AppInner(){
     if(tr.index>=tr.total){autoTrainFinish(tr);return;}
 
     // Adaptive batch: small while history is short, larger once stable
+    // CRITICAL: For 90+ rows, use larger batches to avoid excessive tick cycles
     const hlen=tr.historyRows.length;
-    const batchSize=hlen<15?1:hlen<50?3:hlen<200?6:10;
+    const batchSize=hlen<15?1:hlen<50?5:hlen<100?10:hlen<200?15:20;
     const batchEnd=Math.min(tr.index+batchSize,tr.total);
 
     for(let bi=tr.index;bi<batchEnd;bi++){
@@ -4025,7 +4079,13 @@ function AppInner(){
       setAutoTrainStatus(s=>({...s,progress:tr.index,
         log:lines.length?[...(s?.log||[]),...lines]:s?.log||[]}));
     }
-    setTimeout(autoTrainTick,0);
+    
+    // Use requestIdleCallback for 90+ rows to prevent UI blocking
+    if(typeof requestIdleCallback==='function'&&tr.total>90){
+      requestIdleCallback(autoTrainTick,{timeout:100});
+    }else{
+      setTimeout(autoTrainTick,0);
+    }
   }
 
   // ── Binary-insert into sorted historyRows ─────────────────────────────
