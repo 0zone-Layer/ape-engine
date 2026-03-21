@@ -3709,10 +3709,10 @@ function AppInner(){
 
   function doImport(e){
     const f=e.target.files[0];if(!f)return;
-    const reader=new FileReader();
-    reader.onload=ev=>{
+    function processJSON(text){
+      e.target.value="";
       try{
-        const parsed=JSON.parse(ev.target.result);
+        const parsed=JSON.parse(text);
         if(parsed.dataset&&!parsed.datasets){parsed.datasets={def:{name:"Imported",rows:parsed.dataset}};parsed.active="def";}
         parsed.weights=migrateWeights(parsed.weights||{});
         if(!parsed.customs)parsed.customs=[];
@@ -3720,19 +3720,23 @@ function AppInner(){
         setS(parsed);saveS(parsed);
         st("Imported successfully");
       }catch(err){st("Import failed: "+err.message,"err");}
-    };
-    reader.readAsText(f);e.target.value="";
+    }
+    if(typeof f.text==="function"){
+      f.text().then(processJSON).catch(()=>st("Failed to read file","err"));
+    }else{
+      const reader=new FileReader();
+      reader.onerror=()=>st("Failed to read file","err");
+      reader.onload=ev=>{processJSON(ev.target.result||"");};
+      reader.readAsText(f);
+    }
   }
 
   // ── CSV FILE IMPORT WITH AUTO-LEARN + PATTERN BANK UPDATE ──────────────
   function doImportCSV(e){
     const f=e.target.files[0];if(!f)return;
-    e.target.value=""; // allow re-selecting the same file next time
-    const reader=new FileReader();
-    reader.onerror=()=>{st("Failed to read CSV file","err");};
-    reader.onload=ev=>{
-      const raw=ev.target.result;
-      // Strip BOM if present (Windows CSV files often start with \ufeff)
+
+    function processCSV(raw){
+      e.target.value="";
       const text=raw.charCodeAt(0)===0xFEFF?raw.slice(1):raw;
       const lines=text.trim().split(/\r?\n/).filter(l=>l.trim()&&!l.toLowerCase().startsWith("row,a"));
       let added=0,updated=0,autoLearned=0,errs=0;
@@ -3823,16 +3827,31 @@ function AppInner(){
       if(added)parts.push(added+" rows added");if(updated)parts.push(updated+" updated");
       if(autoLearned)parts.push("🤖 "+autoLearned+" auto-learned");if(errs)parts.push(errs+" skipped");
       st("CSV: "+parts.join(", "),errs&&!added&&!updated?"warn":"ok");
-    };
-    reader.readAsText(f);e.target.value="";
+    }
+
+    // Primary: File.text() works best on mobile browsers
+    if(typeof f.text==="function"){
+      f.text().then(raw=>processCSV(raw)).catch(()=>{
+        // Fallback to FileReader if f.text() fails
+        const reader=new FileReader();
+        reader.onerror=()=>st("Failed to read CSV file","err");
+        reader.onload=ev=>{processCSV(ev.target.result||"");};
+        reader.readAsText(f);
+      });
+    }else{
+      const reader=new FileReader();
+      reader.onerror=()=>st("Failed to read CSV file","err");
+      reader.onload=ev=>{processCSV(ev.target.result||"");};
+      reader.readAsText(f);
+    }
   }
 
   function doImportWeights(e){
     const f=e.target.files[0];if(!f)return;
-    const reader=new FileReader();
-    reader.onload=ev=>{
+    function processWeights(text){
+      e.target.value="";
       try{
-        const parsed=JSON.parse(ev.target.result);
+        const parsed=JSON.parse(text);
         const data=parseImportedWeights(parsed);
         if(!data){setWeightsMsg("❌ Invalid weights file");return;}
         if(!data.weights||!data.weights.A||!data.weights.A.global){
@@ -3844,8 +3863,15 @@ function AppInner(){
         setWeightsMsg("✅ Weights loaded — "+sessCount+" sessions, "+algoCount+" algos");
         st("Weights imported ✓");
       }catch(err){setWeightsMsg("❌ Parse error: "+err.message);}
-    };
-    reader.readAsText(f);e.target.value="";
+    }
+    if(typeof f.text==="function"){
+      f.text().then(processWeights).catch(()=>setWeightsMsg("❌ Failed to read file"));
+    }else{
+      const reader=new FileReader();
+      reader.onerror=()=>setWeightsMsg("❌ Failed to read file");
+      reader.onload=ev=>{processWeights(ev.target.result||"");};
+      reader.readAsText(f);
+    }
   }
 
   function runPredict(){
@@ -4141,18 +4167,10 @@ function AppInner(){
 
   function doAutoTrain(e){
     const f=e.target.files[0];if(!f)return;
-    e.target.value=""; // allow re-selecting same file
     // Guard: cancel any in-progress training before starting new one
     autoTrainRef.current=false;
 
-    const reader=new FileReader();
-    reader.onerror=()=>{
-      st("Failed to read file — check it's a valid CSV","err");
-      syslog("❌ File read error — make sure it's a plain text CSV","err");
-      setAutoTrainStatus(s=>s?{...s,running:false,done:true}:s);
-    };
-    reader.onload=ev=>{
-      const text=ev.target.result;
+    function processText(text){
       // Strip BOM if present (Windows CSV files often start with \ufeff)
       const clean=text.charCodeAt(0)===0xFEFF?text.slice(1):text;
       const{rows:csvRows,skipped}=parseAutoTrainCSV(clean);
@@ -4162,21 +4180,44 @@ function AppInner(){
         setAutoTrainStatus(null);
         return;
       }
-      // Sort by date then row number to ensure correct temporal order
       csvRows.sort((a,b)=>{
         if(a.date&&b.date)return a.date.localeCompare(b.date);
         return a.row-b.row;
       });
-
       setAutoTrainStatus({running:true,progress:0,total:csvRows.length,done:false,log:[
         "📂 Loaded "+csvRows.length+" rows"+(skipped?" ("+skipped+" skipped)":""),
         "⚙ Starting walk-forward training simulation…"
       ],result:null});
-
-      // Short delay so UI updates before heavy compute starts
       setTimeout(()=>runAutoTrainLoop(csvRows),80);
-    };
-    reader.readAsText(f);
+    }
+
+    function onFail(msg){
+      st("Failed to read file — "+msg,"err");
+      syslog("❌ File read error: "+msg,"err");
+      setAutoTrainStatus(s=>s?{...s,running:false,done:true}:s);
+    }
+
+    // Primary: File.text() (modern, works best on mobile)
+    if(typeof f.text==="function"){
+      f.text().then(text=>{
+        e.target.value="";
+        processText(text);
+      }).catch(err=>onFail(err.message||"could not read file"));
+      return;
+    }
+
+    // Fallback: FileReader (older browsers)
+    try{
+      const reader=new FileReader();
+      reader.onerror=()=>onFail("FileReader error — make sure it's a plain text CSV");
+      reader.onload=ev=>{
+        e.target.value=""; // reset AFTER read completes, not before
+        processText(ev.target.result||"");
+      };
+      reader.readAsText(f);
+    }catch(err){
+      onFail(err.message||"unexpected error");
+    }
   }
 
   function runAutoTrainLoop(csvRows){
