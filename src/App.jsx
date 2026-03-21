@@ -4179,7 +4179,9 @@ function AppInner(){
           "📂 Loaded "+csvRows.length+" rows"+(skipped?" ("+skipped+" skipped)":""),
           "⚙ Starting walk-forward training simulation…"
         ],result:null});
-        setTimeout(()=>runAutoTrainLoop(csvRows),80);
+        setShowTerminal(true); // auto-show terminal so user sees live output
+        syslog("📂 Auto-train: "+csvRows.length+" rows loaded"+(skipped?" ("+skipped+" skipped)":""),"info");
+        setTimeout(()=>runAutoTrainLoop(csvRows),50);
       }catch(err){
         st("CSV parse error: "+err.message,"err");
         syslog("❌ CSV parse error: "+err.message,"err");
@@ -4190,113 +4192,116 @@ function AppInner(){
   }
 
   function runAutoTrainLoop(csvRows){
-    // ── Snapshot state into a plain JS object held in autoTrainRef ──────
-    // Side effects (setting ref, scheduling tick) MUST be outside setS updater
-    // because React StrictMode calls updaters TWICE in development, which would
-    // schedule two parallel training loops and corrupt the shared ref object.
-    let snapshot=null;
-    setS(prev=>{
-      // Capture snapshot synchronously — updater always runs sync
-      _TC.clear(); // clear module caches — fresh training session
-      const dsKey=prev.active;
-      snapshot={
-        csvRows,index:0,total:csvRows.length,dsKey,
-        historyRows:[...(prev.datasets[dsKey]?.rows||[])],
-        weights:JSON.parse(JSON.stringify(prev.weights)),
-        calibration:JSON.parse(JSON.stringify(prev.calibration||{A:{},B:{},C:{},D:{}})),
-        customs:JSON.parse(JSON.stringify(prev.customs||[])),
-        accLog:[...(prev.accLog||[])],
-        patternBank:JSON.parse(JSON.stringify(prev.patternBank||{A:{},B:{},C:{},D:{}})),
-        allDs:{...prev.datasets},
-        exactTotal:0,nearTotal:0,totalKnown:0,
-        btCache:{},btCacheAge:0,cachedMeta:null,metaModelAge:0,logLines:[],
-      };
-      return prev; // no React state change — ref holds all mutable training state
-    });
-    // Set ref and schedule tick OUTSIDE updater — safe from double-invoke
-    if(snapshot){
-      autoTrainRef.current=snapshot;
-      setTimeout(autoTrainTick,0);
-    }
+    // ── Build snapshot directly from S (closure) ──────────────────────
+    // The old pattern relied on React calling a setState updater synchronously
+    // to capture current state. React 18 concurrent mode does NOT guarantee
+    // this from setTimeout/FileReader contexts — snapshot stayed null and
+    // the tick loop never started. Reading S directly is always synchronous.
+    _TC.clear();
+    const dsKey=S.active;
+    const snapshot={
+      csvRows,index:0,total:csvRows.length,dsKey,
+      historyRows:[...(S.datasets[dsKey]?.rows||[])],
+      weights:JSON.parse(JSON.stringify(S.weights)),
+      calibration:JSON.parse(JSON.stringify(S.calibration||{A:{},B:{},C:{},D:{}})),
+      customs:JSON.parse(JSON.stringify(S.customs||[])),
+      accLog:[...(S.accLog||[])],
+      patternBank:JSON.parse(JSON.stringify(S.patternBank||{A:{},B:{},C:{},D:{}})),
+      allDs:{...S.datasets},
+      exactTotal:0,nearTotal:0,totalKnown:0,
+      btCache:{},btCacheAge:0,cachedMeta:null,metaModelAge:0,logLines:[],
+    };
+    autoTrainRef.current=snapshot;
+    syslog("⚡ Training loop started — "+csvRows.length+" rows · history: "+snapshot.historyRows.length+" existing","info");
+    setTimeout(autoTrainTick,0);
   }
 
-  // ── Single tick: processes BATCH_SIZE rows then yields to browser ──────
+  // ── Expensive PRNG-search algos: skip btCache scoring when series too short ──
+  // These have 1,000–8,000 param combos — on mobile they block for seconds with <8 data pts.
+  const _EXPENSIVE_ALGOS=new Set(["TruncLCG","PCGLike","ICG","CombinedLCG","RowSeedLCG",
+    "Recurrence2","AR3","LCGFit","CubicCong","ALFG","SWB","WichmannHill","BBS","MersenneMod"]);
+
+  // ── Single tick: processes ONE row then yields — browser stays responsive ──
   function autoTrainTick(){
     const tr=autoTrainRef.current;
     if(!tr||tr===false){
       setAutoTrainStatus(s=>s?{...s,running:false,done:true,log:[...(s?.log||[]),"⛔ Cancelled"]}:s);
-      return;
+      return; // no finally scheduling — intentionally stopped
     }
-    if(tr.index>=tr.total){autoTrainFinish(tr);return;}
+    if(tr.index>=tr.total){autoTrainFinish(tr);return;} // done — no further ticks
 
-    // Adaptive batch: small while history is short, larger once stable
-    // CRITICAL: For 90+ rows, use larger batches to avoid excessive tick cycles
-    const hlen=tr.historyRows.length;
-    const batchSize=hlen<15?1:hlen<50?5:hlen<100?10:hlen<200?15:20;
-    const batchEnd=Math.min(tr.index+batchSize,tr.total);
-
-    for(let bi=tr.index;bi<batchEnd;bi++){
-      if(autoTrainRef.current===false)break;
+    try{
+      const bi=tr.index;
+      const hlen=tr.historyRows.length;
       const csvRow=tr.csvRows[bi];
       const knownCols=COLS.filter(c=>csvRow[c]!=null);
 
-      // Rows with no values — add to history only
-      if(!knownCols.length){_atInsert(tr,csvRow);continue;}
+      // Rows with no values — add to history only, log it, continue
+      if(!knownCols.length){
+        _atInsert(tr,csvRow);
+        tr.index=bi+1;
+        syslog("⏭ ["+(bi+1)+"/"+tr.total+"] row "+csvRow.row+" — no values, skipped","info");
+        setAutoTrainStatus(s=>({...s,progress:tr.index}));
+        _scheduleNextTick();
+        return;
+      }
 
-      // ── btCache refresh schedule ──────────────────────────────────────
-      // First run always. Then: every 5 rows early, every 20 mid, every 40 late.
-      // walkFwd only starts after enough history to be meaningful (>=20 rows).
-      // This is the single biggest perf lever — don't refresh too often.
+      // ── btCache refresh ─────────────────────────────────────────────────
       const cacheInterval=hlen<15?5:hlen<60?15:hlen<200?30:50;
-      if(!tr.btCacheAge||tr.btCacheAge>=cacheInterval){
-        _atRefreshBtCache(tr);
+      const shouldRefreshCache=hlen>=5&&(!tr.btCacheAge||tr.btCacheAge>=cacheInterval);
+      if(shouldRefreshCache){
+        try{_atRefreshBtCache(tr,hlen);}catch(e){console.warn("btCache refresh failed",e);}
         tr.btCacheAge=1;
-      } else {tr.btCacheAge++;}
+        syslog("🔄 btCache rebuilt ("+hlen+" history rows)","info");
+      } else if(tr.btCacheAge){tr.btCacheAge++;}
 
-      // ── metaModel refresh every 30 rows ──────────────────────────────
+      // ── metaModel refresh every 30 rows ────────────────────────────────
       if(tr.accLog.length>=3&&(!tr.metaModelAge||tr.metaModelAge>=30)){
-        tr.cachedMeta=buildMetaModel(tr.accLog);
+        try{tr.cachedMeta=buildMetaModel(tr.accLog);}catch(e){}
         tr.metaModelAge=1;
       } else if(tr.metaModelAge){tr.metaModelAge++;}
 
-      // ── Predict ──────────────────────────────────────────────────────
+      // ── Predict ─────────────────────────────────────────────────────────
       const rowPreds={};
       knownCols.forEach(col=>{
-        const W={...tr.weights[col],
-          _metaModel:tr.cachedMeta,
-          _accLog:tr.accLog.slice(-6),   // only last 6 for dead-zone correction
-          _btCache:tr.btCache,_btCacheCol:col};
-        rowPreds[col]=predictCol(col,tr.historyRows,W,tr.customs,csvRow.date||"",tr.allDs,tr.patternBank);
+        try{
+          const W={...tr.weights[col],
+            _metaModel:tr.cachedMeta,
+            _accLog:tr.accLog.slice(-6),
+            _btCache:tr.btCache,_btCacheCol:col};
+          rowPreds[col]=predictCol(col,tr.historyRows,W,tr.customs,csvRow.date||"",tr.allDs,tr.patternBank);
+        }catch(e){console.warn("predictCol failed col="+col,e);}
       });
 
-      // ── Compare & weight update ───────────────────────────────────────
+      // ── Compare & weight update ─────────────────────────────────────────
       const dateCtxPd=csvRow.date?parseDate(csvRow.date):null;
       const dateCtx=dateCtxPd?{dow:dateCtxPd.dow,lunar:dateCtxPd.lunarPhase,month:dateCtxPd.m,season:dateCtxPd.season}:null;
       let rowExact=0,rowKnown=0;
       const rowResults={};
       knownCols.forEach(col=>{
-        const actual=csvRow[col];
-        const pred=rowPreds[col];
-        if(!pred){rowResults[col]={predicted:null,actual,exact:false,near:false,skipped:true};return;}
-        const top1=pred.top5[0]?.value;
-        const ex=top1===actual,nr=!ex&&M.near(top1??-1,actual,2);
-        rowResults[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
-        if(ex){rowExact++;}rowKnown++;
-        const regime=pred.regime||"normal";
-        // Skip applyForgetting in hot path — deferred to autoTrainFinish
-        let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col]);
-        if(dateCtx)uw=updateDateWeights(pred,actual,uw,dateCtx);
-        tr.weights[col]=uw;
-        tr.calibration[col]=updateCalibration(pred.conf,ex,tr.calibration[col]||{});
+        try{
+          const actual=csvRow[col];
+          const pred=rowPreds[col];
+          if(!pred){rowResults[col]={predicted:null,actual,exact:false,near:false,skipped:true};return;}
+          const top1=pred.top5[0]?.value;
+          const ex=top1===actual,nr=!ex&&M.near(top1??-1,actual,2);
+          rowResults[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
+          if(ex){rowExact++;}rowKnown++;
+          const regime=pred.regime||"normal";
+          let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col]);
+          if(dateCtx)uw=updateDateWeights(pred,actual,uw,dateCtx);
+          tr.weights[col]=uw;
+          tr.calibration[col]=updateCalibration(pred.conf,ex,tr.calibration[col]||{});
+        }catch(e){console.warn("weight update failed col="+col,e);}
       });
       tr.exactTotal+=rowExact;
       tr.nearTotal+=Object.values(rowResults).filter(r=>r.near).length;
       tr.totalKnown+=rowKnown;
 
-      // ── Insert row into sorted history (binary insert — O(log n), not O(n log n)) ──
-      _atInsert(tr,csvRow);
+      // ── Insert row into history ─────────────────────────────────────────
+      try{_atInsert(tr,csvRow);}catch(e){tr.historyRows.push(csvRow);}
 
-      // ── Compact accLog entry ──────────────────────────────────────────
+      // ── Compact accLog entry ────────────────────────────────────────────
       tr.accLog.push({
         at:bi,targetRow:csvRow.row,date:csvRow.date||null,dateCtx,
         preds:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]?.top5[0]?.value??null])),
@@ -4308,47 +4313,74 @@ function AppInner(){
       });
       if(tr.accLog.length>365)tr.accLog=tr.accLog.slice(-365);
 
-      // ── Generate algos every 8 rows ───────────────────────────────────
+      // ── Generate algos every 8 rows ─────────────────────────────────────
       if(tr.historyRows.length>=8&&bi>0&&bi%8===0){
-        const genCount=tr.customs.filter(a=>a.generated&&!a.benched).length;
-        if(genCount<MAX_GENERATED_ALGOS){
-          const existing=new Set([...Object.keys(A),...tr.customs.map(a=>a.name)]);
-          const fresh=generateAlgos(tr.historyRows,existing);
-          if(fresh.length)tr.customs=[...tr.customs,...fresh];
-        }
+        try{
+          const genCount=tr.customs.filter(a=>a.generated&&!a.benched).length;
+          if(genCount<MAX_GENERATED_ALGOS){
+            const existing=new Set([...Object.keys(A),...tr.customs.map(a=>a.name)]);
+            const fresh=generateAlgos(tr.historyRows,existing);
+            if(fresh.length){
+              tr.customs=[...tr.customs,...fresh];
+              syslog("🔧 +"+fresh.length+" algos generated ("+tr.historyRows.length+" rows)","gen");
+            }
+          }
+        }catch(e){console.warn("algo gen failed",e);}
       }
 
-      // ── Prune every 40 rows, but ONLY after 50+ history rows ─────────
-      // Too-early pruning eliminates algos before they've had enough data
-      // to demonstrate their value — causes the "1 algo" problem.
+      // ── Prune every 40 rows, only after 50+ history rows ───────────────
       if(bi>0&&bi%40===0&&tr.historyRows.length>=50){
-        const{pruned}=pruneWeakAlgos(tr.customs,tr.weights,tr.historyRows,tr.btCache);
-        tr.customs=pruned;
+        try{
+          const{pruned,removed}=pruneWeakAlgos(tr.customs,tr.weights,tr.historyRows,tr.btCache);
+          tr.customs=pruned;
+          if(removed.length)syslog("🗑 Pruned "+removed.length+" weak algos","prune");
+        }catch(e){console.warn("prune failed",e);}
       }
 
-      // ── Milestone log ─────────────────────────────────────────────────
-      const milestones=[
-        Math.floor(tr.total*0.10),Math.floor(tr.total*0.25),
-        Math.floor(tr.total*0.50),Math.floor(tr.total*0.75),tr.total-1
-      ];
+      // ── Live terminal output every row ──────────────────────────────────
+      tr.index=bi+1;
+      const pct=tr.totalKnown>0?Math.round(tr.exactTotal/tr.totalKnown*100):0;
+      const icons=COLS.map(c=>{
+        const r=rowResults[c];
+        if(!r||r.skipped)return"·";
+        return r.exact?"✅":r.near?"🟡":"❌";
+      }).join("");
+      const rowLine="["+(bi+1)+"/"+tr.total+"] row "+(csvRow.date||pad2(csvRow.row))
+        +" | "+icons+" | "+pct+"% exact · "+tr.exactTotal+"/"+tr.totalKnown;
+      syslog(rowLine,"info");
+
+      // Milestone summaries at 25/50/75/100%
+      const milestones=[Math.floor(tr.total*0.25),Math.floor(tr.total*0.50),Math.floor(tr.total*0.75),tr.total-1];
       if(milestones.includes(bi)){
-        const pct=tr.totalKnown>0?Math.round(tr.exactTotal/tr.totalKnown*100):0;
-        tr.logLines.push("📊 "+(bi+1)+"/"+tr.total+" — "+tr.exactTotal+"/"+tr.totalKnown+" exact ("+pct+"%)");
+        const nearPct=tr.totalKnown>0?Math.round((tr.exactTotal+tr.nearTotal)/tr.totalKnown*100):0;
+        const summaryLine="━━ "+Math.round(tr.index/tr.total*100)+"% done · exact:"+pct+"% · near+:"+nearPct+"% · algos:"+(tr.customs.filter(a=>!a.benched).length);
+        syslog("📊 "+summaryLine,"info");
+        setAutoTrainStatus(s=>({...s,progress:tr.index,log:[...(s?.log||[]),summaryLine]}));
+      }else{
+        setAutoTrainStatus(s=>({...s,progress:tr.index}));
       }
-    }
 
-    tr.index=batchEnd;
-
-    // UI update: every 3 rows (more responsive on mobile) or on milestone/finish
-    if(tr.logLines.length||tr.index%3===0||tr.index>=tr.total){
-      const lines=[...tr.logLines];tr.logLines=[];
-      setAutoTrainStatus(s=>({...s,progress:tr.index,
-        log:lines.length?[...(s?.log||[]),...lines]:s?.log||[]}));
+    }catch(fatalErr){
+      // Catch-all: log the error, skip this row, keep training alive
+      const errMsg="⚠ Row "+(autoTrainRef.current?.index||"?")+" error: "+fatalErr.message;
+      console.error("autoTrainTick fatal",fatalErr);
+      syslog(errMsg,"err");
+      if(autoTrainRef.current&&autoTrainRef.current!==false){
+        autoTrainRef.current.index=(autoTrainRef.current.index||0)+1;
+        setAutoTrainStatus(s=>({...s,progress:autoTrainRef.current.index,
+          log:[...(s?.log||[]),errMsg]}));
+      }
+    }finally{
+      // ALWAYS schedule next tick — training cannot die from any single row error
+      _scheduleNextTick();
     }
-    
-    // Use requestIdleCallback for 90+ rows to prevent UI blocking
-    if(typeof requestIdleCallback==='function'&&tr.total>90){
-      requestIdleCallback(autoTrainTick,{timeout:100});
+  }
+
+  // Always yield between ticks — critical for mobile not to freeze the UI thread
+  function _scheduleNextTick(){
+    if(!autoTrainRef.current||autoTrainRef.current===false)return;
+    if(typeof requestIdleCallback==='function'){
+      requestIdleCallback(autoTrainTick,{timeout:150});
     }else{
       setTimeout(autoTrainTick,0);
     }
@@ -4384,9 +4416,9 @@ function AppInner(){
   }
 
   // ── Rebuild btScore+walkFwd cache for all algos ───────────────────────
-  function _atRefreshBtCache(tr){
+  function _atRefreshBtCache(tr,hlen){
     const cache={};
-    const hlen=tr.historyRows.length;
+    hlen=hlen||tr.historyRows.length;
     // walkFwd only when history is long enough to be reliable
     const doWalkFwd=hlen>=25;
     COLS.forEach(col=>{
@@ -4398,6 +4430,9 @@ function AppInner(){
       const regime=getRegime(localSer);
       const allowedNames=Object.keys(A).filter(n=>algoAllowed(n,regime));
       allowedNames.forEach(name=>{
+        // Skip expensive multi-param-search algos on short series — they block the UI thread
+        // (TruncLCG=7,280 combos, PCGLike=2,880, ICG=1,300, etc.) Need ≥8 pts to be valid anyway
+        if(btSer.length<8&&_EXPENSIVE_ALGOS.has(name))return;
         try{
           const bt=btScore(A[name],btSer);
           let wfBoost=1.0;
@@ -4460,12 +4495,17 @@ function AppInner(){
       return saved;
     });
     setAutoTrainStatus(s=>({...s,running:false,done:true,progress:tr.total,
-      log:[...(s?.log||[]).filter(l=>!l.startsWith("━")),...finalLog],
+      log:[...(s?.log||[]),...finalLog],
       result:{exactPct,nearPct,total:tr.total,
         kept:finalCustoms.filter(a=>!a.benched).length,pruned:removed.length}}));
     autoTrainRef.current=false;
     _TC.clear(); // free cache memory
-    syslog("🚀 Auto-train done: "+tr.total+" rows · "+exactPct+"% exact · "+finalCustoms.filter(a=>!a.benched).length+" algos","learn");
+    // Mirror final results to live terminal
+    syslog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━","info");
+    syslog("✅ Auto-train done: "+tr.total+" rows processed","learn");
+    syslog("🎯 Exact: "+tr.exactTotal+"/"+tr.totalKnown+" ("+exactPct+"%)  Near+: "+nearPct+"%","learn");
+    syslog("🧠 Algos kept: "+finalCustoms.filter(a=>!a.benched).length+"  Pruned: "+removed.length,"info");
+    syslog("💾 Weights saved — ready to predict","info");
   }
 
   function doGenerate(){
