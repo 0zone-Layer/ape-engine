@@ -2393,12 +2393,34 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const predRow=maxRow+1;
   const curRange=Math.floor((series[series.length-1]||0)/25);
   const regime=getRegime(series);
+  // ── PMF VOTING: Gaussian spread replaces point-mass votes ───────────────
+  // Instead of votes[42]+=8.5 (point mass), each prediction spreads weight
+  // over nearby values via a Gaussian kernel. This means predictions for 42
+  // and 43 reinforce each other instead of competing as independent candidates.
+  // sigma controls spread width per algo type — set per cast() call.
+  // All existing multipliers (family bonus, harmony, meta-learner) still work
+  // on votes{} keys, but the pre-spread means consensus zones emerge as peaks.
   const votes={},_contribSets={},details={};
-  const cast=(name,val,w)=>{
+  const cast=(name,val,w,sigma)=>{
     const v=M.mod(Math.round(val));
-    votes[v]=(votes[v]||0)+w;
     if(!_contribSets[v])_contribSets[v]=new Set();
     _contribSets[v].add(name);
+    // Default sigma by algo type (set after details[name] is known, passed in)
+    const sig=sigma||2.0;
+    const spread=Math.min(5,Math.ceil(sig*2));
+    for(let dv=-spread;dv<=spread;dv++){
+      const nv=M.mod(v+dv);
+      votes[nv]=(votes[nv]||0)+w*Math.exp(-0.5*(dv/sig)**2);
+    }
+  };
+  // Helper: resolve sigma from backtest score and algo type
+  const getSigma=(bt,type)=>{
+    if(type==="patternbank"||type==="rowhistory")return 1.2; // tight exact matches
+    if(type==="temporal"||type==="date")return 1.5;
+    if(bt>=0.50)return 1.5;  // high accuracy → narrow spread
+    if(bt>=0.30)return 2.0;  // medium
+    if(bt>=0.15)return 2.5;
+    return 3.0;               // low accuracy → spread wide to not miss nearby
   };
   const rgw=W.perRegime&&W.perRegime[regime]?W.perRegime[regime]:{};
   const algoCache={};
@@ -2447,7 +2469,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
         :1.0;
       const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*rfMult;
       const preds=fn(series);
-      preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
+      const sig=getSigma(bt,"builtin");
+      preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1),sig));
       details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin"};
     }catch(e){}
   });
@@ -2458,7 +2481,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     const lw=gw[name]!=null?gw[name]:1;
     const tBoost=TEMPORAL_BOOST[name]||(name.startsWith("Tx_")?2.0:name.startsWith("Corr_")?1.6:name.startsWith("XL_")?2.2:1.8);
     const w=tBoost*Math.max(0.05,lw);
-    preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
+    preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1),getSigma(0.5,"temporal")));
     const isTemp=!!(TEMPORAL_BOOST[name]||name.startsWith("Tx_")||name.startsWith("XL_"));
     details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:isTemp?"temporal":"cross"};
   });
@@ -2471,7 +2494,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const lw=gw[name]!=null?gw[name]:1;
       const baseW=DATE_SIGNAL_WEIGHTS[name]||1.0;
       const w=baseW*Math.max(0.05,lw);
-      preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
+      preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1),getSigma(0.4,"date")));
       details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"date"};
     });
   }
@@ -2486,7 +2509,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const lw=gw[name]!=null?gw[name]:1;
       const baseW=DATE_SIGNAL_WEIGHTS[name]||2.0;
       const w=baseW*Math.max(0.05,lw);
-      preds.forEach((p,i)=>{if(ok(p))cast(name,p,w/(i*0.5+1));});
+      // Pattern bank = highest confidence → tightest spread (sigma 1.2)
+      preds.forEach((p,i)=>{if(ok(p))cast(name,p,w/(i*0.5+1),getSigma(1.0,"patternbank"));});
       details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"patternbank"};
     });
   }
@@ -2527,7 +2551,9 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
         :name==="SameRowMed"?2.2
         :1.8; // SameRowTrend
       const w=baseW*Math.max(0.05,lw);
-      preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
+      // Same-row history = exact historical matches → tight sigma
+      const srSig=name==="CrossDsAnnivTight"||name==="SameRowTight"?1.0:1.2;
+      preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1),srSig));
       details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),
         type:name.startsWith("CrossDs")?"patternbank":"rowhistory"};
     });
@@ -2540,7 +2566,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const lw=gw[name]!=null?gw[name]:1;
       const baseW=name.startsWith("Gap_")?2.0:1.6;
       const w=baseW*Math.max(0.05,lw);
-      preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
+      preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1),2.0));
       details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"colgap"};
     });
   }
@@ -2580,14 +2606,17 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
         :1.0;
       const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*caRfMult;
       const preds=fn(series);
-      preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1)));
+      const caSig=getSigma(bt,"custom");
+      preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1),caSig));
       details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom"};
     }catch(e){}
   });
 
-  // Adaptive: redistribute tiny votes (< 1% of max) to reduce noise
-  const maxVote=Math.max(...Object.values(votes));
-  Object.keys(votes).forEach(v=>{if(votes[v]<maxVote*0.01)delete votes[v];});
+  // Adaptive noise floor: with Gaussian spreading, values get small fractions
+  // of weight from nearby predictions. Raise threshold to 3% of max to avoid
+  // treating spread artifacts as real candidates.
+  const maxVote=Math.max(0,...Object.values(votes));
+  Object.keys(votes).forEach(v=>{if(votes[v]<maxVote*0.03)delete votes[v];});
 
   // ── FAMILY DIVERSITY BONUS ────────────────────────────────────────────
   const votesByFamily={};
@@ -2697,8 +2726,27 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const _ensembleVar=_allPreds.length>3?+M.std(_allPreds).toFixed(1):0;
 
   const total=Object.values(votes).reduce((a,b)=>a+b,0)||1;
-  const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,5)
-    .map(([v,vt])=>({value:parseInt(v),votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:_contribSets[v]?[..._contribSets[v]]:[]}));
+  // ── PMF PEAK EXTRACTION ───────────────────────────────────────────────
+  // With Gaussian spreading, top5 candidates are LOCAL MAXIMA of the PMF,
+  // not raw sort of point masses. This means "42 zone" and "43 zone" merge
+  // into one peak if they both received mass — far more meaningful than
+  // treating them as competing candidates.
+  const _pmfArr=new Array(100).fill(0);
+  Object.entries(votes).forEach(([v,w])=>{_pmfArr[parseInt(v)]=w;});
+  const _peaks=[];
+  for(let v=0;v<100;v++){
+    const prev=_pmfArr[M.mod(v-1)],curr=_pmfArr[v],next=_pmfArr[M.mod(v+1)];
+    if(curr>0&&curr>=prev&&curr>=next){
+      _peaks.push({value:v,mass:curr,pct:Math.round(curr/total*100),algos:_contribSets[v]?[..._contribSets[v]]:[]});
+    }
+  }
+  // Sort peaks by mass; fallback to argmax if no local maxima found
+  _peaks.sort((a,b)=>b.mass-a.mass);
+  if(!_peaks.length){
+    let mx=0;for(let v=1;v<100;v++)if(_pmfArr[v]>_pmfArr[mx])mx=v;
+    _peaks.push({value:mx,mass:_pmfArr[mx],pct:100,algos:[]});
+  }
+  const top5=_peaks.slice(0,5).map(pk=>({value:pk.value,votes:+pk.mass.toFixed(2),pct:pk.pct,algos:pk.algos}));
 
   const ac=Object.keys(details).length;
   const consensus=top5[0]?Math.round(top5[0].algos.length/ac*100):0;
@@ -3679,9 +3727,13 @@ function AppInner(){
   // ── CSV FILE IMPORT WITH AUTO-LEARN + PATTERN BANK UPDATE ──────────────
   function doImportCSV(e){
     const f=e.target.files[0];if(!f)return;
+    e.target.value=""; // allow re-selecting the same file next time
     const reader=new FileReader();
+    reader.onerror=()=>{st("Failed to read CSV file","err");};
     reader.onload=ev=>{
-      const text=ev.target.result;
+      const raw=ev.target.result;
+      // Strip BOM if present (Windows CSV files often start with \ufeff)
+      const text=raw.charCodeAt(0)===0xFEFF?raw.slice(1):raw;
       const lines=text.trim().split(/\r?\n/).filter(l=>l.trim()&&!l.toLowerCase().startsWith("row,a"));
       let added=0,updated=0,autoLearned=0,errs=0;
       const incomingRows=[];
@@ -4054,27 +4106,34 @@ function AppInner(){
   // ════════════════════════════════════════════════════════════════════════
 
   function parseAutoTrainCSV(text){
-    // Accepts: Row,A,B,C,D,Date  OR  Row,A,B,C,D  (date optional)
-    // First line may be a header — auto-detected and skipped
-    const lines=text.trim().split(/\r?\n/).filter(l=>l.trim());
+    // Accepts comma, semicolon, or tab delimited. Header auto-detected and skipped.
+    const lines=text.trim().split(/\r?\n/).filter(l=>l.trim()&&!l.trim().startsWith("#"));
     const rows=[];
     let skipped=0;
+    // Auto-detect delimiter from first line
+    const firstLine=lines[0]||"";
+    const delim=firstLine.includes("\t")?"\t":firstLine.includes(";")?";":",";
     lines.forEach((line,idx)=>{
-      // Skip header
-      if(idx===0&&/[a-zA-Z]{2,}/.test(line.split(",")[0]))return;
-      const pts=line.split(",").map(p=>p.trim());
+      const pts=line.split(delim).map(p=>p.trim().replace(/^"|"$/g,"")); // strip quotes
+      // Skip header: first line where first cell is non-numeric or common header word
+      if(idx===0){
+        const first=pts[0].replace(/^\uFEFF/,""); // strip BOM from first cell
+        if(isNaN(parseInt(first))||/row|day|num|date|#/i.test(first))return;
+      }
       if(pts.length<5){skipped++;return;}
       const rowNum=parseInt(pts[0]);
       if(isNaN(rowNum)||rowNum<1||rowNum>99999){skipped++;return;}
       const abcd=pts.slice(1,5).map(p=>{
-        if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
-        const n=parseInt(p);
+        const clean=p.trim();
+        if(!clean||clean.toUpperCase()==="XX"||clean==="?"||clean==="(PRED)"||clean==="-")return null;
+        const n=parseInt(clean);
         return(isNaN(n)||n<0||n>99)?undefined:n;
       });
       if(abcd.some(v=>v===undefined)){skipped++;return;}
-      // At least one column must be known
-      if(abcd.every(v=>v===null)){skipped++;return;}
-      const rowDate=pts[5]&&parseDate(pts[5])?pts[5]:null;
+      if(abcd.every(v=>v===null)){skipped++;return;} // need at least 1 known col
+      // Date: look in position 5, or last position if > 5
+      const dateField=pts[5]||pts[pts.length-1]||"";
+      const rowDate=dateField&&/^\d{4}-\d{2}-\d{2}/.test(dateField.trim())&&parseDate(dateField.trim())?dateField.trim():null;
       rows.push({row:rowNum,A:abcd[0],B:abcd[1],C:abcd[2],D:abcd[3],date:rowDate});
     });
     return{rows,skipped};
@@ -4082,12 +4141,25 @@ function AppInner(){
 
   function doAutoTrain(e){
     const f=e.target.files[0];if(!f)return;
-    e.target.value="";
+    e.target.value=""; // allow re-selecting same file
+    // Guard: cancel any in-progress training before starting new one
+    autoTrainRef.current=false;
+
     const reader=new FileReader();
+    reader.onerror=()=>{
+      st("Failed to read file — check it's a valid CSV","err");
+      syslog("❌ File read error — make sure it's a plain text CSV","err");
+      setAutoTrainStatus(s=>s?{...s,running:false,done:true}:s);
+    };
     reader.onload=ev=>{
-      const{rows:csvRows,skipped}=parseAutoTrainCSV(ev.target.result);
+      const text=ev.target.result;
+      // Strip BOM if present (Windows CSV files often start with \ufeff)
+      const clean=text.charCodeAt(0)===0xFEFF?text.slice(1):text;
+      const{rows:csvRows,skipped}=parseAutoTrainCSV(clean);
       if(csvRows.length<4){
-        st("Need at least 4 rows with known outcomes in CSV","warn");
+        st("Need ≥4 rows with known outcomes — check CSV format","warn");
+        syslog("❌ Auto-train aborted — only "+csvRows.length+" valid rows found"+(skipped?" ("+skipped+" lines skipped — check format)":""),"err");
+        setAutoTrainStatus(null);
         return;
       }
       // Sort by date then row number to ensure correct temporal order
@@ -4096,26 +4168,28 @@ function AppInner(){
         return a.row-b.row;
       });
 
-      autoTrainRef.current=false;
       setAutoTrainStatus({running:true,progress:0,total:csvRows.length,done:false,log:[
         "📂 Loaded "+csvRows.length+" rows"+(skipped?" ("+skipped+" skipped)":""),
         "⚙ Starting walk-forward training simulation…"
       ],result:null});
 
-      // Run async in chunks to keep UI responsive
-      setTimeout(()=>runAutoTrainLoop(csvRows),50);
+      // Short delay so UI updates before heavy compute starts
+      setTimeout(()=>runAutoTrainLoop(csvRows),80);
     };
     reader.readAsText(f);
   }
 
   function runAutoTrainLoop(csvRows){
     // ── Snapshot state into a plain JS object held in autoTrainRef ──────
-    // Nothing inside this object touches React state during the loop.
-    // One final setS at the end commits everything atomically.
+    // Side effects (setting ref, scheduling tick) MUST be outside setS updater
+    // because React StrictMode calls updaters TWICE in development, which would
+    // schedule two parallel training loops and corrupt the shared ref object.
+    let snapshot=null;
     setS(prev=>{
+      // Capture snapshot synchronously — updater always runs sync
       _TC.clear(); // clear module caches — fresh training session
       const dsKey=prev.active;
-      autoTrainRef.current={
+      snapshot={
         csvRows,index:0,total:csvRows.length,dsKey,
         historyRows:[...(prev.datasets[dsKey]?.rows||[])],
         weights:JSON.parse(JSON.stringify(prev.weights)),
@@ -4123,17 +4197,17 @@ function AppInner(){
         customs:JSON.parse(JSON.stringify(prev.customs||[])),
         accLog:[...(prev.accLog||[])],
         patternBank:JSON.parse(JSON.stringify(prev.patternBank||{A:{},B:{},C:{},D:{}})),
-        allDs:{...prev.datasets}, // kept in sync as rows are added
+        allDs:{...prev.datasets},
         exactTotal:0,nearTotal:0,totalKnown:0,
-        btCache:{},         // {col__name:{bt,wfBoost}} — rebuilt on schedule
-        btCacheAge:0,       // ticks since last btCache refresh
-        cachedMeta:null,    // buildMetaModel result — rebuilt every 25 rows
-        metaModelAge:0,
-        logLines:[],        // milestone lines accumulated during run
+        btCache:{},btCacheAge:0,cachedMeta:null,metaModelAge:0,logLines:[],
       };
-      setTimeout(autoTrainTick,0);
-      return prev; // no state change yet
+      return prev; // no React state change — ref holds all mutable training state
     });
+    // Set ref and schedule tick OUTSIDE updater — safe from double-invoke
+    if(snapshot){
+      autoTrainRef.current=snapshot;
+      setTimeout(autoTrainTick,0);
+    }
   }
 
   // ── Single tick: processes BATCH_SIZE rows then yields to browser ──────
@@ -4550,7 +4624,7 @@ function AppInner(){
                     <span style={{fontSize:9,opacity:.8,display:"block"}}>CSV with known outcomes</span>
                     <input type="file" accept=".csv,.txt" onChange={doAutoTrain} style={{display:"none"}}/>
                   </label>
-                  {autoTrainStatus?.running&&<button onClick={()=>{autoTrainRef.current=true;}} style={{background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#f87171",padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>⛔ Stop</button>}
+                  {autoTrainStatus?.running&&<button onClick={()=>{autoTrainRef.current=false;syslog("⛔ Training stopped by user","warn");}} style={{background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#f87171",padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>⛔ Stop</button>}
                 </div>
               </div>
               {/* Progress */}
@@ -4586,9 +4660,13 @@ function AppInner(){
 
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               <GB onClick={()=>setShowBulk(!showBulk)}>{showBulk?"▲":"▼"} Bulk Paste</GB>
-              <GB onClick={()=>doExportCSV(rows,S.preds,S.predRow)}>📥 Export CSV</GB>
+              <GB onClick={()=>doExportCSV(rows,S.preds,S.predRow)}>📤 Export CSV</GB>
+              <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit",display:"inline-block",lineHeight:"normal"}}>
+                📂 Import CSV
+                <input type="file" accept=".csv,.txt" onChange={doImportCSV} style={{display:"none"}}/>
+              </label>
               <GB onClick={()=>doExportJSON(S)}>📦 Export JSON</GB>
-              <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>📂 Import JSON<input type="file" accept=".json" onChange={doImport} style={{display:"none"}}/></label>
+              <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit",display:"inline-block",lineHeight:"normal"}}>📂 Import JSON<input type="file" accept=".json" onChange={doImport} style={{display:"none"}}/></label>
               <button onClick={doRebuildPatternBank} style={{background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.25)",color:"#a78bfa",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>
                 🧠 Rebuild Patterns ({COLS.reduce((s,c)=>s+Object.keys((S.patternBank||{})[c]?.mdProfiles||{}).length,0)} stored)
               </button>
