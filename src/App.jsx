@@ -19,6 +19,32 @@ const pad2=n=>String(M.mod(n)).padStart(2,"0");
 const COLS=["A","B","C","D"];
 const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
+
+// ── GLOBAL SERIES: merges ALL datasets sorted by date then row ──────────────
+// This is the key to cross-period learning: algos are backtested on ALL historical
+// data, not just the current dataset. 2025 + 2026 data together = much better calibration.
+function getGlobalSeries(col,datasets){
+  const allRows=[];
+  Object.values(datasets||{}).forEach(ds=>{
+    (ds.rows||[]).forEach(r=>{
+      if(ok(r[col]))allRows.push({v:r[col],date:r.date||null,row:r.row});
+    });
+  });
+  // Sort: date-first (cross-year aware), fallback to row number
+  allRows.sort((a,b)=>{
+    if(a.date&&b.date)return a.date.localeCompare(b.date);
+    if(a.date)return -1;
+    if(b.date)return 1;
+    return a.row-b.row;
+  });
+  // Deduplicate by (date+row) to avoid double-counting rows present in multiple datasets
+  const seen=new Set();
+  return allRows.filter(r=>{
+    const k=(r.date||"_")+"|"+r.row;
+    if(seen.has(k))return false;
+    seen.add(k);return true;
+  }).map(r=>r.v);
+}
 const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171"};
 // Cached algo count — avoids Object.keys(A) in every render
 let ALGO_COUNT=0; // filled after A{} definition
@@ -1511,52 +1537,105 @@ const DATE_SIGNAL_WEIGHTS={
   "DxM_Mod":0.9,"DpM_Ds":0.8,"Day_x3_M":0.8,
   "Day_Rev":1.1,"Day_Ds":1.0,"Day_Comp":0.8,"Day_x3Mod":0.8,"Day_x7Mod":0.8,
   "Anniversary":2.4, // same day+month from past years — empirically the strongest single signal
+  // ── PATTERN BANK signals — cross-period long-term memory ──────────────
+  "PB_MDExact":3.5,   // exact month×day match across years — very strong
+  "PB_MDTight":5.0,   // tight std (<5) month×day — near-deterministic
+  "PB_DayTight":4.2,  // tight day-of-month across all months
+  "PB_DaySnug":3.0,   // snug day-of-month (std<10)
+  "PB_DayProfile":2.5,// day-of-month average
+  "PB_MonthProfile":2.0, // monthly average
+  "PB_MonthTight":3.2,   // tight monthly (std<6)
+  "PB_YoY":2.8,       // year-over-year projection
+  "PB_YoYDay":3.2,    // YoY + day correction (most precise temporal projection)
+  "CrossDsSameDay":3.0,  // same day-of-month from a different dataset
 };
 
 // ── SAME-ROW HISTORY ──────────────────────────
-// Row 15 in Jan, Feb, Mar all tend toward similar values.
-// EMPIRICALLY strongest signal: Row02 B=91,90,96 (std=3.2); Row14 B=82,84,89 (std=3.6).
-function getSameRowHistory(col,data,predRow){
+// With sequential global day numbers, "same row" now means same DATE or same day-of-month.
+// allDatasets: full datasets object — enables cross-period (2025→2026) day matching.
+function getSameRowHistory(col,data,predRow,allDatasets){
   const res={};
-  const sameRow=data.filter(r=>r.row===predRow&&ok(r[col]));
-  if(sameRow.length<2)return res;
-  const vals=sameRow.map(r=>r[col]);
-  const avg=M.mean(vals);
-  const std=M.std(vals);
+  const lastRow=data.find(r=>r.row===predRow-1);
+  let predDayOfMonth=null,predMonth=null,predYear=null;
+  if(lastRow&&lastRow.date){
+    const pd=parseDate(lastRow.date);
+    if(pd){
+      const nd=new Date(lastRow.date+"T12:00:00");nd.setDate(nd.getDate()+1);
+      predDayOfMonth=nd.getDate();
+      predMonth=nd.getMonth()+1;
+      predYear=nd.getFullYear();
+    }
+  }
+  const sameRowExact=data.filter(r=>r.row===predRow&&ok(r[col]));
+  const sameDayOfMonth=predDayOfMonth!=null
+    ?data.filter(r=>{
+        if(!ok(r[col]))return false;
+        if(!r.date)return false;
+        const pd=parseDate(r.date);
+        return pd&&pd.d===predDayOfMonth;
+      })
+    :sameRowExact;
 
-  // SameRowAvg: simple mean of all historical occurrences at this row
-  res["SameRowAvg"]=[M.mod(Math.round(avg))];
+  // ── CROSS-DATASET same-day search ──────────────────────────────────
+  // Critical for 2025→2026 continuity: find day-15 of March 2025 when predicting
+  // day-15 of March 2026. These are strong priors the current dataset alone can't provide.
+  const crossDsVals=[];
+  if(predDayOfMonth!=null&&allDatasets){
+    Object.values(allDatasets).forEach(ds=>{
+      (ds.rows||[]).forEach(r=>{
+        if(!ok(r[col])||!r.date)return;
+        const pd=parseDate(r.date);
+        if(!pd||pd.d!==predDayOfMonth)return;
+        // Don't double-count rows already in current dataset
+        if(data.some(x=>x.row===r.row&&x.date===r.date))return;
+        crossDsVals.push({v:r[col],m:pd.m,y:pd.y});
+      });
+    });
+  }
+  // Same-day-AND-month cross-year (anniversary across datasets)
+  const crossAnniversary=crossDsVals.filter(x=>predMonth&&x.m===predMonth);
+  // Same-day any-month cross-year
+  const crossAnyMonth=crossDsVals;
 
-  // SameRowTight: when std < 5 across 3+ months, this is near-deterministic
-  // e.g. Row02 B: [91,90,96] std=3.2 → almost always ~92
-  if(std<5&&vals.length>=3){
-    res["SameRowTight"]=[M.mod(Math.round(avg))];
+  const combined=[...new Map([...sameRowExact,...sameDayOfMonth].map(r=>[r.row,r])).values()];
+
+  // Merge cross-dataset values into the pool
+  const allVals=[...combined.map(r=>r[col]),...crossDsVals.map(x=>x.v)].filter(v=>ok(v));
+  const intraVals=combined.map(r=>r[col]).filter(v=>ok(v));
+  if(allVals.length<1)return res;
+
+  const avg=M.mean(allVals);
+  const std=M.std(allVals);
+
+  if(intraVals.length>=1){
+    res["SameRowAvg"]=[M.mod(Math.round(M.mean(intraVals)))];
+    if(M.std(intraVals)<5&&intraVals.length>=3)res["SameRowTight"]=[M.mod(Math.round(M.mean(intraVals)))];
+    if(M.std(intraVals)>=5&&M.std(intraVals)<8&&intraVals.length>=3)res["SameRowSnug"]=[M.mod(Math.round(M.median(intraVals)))];
+    if(M.std(intraVals)<8&&intraVals.length>=3)res["SameRowMed"]=[M.mod(Math.round(M.median(intraVals)))];
+    if(intraVals.length>=2)res["SameRowLast"]=[M.mod(intraVals[intraVals.length-1])];
+    if(intraVals.length>=3){
+      let ws=0,wv=0;intraVals.forEach((v,i)=>{const w=Math.pow(2,i);ws+=w;wv+=v*w;});
+      res["SameRowWtd"]=[M.mod(Math.round(wv/ws))];
+    }
+    if(intraVals.length>=3){
+      const n=intraVals.length;let g=intraVals[n-1]-intraVals[n-2];
+      if(g>50)g-=100;if(g<-50)g+=100;
+      res["SameRowTrend"]=[M.mod(intraVals[n-1]+Math.round(g*0.4))];
+    }
   }
-  // SameRowSnug: slightly looser tight cluster (std<8, still very predictive)
-  if(std>=5&&std<8&&vals.length>=3){
-    res["SameRowSnug"]=[M.mod(Math.round(M.median(vals)))];
+
+  // Cross-dataset anniversary (same month + same day, different year) — very strong signal
+  if(crossAnniversary.length>=1){
+    const ann=crossAnniversary.map(x=>x.v);
+    res["CrossDsAnniversary"]=[M.mod(Math.round(M.mean(ann)))];
+    if(M.std(ann)<6&&ann.length>=2)res["CrossDsAnnivTight"]=[M.mod(Math.round(M.mean(ann)))];
   }
-  // SameRowMed: median for robustness against outliers (any tightness)
-  if(std<8&&vals.length>=3){
-    res["SameRowMed"]=[M.mod(Math.round(M.median(vals)))];
+
+  // Cross-dataset same-day (any month) — weaker but still informative
+  if(crossAnyMonth.length>=3){
+    res["CrossDsSameDay"]=[M.mod(Math.round(M.mean(crossAnyMonth.map(x=>x.v))))];
   }
-  // SameRowLast: most recent occurrence — often better than mean (regime drift)
-  if(vals.length>=2){
-    res["SameRowLast"]=[M.mod(vals[vals.length-1])];
-  }
-  // SameRowWtd: exponentially-recency-weighted average (recent months count more)
-  if(vals.length>=3){
-    let ws=0,wv=0;
-    vals.forEach((v,i)=>{const w=Math.pow(2,i);ws+=w;wv+=v*w;});
-    res["SameRowWtd"]=[M.mod(Math.round(wv/ws))];
-  }
-  // Trend across occurrences: is this row creeping up or down over time?
-  if(vals.length>=3){
-    const n=vals.length;
-    let g=vals[n-1]-vals[n-2];
-    if(g>50)g-=100;if(g<-50)g+=100;
-    res["SameRowTrend"]=[M.mod(vals[n-1]+Math.round(g*0.4))];
-  }
+
   return res;
 }
 
@@ -1873,21 +1952,22 @@ function getCross(col,data){return getTemporalChain(col,data);}
 
 // ── BACKTEST ───────────────────────────────────
 function btScore(fn,series){
-  const n=series.length;if(n<5)return 0.05;
+  // Cap to last 120 entries — prevents O(n) slowdown with 300+ day datasets
+  const s=series.length>120?series.slice(-120):series;
+  const n=s.length;if(n<5)return 0.05;
   const from=Math.max(3,n-31);let score=0,cnt=0;
-  const hist=series.slice(0,from);
+  const hist=s.slice(0,from);
   for(let i=from;i<n;i++){
     try{
-      const p=fn(hist),a=series[i];
+      const p=fn(hist),a=s[i];
       const precisionMult=p.length===1?1.0:p.length===2?0.8:p.length===3?0.65:0.5;
-      // Recency weight: last 6 steps count 2x, giving better signal for recent regime
       const recencyW=i>=n-6?2.0:i>=n-12?1.4:1.0;
       if(p.some(v=>v===a))score+=(1.0*precisionMult)*recencyW;
       else if(p.some(v=>M.near(v,a,2)))score+=(0.4*precisionMult)*recencyW;
       if(p[0]===a)score+=0.25*recencyW;
       cnt+=recencyW;
-      hist.push(series[i]);
-    }catch(e){hist.push(series[i]);}
+      hist.push(s[i]);
+    }catch(e){hist.push(s[i]);}
   }
   return cnt?score/cnt:0.05;
 }
@@ -2077,20 +2157,34 @@ const TEMPORAL_BOOST={
   "TempBlend":2.2,"NearestCol":2.0,"NearestRev":1.7,"NearestDs":1.7,"NearestComp":1.5,
   "D_to_nextA":2.5,"D_to_nextA_Rev":1.8,"D_to_nextA_Ds":1.8,"B_to_nextA":1.6,"C_to_nextA":1.7,
   "TempRecency":1.9,"SharedDR":1.6,"SameDs_AB":1.5,"SameDs_BC":1.5,"SameDs_CD":1.5,
-  // Complement pair: empirically strong when pair sum ≈ 100 consistently
   "ComplementPair_A":2.2,"ComplementPair_B":2.2,"ComplementPair_C":2.2,"ComplementPair_D":2.2,
-  // BimodalBandPredict: strong empirical signal — every col in every month is bimodal
   "BimodalBandPredict":1.8,"BimodalBounce":1.6,
+  // ── Cross-dataset anniversary signals (critical for 2025→2026 continuity) ──
+  "CrossDsAnniversary":3.8, // same month+day across years in different datasets
+  "CrossDsAnnivTight":5.2,  // tight std — near-deterministic anniversary
+  "CrossDsSameDay":2.5,
+  // ── XL cross-lag ──
+  "XL_A_lag0":2.0,"XL_B_lag0":2.0,"XL_C_lag0":2.0,
+  "XL_A_lag1":1.8,"XL_B_lag1":1.8,"XL_C_lag1":1.8,
 };
 
 // ── PREDICT ────────────────────────────────────
-function predictCol(col,data,W,customs,targetDate){
+// allDatasets: S.datasets — enables cross-period global series for btScore
+// patternBank: S.patternBank — long-term distilled patterns
+function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const series=getSeries(col,data);
   if(series.length<3)return null;
+
+  // ── GLOBAL SERIES: spans ALL datasets for superior algo calibration ──
+  // When 2026 data is sparse (10 rows), global series adds 150 rows from 2025.
+  // btScore on globalSeries gives far better algo ranking than 10 rows alone.
+  const globalSeries=allDatasets?getGlobalSeries(col,allDatasets):series;
+  const btSeries=globalSeries.length>series.length?globalSeries:series;
+
   const gw=W.global||{},rw=W.perRow||{},rnw=W.perRange||{};
-  const ns=W.neuralScores||{};  // neural running scores
+  const ns=W.neuralScores||{};
   const maxRow=data.length?data.reduce((m,r)=>r.row>m?r.row:m,0)||1:1;
-  const predRow=maxRow>=31?1:maxRow+1;
+  const predRow=maxRow+1;
   const curRange=Math.floor((series[series.length-1]||0)/25);
   const regime=getRegime(series);
   const votes={},_contribSets={},details={};
@@ -2100,19 +2194,19 @@ function predictCol(col,data,W,customs,targetDate){
     if(!_contribSets[v])_contribSets[v]=new Set();
     _contribSets[v].add(name);
   };
-  // Fix 2+4: pre-cache walkFwd and btScore ONCE per algo before the vote loop
-  // This avoids 260+ redundant walkFwd calls (was: called inside per-algo loop)
   const rgw=W.perRegime&&W.perRegime[regime]?W.perRegime[regime]:{};
   const algoCache={};
   const allowedAlgos=new Set(Object.keys(A).filter(n=>algoAllowed(n,regime)));
-  if(series.length>=5){
+
+  // ── Pre-cache: use globalSeries for btScore to leverage all historical data ──
+  if(btSeries.length>=5){
     allowedAlgos.forEach(name=>{
       const fn=A[name];
       try{
-        const bt=btScore(fn,series);
+        const bt=btScore(fn,btSeries); // ← uses global series
         let wfBoost=1.0;
-        if(series.length>=10){
-          const wf=walkFwd(fn,series);
+        if(btSeries.length>=10){
+          const wf=walkFwd(fn,btSeries);
           if(wf&&wf.total>=3){
             const wfRate=(wf.exact+wf.near*0.4)/wf.total;
             wfBoost=0.6+wfRate*0.8;
@@ -2122,7 +2216,8 @@ function predictCol(col,data,W,customs,targetDate){
       }catch(e){algoCache[name]={bt:0.05,wfBoost:1.0};}
     });
   }
-  // built-in — use cached scores (allowedAlgos pre-filtered above)
+
+  // built-in algos — predictions run on LOCAL series (recent context), scored on global
   allowedAlgos.forEach(name=>{
     const fn=A[name];
     try{
@@ -2141,16 +2236,18 @@ function predictCol(col,data,W,customs,targetDate){
       details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin"};
     }catch(e){}
   });
+
   // cross-col (temporal-aware)
   const cross=getCross(col,data);
   Object.entries(cross).forEach(([name,preds])=>{
     const lw=gw[name]!=null?gw[name]:1;
-    const tBoost=TEMPORAL_BOOST[name]||(name.startsWith("Tx_")?2.0:name.startsWith("Corr_")?1.6:1.8);
+    const tBoost=TEMPORAL_BOOST[name]||(name.startsWith("Tx_")?2.0:name.startsWith("Corr_")?1.6:name.startsWith("XL_")?2.2:1.8);
     const w=tBoost*Math.max(0.05,lw);
     preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
-    const isTemp=!!(TEMPORAL_BOOST[name]||name.startsWith("Tx_"));
+    const isTemp=!!(TEMPORAL_BOOST[name]||name.startsWith("Tx_")||name.startsWith("XL_"));
     details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:isTemp?"temporal":"cross"};
   });
+
   // ── DATE SIGNALS ────────────────────────────────
   if(targetDate){
     const dateSigs=getDateSignals(col,data,targetDate);
@@ -2163,8 +2260,23 @@ function predictCol(col,data,W,customs,targetDate){
       details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"date"};
     });
   }
-  // Fix 8: date-conditioned weight boost
-  // If an algo historically performs better on this weekday or lunar phase, boost it
+
+  // ── PATTERN BANK SIGNALS — long-term cross-period memory ─────────────
+  // These are the strongest cross-year signals: month×day profiles from 2025 data
+  // directly inform 2026 predictions even when 2026 has only a few rows.
+  if(patternBank){
+    const pbSigs=getPatternBankSignals(col,patternBank,targetDate);
+    Object.entries(pbSigs).forEach(([name,preds])=>{
+      if(!preds||!preds[0]||!ok(preds[0]))return;
+      const lw=gw[name]!=null?gw[name]:1;
+      const baseW=DATE_SIGNAL_WEIGHTS[name]||2.0;
+      const w=baseW*Math.max(0.05,lw);
+      preds.forEach((p,i)=>{if(ok(p))cast(name,p,w/(i*0.5+1));});
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"patternbank"};
+    });
+  }
+
+  // ── DATE-CONDITIONED WEIGHT BOOST ─────────────────────────────────────
   if(targetDate){
     const pd=parseDate(targetDate);
     if(pd){
@@ -2177,23 +2289,22 @@ function predictCol(col,data,W,customs,targetDate){
         const boost=Math.max(0.1,dw)*Math.max(0.1,lw2);
         if(boost!==1&&details[name]){
           const pred2=details[name].pred;
-          if(ok(pred2)){
-            const v=M.mod(Math.round(pred2));
-            if(votes[v])votes[v]*=boost;
-          }
+          if(ok(pred2)){const v=M.mod(Math.round(pred2));if(votes[v])votes[v]*=boost;}
         }
       });
     }
   }
-  // ── SAME-ROW HISTORY ─────────────────────────────
-  // predRow = the row number being predicted (= day of month)
+
+  // ── SAME-ROW HISTORY (cross-dataset aware) ────────────────────────────
   {
-    const sameRowSigs=getSameRowHistory(col,data,predRow);
+    const sameRowSigs=getSameRowHistory(col,data,predRow,allDatasets);
     Object.entries(sameRowSigs).forEach(([name,preds])=>{
       const lw=gw[name]!=null?gw[name]:1;
-      // SameRowTight: std<5 across months = near-deterministic → highest weight
-      // SameRowAvg/Wtd/Last: strong monthly recurrence signals
-      const baseW=name==="SameRowTight"?4.2
+      // Expanded weights: anniversary signals are very high
+      const baseW=name==="CrossDsAnnivTight"?5.5
+        :name==="CrossDsAnniversary"?4.0
+        :name==="CrossDsSameDay"?2.8
+        :name==="SameRowTight"?4.2
         :name==="SameRowSnug"?3.2
         :name==="SameRowAvg"?2.8
         :name==="SameRowWtd"?2.6
@@ -2202,10 +2313,12 @@ function predictCol(col,data,W,customs,targetDate){
         :1.8; // SameRowTrend
       const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
-      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"rowhistory"};
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),
+        type:name.startsWith("CrossDs")?"patternbank":"rowhistory"};
     });
   }
-  // ── COL GAP STABILITY ────────────────────────────
+
+  // ── COL GAP STABILITY ─────────────────────────────────────────────────
   {
     const gapSigs=getColGapSignals(col,data);
     Object.entries(gapSigs).forEach(([name,preds])=>{
@@ -2216,49 +2329,47 @@ function predictCol(col,data,W,customs,targetDate){
       details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"colgap"};
     });
   }
-  // Pre-cache custom algos (same pattern as builtins — avoids 60+ fresh walkFwd calls)
+
+  // Pre-cache custom algos (uses globalSeries for btScore)
   (customs||[]).filter(ca=>ca.enabled&&ca.code).forEach(ca=>{
-    if(algoCache[ca.name])return; // already cached (shouldn't happen, but safe)
+    if(algoCache[ca.name])return;
     try{
       const fn=makeCustomFn(ca.code);if(!fn)return;
-      const bt=btScore(fn,series);
+      const bt=btScore(fn,btSeries); // ← global series
       let wfBoost=1.0;
-      if(series.length>=10){
-        const wf=walkFwd(fn,series);
+      if(btSeries.length>=10){
+        const wf=walkFwd(fn,btSeries);
         if(wf&&wf.total>=3){const wfRate=(wf.exact+wf.near*0.4)/wf.total;wfBoost=0.6+wfRate*0.8;}
       }
       algoCache[ca.name]={bt,wfBoost,fn};
     }catch(e){}
   });
-  // custom — now uses same full 7-factor weighting as built-ins
+  // custom algos — run predictions on local series
   (customs||[]).forEach(ca=>{
     if(!ca.enabled||!ca.code)return;
     try{
       const cached=algoCache[ca.name];if(!cached)return;
       const {bt,wfBoost,fn}=cached;
       if(!fn)return;
-      const _bt=bt,_wfBoost=wfBoost; // rename to avoid shadowing
       const lw=gw[ca.name]!=null?gw[ca.name]:1;
       const rowW=rw[predRow]?rw[predRow][ca.name]!=null?rw[predRow][ca.name]:1:1;
       const ranW=rnw[curRange]?rnw[curRange][ca.name]!=null?rnw[curRange][ca.name]:1:1;
       const regW=rgw[ca.name]!=null?rgw[ca.name]:1;
       const nScore=ns[ca.name]!=null?ns[ca.name]:0;
       const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
-      const btFactor=0.2+Math.sqrt(_bt)*3.5;
-      const w=btFactor*_wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult;
+      const btFactor=0.2+Math.sqrt(bt)*3.5;
+      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1)));
-      details[ca.name]={pred:preds[0],bt:Math.round(_bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom"};
+      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom"};
     }catch(e){}
   });
+
   // Adaptive: redistribute tiny votes (< 1% of max) to reduce noise
   const maxVote=Math.max(...Object.values(votes));
   Object.keys(votes).forEach(v=>{if(votes[v]<maxVote*0.01)delete votes[v];});
 
-  // ── FAMILY DIVERSITY BONUS ─────────────────────────────────
-  // When algos from different mathematical families agree on the same value,
-  // that agreement is much stronger evidence than many similar algos agreeing.
-  // 2 families → 1.25x, 3 families → 1.55x, 4+ families → 1.85x, 5 → 2.2x
+  // ── FAMILY DIVERSITY BONUS ────────────────────────────────────────────
   const votesByFamily={};
   Object.entries(details).forEach(([name,info])=>{
     const v=info.pred!=null?M.mod(Math.round(info.pred)):-1;
@@ -2274,7 +2385,31 @@ function predictCol(col,data,W,customs,targetDate){
     if(nFam>=2&&votes[vi])votes[vi]*=FAM_MULT[Math.min(nFam,5)];
   });
 
-  // ── CONSENSUS FILTER: weighted agreement (high-weight algos count more) ──
+  // ── MULTI-LAYER HARMONY AMPLIFIER ─────────────────────────────────────
+  // The deepest insight: when INDEPENDENT evidence streams (algo families, date signals,
+  // pattern bank, cross-dataset history, cross-col temporal) ALL point to the same value,
+  // that convergence is exponentially more reliable than any one stream alone.
+  // This is the "all algos working in harmony" mechanism.
+  {
+    const signalTypeSupport={}; // value → Set of evidence stream types
+    Object.entries(details).forEach(([,info])=>{
+      if(!ok(info.pred))return;
+      const v=M.mod(Math.round(info.pred));
+      if(!signalTypeSupport[v])signalTypeSupport[v]=new Set();
+      signalTypeSupport[v].add(info.type||"builtin");
+    });
+    // Multi-layer multipliers — each additional independent stream adds compounding confidence
+    // 2 types → 1.5x, 3 → 2.1x, 4 → 2.9x, 5+ → 3.8x
+    const LAYER_MULT=[1,1,1.5,2.1,2.9,3.8];
+    Object.entries(signalTypeSupport).forEach(([v,types])=>{
+      const vi=parseInt(v);
+      if(!votes[vi])return;
+      const n=types.size;
+      if(n>=2)votes[vi]*=LAYER_MULT[Math.min(n,5)];
+    });
+  }
+
+  // ── CONSENSUS FILTER: weighted agreement ──────────────────────────────
   const algoAgreement={};
   Object.entries(details).forEach(([,info])=>{
     const v=info.pred!=null?M.mod(Math.round(info.pred)):-1;
@@ -2286,7 +2421,7 @@ function predictCol(col,data,W,customs,targetDate){
     if(agreeRatio>0.3&&votes[parseInt(v)])votes[parseInt(v)]*=1+agreeRatio*0.4;
   });
 
-  // Meta-learner: pre-built in runPredict and passed as W._metaModel (not rebuilt per col)
+  // Meta-learner
   const metaModel=W._metaModel||null;
   if(metaModel){
     Object.keys(votes).forEach(v=>{
@@ -2295,16 +2430,16 @@ function predictCol(col,data,W,customs,targetDate){
       supporters.forEach(([name])=>{
         const rate=metaModel.weights[name];
         if(rate==null)return;
-        // Sharper curve: top performers get bigger boost, poor performers get harder penalty
         const mult=rate>0.55?1.5:rate>0.40?1.25:rate>0.25?1.05:rate<0.08?0.5:0.8;
         votes[vInt]*=mult;
       });
     });
   }
 
-  // ── HISTORICAL FREQ FILTER (O(n) map lookup, not O(n×k) filter per candidate) ──
+  // ── HISTORICAL FREQ FILTER ────────────────────────────────────────────
+  // Uses globalSeries frequency for more accurate "has this value ever appeared?"
   const freqMap={};
-  series.forEach(v=>{freqMap[v]=(freqMap[v]||0)+1;});
+  btSeries.forEach(v=>{freqMap[v]=(freqMap[v]||0)+1;});
   Object.keys(votes).forEach(v=>{
     const vInt=parseInt(v);
     const seenCount=freqMap[vInt]||0;
@@ -2312,8 +2447,7 @@ function predictCol(col,data,W,customs,targetDate){
     else if(seenCount===1)votes[vInt]*=0.7;
   });
 
-  // ── DEAD-ZONE BIAS CORRECTION ──────────────────────
-  // If recent predictions consistently miss in same direction → apply systematic correction
+  // ── DEAD-ZONE BIAS CORRECTION ─────────────────────────────────────────
   if(W._accLog&&W._accLog.length>=4){
     const recentErrs=W._accLog.slice(-6).map(e=>{
       const pred=e.preds&&e.preds[col];const act=e.actuals&&e.actuals[col];
@@ -2325,9 +2459,8 @@ function predictCol(col,data,W,customs,targetDate){
       const posCount=recentErrs.filter(e=>e>2).length;
       const negCount=recentErrs.filter(e=>e<-2).length;
       const n=recentErrs.length;
-      // Trigger at 4/6 or better (was requiring ALL); scale correction by consistency
       if(posCount>=Math.ceil(n*0.66)||negCount>=Math.ceil(n*0.66)){
-        const consistencyRatio=Math.max(posCount,negCount)/n; // 0.66–1.0
+        const consistencyRatio=Math.max(posCount,negCount)/n;
         const avgErr=Math.round(M.mean(recentErrs)*0.5*consistencyRatio);
         Object.keys(votes).forEach(v=>{
           const shifted=M.mod(parseInt(v)+avgErr);
@@ -2339,30 +2472,20 @@ function predictCol(col,data,W,customs,targetDate){
     }
   }
 
-  // ── ENSEMBLE VARIANCE → CONFIDENCE DOWNGRADE ────
-  // When algo predictions are very spread out, downgrade confidence regardless of top vote %
+  // ── ENSEMBLE VARIANCE → CONFIDENCE DOWNGRADE ─────────────────────────
   const _allPreds=Object.values(details).map(d=>d.pred).filter(ok);
   const _ensembleVar=_allPreds.length>3?+M.std(_allPreds).toFixed(1):0;
 
-  // Bug 3 fix: compute top5 AFTER all vote boosts
   const total=Object.values(votes).reduce((a,b)=>a+b,0)||1;
   const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,5)
     .map(([v,vt])=>({value:parseInt(v),votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:_contribSets[v]?[..._contribSets[v]]:[]}));
 
-  // ── JOINT COLUMN HINT ─────────────────────────
-  // Applied by caller after all 4 cols predicted
-
   const ac=Object.keys(details).length;
   const consensus=top5[0]?Math.round(top5[0].algos.length/ac*100):0;
   const t1pct=top5[0]?top5[0].pct:0;
-  // Adaptive thresholds: with more algos, natural top-1 pct is lower
-  // Scale: 30 algos→40%/20%, 100 algos→25%/12%, 150 algos→18%/9%
   const highThr=Math.max(12,40-ac*0.18);
   const medThr=Math.max(6,20-ac*0.09);
-  // Diversity check: how many algo families support top-1 prediction?
   const top1FamSupport=top5[0]?((votesByFamily[top5[0].value]||new Set()).size):0;
-  // Ensemble variance override: high spread = MAX MED confidence
-  // HIGH requires: vote share + multi-family agreement + low variance
   const conf=_ensembleVar>25?"LOW"
     :t1pct>highThr&&_ensembleVar<12&&top1FamSupport>=2?"HIGH"
     :t1pct>medThr||top1FamSupport>=3?"MED"
@@ -2372,12 +2495,11 @@ function predictCol(col,data,W,customs,targetDate){
   const sAllP=[...allP].sort((a,b)=>a-b);
   const lo=sAllP[Math.floor(sAllP.length*0.1)]||top5[0]?.value||0;
   const hi=sAllP[Math.floor(sAllP.length*0.9)]||top5[0]?.value||0;
-  // Temporal signal summary
   const topVal=top5[0]?.value;
   const tempSignals=Object.entries(details).filter(([,d])=>d.type==="temporal"&&ok(d.pred)).map(([name,d])=>({name,pred:M.mod(Math.round(d.pred)),w:d.w,match:topVal!=null&&M.mod(Math.round(d.pred))===topVal}));
   const tempAgree=tempSignals.filter(s=>s.match).length;
   const tempTotal=tempSignals.length;
-  const dateSigList=Object.entries(details).filter(([,d])=>d.type==="date"&&ok(d.pred)).map(([name,d])=>({name,pred:M.mod(Math.round(d.pred)),w:d.w,match:topVal!=null&&M.mod(Math.round(d.pred))===topVal}));
+  const dateSigList=Object.entries(details).filter(([,d])=>(d.type==="date"||d.type==="patternbank")&&ok(d.pred)).map(([name,d])=>({name,pred:M.mod(Math.round(d.pred)),w:d.w,match:topVal!=null&&M.mod(Math.round(d.pred))===topVal}));
   const dateAgree=dateSigList.filter(s=>s.match).length;
   const dateTotal=dateSigList.length;
   return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport};
@@ -2852,7 +2974,184 @@ function parseImportedWeights(parsed){
   return null;
 }
 
-// ── STORAGE ────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// ── PATTERN BANK ─ Long-term cross-period memory ──────────────────────
+// Distills proven patterns from ALL historical data into a compact structure
+// that survives dataset switches, period gaps (2025→2026), and weight resets.
+// Updated after every checkAndLearn. Used inside predictCol as a high-weight
+// signal layer alongside date signals.
+// ══════════════════════════════════════════════════════════════════════
+
+function updatePatternBank(prevBank,col,allDatasets,accLog){
+  const bank={...((prevBank||{})[col]||{})};
+
+  // ── 1. Monthly profiles — per-month mean/std across ALL years ──────
+  const monthly={};
+  Object.values(allDatasets||{}).forEach(ds=>{
+    (ds.rows||[]).forEach(r=>{
+      if(!ok(r[col])||!r.date)return;
+      const pd=parseDate(r.date);if(!pd)return;
+      (monthly[pd.m]=monthly[pd.m]||[]).push(r[col]);
+    });
+  });
+  const monthlyProfiles={};
+  Object.entries(monthly).forEach(([m,vals])=>{
+    if(vals.length>=2)monthlyProfiles[m]={mean:Math.round(M.mean(vals)),std:+M.std(vals).toFixed(1),n:vals.length,
+      // Tight = std<6 → near-deterministic for this month
+      tight:M.std(vals)<6&&vals.length>=3};
+  });
+  bank.monthlyProfiles=monthlyProfiles;
+
+  // ── 2. Day-of-month profiles — same calendar day across ALL months/years ──
+  const dayMap2={};
+  Object.values(allDatasets||{}).forEach(ds=>{
+    (ds.rows||[]).forEach(r=>{
+      if(!ok(r[col])||!r.date)return;
+      const pd=parseDate(r.date);if(!pd)return;
+      (dayMap2[pd.d]=dayMap2[pd.d]||[]).push(r[col]);
+    });
+  });
+  const dayProfiles={};
+  Object.entries(dayMap2).forEach(([d,vals])=>{
+    if(vals.length>=2)dayProfiles[d]={mean:Math.round(M.mean(vals)),std:+M.std(vals).toFixed(1),n:vals.length,
+      tight:M.std(vals)<5&&vals.length>=3,
+      snug:M.std(vals)<10&&vals.length>=3};
+  });
+  bank.dayProfiles=dayProfiles;
+
+  // ── 3. Month×DayOfMonth joint profiles (finest granularity) ─────────
+  const mdMap={};
+  Object.values(allDatasets||{}).forEach(ds=>{
+    (ds.rows||[]).forEach(r=>{
+      if(!ok(r[col])||!r.date)return;
+      const pd=parseDate(r.date);if(!pd)return;
+      const k=pd.m+"_"+pd.d;
+      (mdMap[k]=mdMap[k]||[]).push(r[col]);
+    });
+  });
+  const mdProfiles={};
+  Object.entries(mdMap).forEach(([k,vals])=>{
+    if(vals.length>=2)mdProfiles[k]={mean:Math.round(M.mean(vals)),std:+M.std(vals).toFixed(1),n:vals.length,
+      tight:M.std(vals)<5};
+  });
+  bank.mdProfiles=mdProfiles;
+
+  // ── 4. Year-over-Year deltas per month ───────────────────────────────
+  // Used to project 2026 from 2025: 2026_mean ≈ 2025_mean + avg_annual_delta
+  const yoyByMonthYear={};
+  Object.values(allDatasets||{}).forEach(ds=>{
+    (ds.rows||[]).forEach(r=>{
+      if(!ok(r[col])||!r.date)return;
+      const pd=parseDate(r.date);if(!pd)return;
+      const k=pd.m+"_"+pd.y;
+      (yoyByMonthYear[k]=yoyByMonthYear[k]||{m:pd.m,y:pd.y,vals:[]}).vals.push(r[col]);
+    });
+  });
+  const yoyDeltas={};
+  const monthYearMeans={};
+  Object.values(yoyByMonthYear).forEach(({m,y,vals})=>{
+    if(!monthYearMeans[m])monthYearMeans[m]={};
+    monthYearMeans[m][y]=Math.round(M.mean(vals));
+  });
+  Object.entries(monthYearMeans).forEach(([m,yearMap])=>{
+    const years=Object.keys(yearMap).map(Number).sort();
+    if(years.length>=2){
+      const deltas=[];
+      for(let i=1;i<years.length;i++)deltas.push(yearMap[years[i]]-yearMap[years[i-1]]);
+      yoyDeltas[m]={yearMap,avgDelta:Math.round(M.mean(deltas)),lastYear:years[years.length-1],lastMean:yearMap[years[years.length-1]]};
+    }
+  });
+  bank.yoyDeltas=yoyDeltas;
+
+  // ── 5. Top algo hit-rates from accLog (cross-session truth) ──────────
+  const algoHits={},algoCounts={};
+  (accLog||[]).forEach(entry=>{
+    const details=entry.algoDetails?.[col];
+    const actual=entry.actuals?.[col];
+    if(!ok(actual)||!details)return;
+    Object.entries(details).forEach(([name,pred])=>{
+      if(!ok(pred))return;
+      if(!algoCounts[name]){algoCounts[name]=0;algoHits[name]=0;}
+      algoCounts[name]++;
+      if(M.mod(Math.round(pred))===actual)algoHits[name]++;
+    });
+  });
+  bank.topAlgos=Object.entries(algoCounts)
+    .filter(([,n])=>n>=3)
+    .map(([name,n])=>({name,hitRate:+(algoHits[name]/n).toFixed(3),n}))
+    .sort((a,b)=>b.hitRate-a.hitRate).slice(0,20);
+
+  // ── 6. Periodic pattern strength ─────────────────────────────────────
+  const globalSer=getGlobalSeries(col,allDatasets);
+  if(globalSer.length>=12){
+    let bestPer={p:7,strength:0};
+    for(let p=2;p<=14;p++){
+      let sc=0;
+      for(let i=p;i<globalSer.length;i++)sc+=Math.max(0,1-M.cd(globalSer[i],globalSer[i-p])/15);
+      const norm=sc/(globalSer.length-p);
+      if(norm>bestPer.strength)bestPer={p,strength:+norm.toFixed(3)};
+    }
+    bank.bestPeriod=bestPer;
+  }
+
+  bank.updatedAt=Date.now();
+  return bank;
+}
+
+// ── Signal generator from Pattern Bank ──────────────────────────────────
+// Returns prediction signals based on stored patterns (month/day/yoy profiles)
+function getPatternBankSignals(col,patternBank,targetDate){
+  const res={};
+  const pb=patternBank?.[col];
+  if(!pb)return res;
+  const td=targetDate?parseDate(targetDate):null;
+
+  if(td){
+    // Month×Day exact profile — finest grain, highest confidence
+    const mdKey=td.m+"_"+td.d;
+    const mdP=pb.mdProfiles?.[mdKey];
+    if(mdP&&mdP.n>=2){
+      res["PB_MDExact"]=[M.mod(mdP.mean)];
+      if(mdP.tight)res["PB_MDTight"]=[M.mod(mdP.mean)]; // extra high-weight duplicate
+    }
+
+    // Day-of-month profile
+    const dayP=pb.dayProfiles?.[td.d];
+    if(dayP&&dayP.n>=2){
+      res["PB_DayProfile"]=[M.mod(dayP.mean)];
+      if(dayP.tight)res["PB_DayTight"]=[M.mod(dayP.mean)];
+      if(dayP.snug&&!dayP.tight)res["PB_DaySnug"]=[M.mod(dayP.mean)];
+    }
+
+    // Monthly profile
+    const moP=pb.monthlyProfiles?.[td.m];
+    if(moP&&moP.n>=2){
+      res["PB_MonthProfile"]=[M.mod(moP.mean)];
+      if(moP.tight)res["PB_MonthTight"]=[M.mod(moP.mean)];
+    }
+
+    // Year-over-Year projection — predict 2026 from 2025 trend
+    const yoy=pb.yoyDeltas?.[td.m];
+    if(yoy&&td.y>yoy.lastYear){
+      const yearGap=td.y-yoy.lastYear;
+      const yoyPred=M.mod(Math.round(yoy.lastMean+yoy.avgDelta*yearGap));
+      res["PB_YoY"]=[yoyPred];
+      // Also YoY + day correction (if day profile exists)
+      if(dayP&&dayP.n>=2){
+        const dayOffset=dayP.mean-moP?.mean||0;
+        res["PB_YoYDay"]=[M.mod(Math.round(yoyPred+dayOffset*0.5))];
+      }
+    }
+  }
+
+  // Best periodic pattern from history
+  if(pb.bestPeriod&&pb.bestPeriod.strength>0.45){
+    // This doesn't use date but uses the period structure
+    res["PB_BestPeriod"]=[null]; // populated by caller with series context
+  }
+
+  return res;
+}
 const SK="ape-v13";
 // Debounced save: batches rapid state changes (e.g. during predict) into one write
 let _saveTimer=null;
@@ -2881,6 +3180,7 @@ function fresh(){
     active:"def",
     weights:{A:{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}},B:{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}},C:{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}},D:{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}}},
     calibration:{A:{},B:{},C:{},D:{}},
+    patternBank:{A:{},B:{},C:{},D:{}},
     customs:[],accLog:[],preds:null,predRow:null,predDate:null,genN:0,tourN:0,lastAutoGenRows:0,pruneLog:[]
   };
 }
@@ -2927,9 +3227,24 @@ function AppInner(){
   const[corrM,setCorrM]=useState(null);
   const[dsName,setDsName]=useState("");
   const[copyMsg,setCopyMsg]=useState("");
+  const[autoTrainStatus,setAutoTrainStatus]=useState(null); // {running,progress,total,done,log,result}
+  const autoTrainRef=React.useRef(false); // cancellation flag
   const[weightsMsg,setWeightsMsg]=useState("");
   const[showCalib,setShowCalib]=useState(false);
   const[autoGenLog,setAutoGenLog]=useState([]);
+  const[sysLog,setSysLog]=useState([{t:Date.now(),lvl:"info",msg:"APE ready — enter day 1 to begin training"}]);
+  const[showTerminal,setShowTerminal]=useState(true);
+  const sysRef=React.useRef(null);
+
+  // Push to terminal log — capped at 200 entries, auto-scrolls
+  const syslog=React.useCallback((msg,lvl="info")=>{
+    setSysLog(prev=>{
+      const entry={t:Date.now(),lvl,msg};
+      const next=[...prev.slice(-199),entry];
+      return next;
+    });
+    setTimeout(()=>{if(sysRef.current)sysRef.current.scrollTop=sysRef.current.scrollHeight;},30);
+  },[]);
   const[missingPreds,setMissingPreds]=useState({});
   const[dateIn,setDateIn]=useState(todayStr());
   const[predDate,setPredDate]=useState("");
@@ -2963,14 +3278,17 @@ function AppInner(){
         // Migrate all weight tables (uses same logic as import)
         saved.weights=migrateWeights(saved.weights);
         if(!saved.calibration)saved.calibration={A:{},B:{},C:{},D:{}};
+        if(!saved.patternBank)saved.patternBank={A:{},B:{},C:{},D:{}};
         if(!saved.customs)saved.customs=[];
         if(!saved.genN)saved.genN=0;
         if(!saved.tourN)saved.tourN=0;
         setS(saved);
         const n=saved.datasets&&saved.datasets[saved.active]?saved.datasets[saved.active].rows.length:0;
         st("Restored — "+n+" rows · "+(saved.customs?saved.customs.length:0)+" algos · "+(saved.accLog?saved.accLog.length:0)+" sessions");
+        setTimeout(()=>syslog("💾 Restored "+n+" rows, "+(saved.customs?saved.customs.length:0)+" algos, "+(saved.accLog?saved.accLog.length:0)+" sessions","info"),100);
       }else{
-        st("Welcome to APE v7");
+        st("Welcome to APE — enter Day 1 to start training");
+        setTimeout(()=>syslog("🚀 Fresh start — enter day numbers sequentially (1, 2, 3...) with a date for each row","info"),100);
       }
       setLoaded(true);
     });
@@ -2978,9 +3296,8 @@ function AppInner(){
 
   function addRow(){
     const r=parseInt(rowIn);
-    if(isNaN(r)||r<1||r>31){st("Row must be 1–31","err");return;}
+    if(isNaN(r)||r<1||r>9999){st("Day # must be 1–9999","err");return;}
     const entry={row:r};
-    // Attach date if provided
     if(dateIn&&parseDate(dateIn))entry.date=dateIn;
     for(let i=0;i<COLS.length;i++){
       const col=COLS[i],raw=vals[col].trim();
@@ -3005,32 +3322,39 @@ function AppInner(){
               const msg="+"+newAlgos.length+" algos generated ("+curRows.length+" rows)";
               next={...next,customs:[...(next.customs||[]),...newAlgos],genN:(next.genN||0)+1,lastAutoGenRows:curRows.length,autoGenLog:[...log.slice(-9),{at:new Date().toISOString(),msg}]};
               setAutoGenLog(p=>[...p.slice(-4),msg]);
+              syslog("🔧 "+msg,"gen");
+              // Notify if strong pattern detected
+              const strongAlgos=newAlgos.filter(a=>a.name.startsWith("Cyc_")||a.name.startsWith("Rec2_")||a.name.startsWith("XorLag_"));
+              if(strongAlgos.length>0)syslog("⚡ Strong pattern detected: "+strongAlgos.map(a=>a.name).join(", ")+" — consider exporting weights!","alert");
             }
           }
-          // ── Auto-prune on every row add (lightweight: only if pool big enough) ──
+          // ── Auto-prune on every row add ──
           if(shouldAutoPrune(next.customs,curRows.length)){
             const {pruned,removed}=pruneWeakAlgos(next.customs||[],next.weights||cur.weights,curRows);
             if(removed.length>0){
               setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
+              removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
               next={...next,customs:pruned};
             }
           }
-          // ── Re-fit stale Gap/Lin algos: update offset if series drifted ──
+          // ── Re-fit stale Gap/Lin algos ──
           if(curRows.length>=8&&curRows.length%4===0){
+            let refitCount=0;
             next={...next,customs:(next.customs||[]).map(ca=>{
               if(!ca.generated||ca.benched)return ca;
-              // Re-fit Gap_ algos to current recent average gap
               if(ca.name.startsWith("Gap_")){
                 const col=ca.name.split("_")[1];
                 const s=getSeries(col,curRows);if(s.length<4)return ca;
                 const gs=[];for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gs.push(g);}
                 const ng=Math.round(M.mean(gs.slice(-6)));
                 if(ng!==0&&Math.abs(ng-(parseInt(ca.name.split("_")[2])||0))>2){
+                  refitCount++;
                   return{...ca,code:"(s,M)=>[M.mod(s[s.length-1]+("+ng+"))]",updatedAt:Date.now()};
                 }
               }
               return ca;
             })};
+            if(refitCount>0)syslog("♻ Re-fitted "+refitCount+" gap algo(s) to current drift","refit");
           }
           if(next!==cur)saveS(next);
           return next;
@@ -3038,10 +3362,18 @@ function AppInner(){
       },100);
       return updated;
     });
-    // Auto-advance date by 1 day
+    // Auto-advance date by 1 day and day# by 1
     if(dateIn){const nd=new Date(dateIn+"T12:00:00");nd.setDate(nd.getDate()+1);setDateIn(nd.getFullYear()+"-"+String(nd.getMonth()+1).padStart(2,"0")+"-"+String(nd.getDate()).padStart(2,"0"));}
-    setRowIn(String(r+1).padStart(2,"0"));setVals({A:"",B:"",C:"",D:""});
-    st("Row "+pad2(r)+" saved ✓");
+    // Next day = max row in dataset + 1 (sequential, not 1-31 cycle)
+    setS(cur=>{
+      const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
+      const maxR=curRows.length?Math.max(...curRows.map(x=>x.row)):r;
+      setRowIn(String(maxR+1));
+      return cur;
+    });
+    setVals({A:"",B:"",C:"",D:""});
+    st("Day "+pad2(r)+" saved ✓");
+    syslog("📥 Day "+r+(dateIn?" ("+dateIn+")":"")+" saved","data");
   }
 
   function doBulk(){
@@ -3049,7 +3381,7 @@ function AppInner(){
     const next=[...rows];
     lines.forEach(line=>{
       const pts=line.split(",").map(p=>p.trim());if(pts.length<5){errs++;return;}
-      const row=parseInt(pts[0]);if(isNaN(row)||row<1||row>31){errs++;return;}
+      const row=parseInt(pts[0]);if(isNaN(row)||row<1||row>9999){errs++;return;}
       const abcd=pts.slice(1,5).map(p=>{if(!p||p.toUpperCase()==="XX")return null;const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;});
       if(abcd.some(v=>v===undefined)){errs++;return;}
       // 6th column optional: YYYY-MM-DD date
@@ -3092,9 +3424,109 @@ function AppInner(){
         if(parsed.dataset&&!parsed.datasets){parsed.datasets={def:{name:"Imported",rows:parsed.dataset}};parsed.active="def";}
         parsed.weights=migrateWeights(parsed.weights||{});
         if(!parsed.customs)parsed.customs=[];
+        if(!parsed.patternBank)parsed.patternBank={A:{},B:{},C:{},D:{}};
         setS(parsed);saveS(parsed);
         st("Imported successfully");
       }catch(err){st("Import failed: "+err.message,"err");}
+    };
+    reader.readAsText(f);e.target.value="";
+  }
+
+  // ── CSV FILE IMPORT WITH AUTO-LEARN + PATTERN BANK UPDATE ──────────────
+  function doImportCSV(e){
+    const f=e.target.files[0];if(!f)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const text=ev.target.result;
+      const lines=text.trim().split(/\r?\n/).filter(l=>l.trim()&&!l.toLowerCase().startsWith("row,a"));
+      let added=0,updated=0,autoLearned=0,errs=0;
+      const incomingRows=[];
+      lines.forEach(line=>{
+        const pts=line.split(",").map(p=>p.trim());
+        if(pts.length<5){errs++;return;}
+        const row=parseInt(pts[0]);
+        if(isNaN(row)||row<1||row>9999){errs++;return;}
+        const abcd=pts.slice(1,5).map(p=>{
+          if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
+          const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;
+        });
+        if(abcd.some(v=>v===undefined)){errs++;return;}
+        const rowDate=pts[5]&&parseDate(pts[5])?pts[5]:undefined;
+        incomingRows.push({row,A:abcd[0],B:abcd[1],C:abcd[2],D:abcd[3],date:rowDate});
+      });
+      if(!incomingRows.length){st("No valid rows in CSV","warn");e.target.value="";return;}
+
+      upd(prev=>{
+        const dsKey=prev.active;
+        const existingRows=[...(prev.datasets[dsKey]?.rows||[])];
+        let nw={...prev.weights};
+        let nc={...prev.calibration||{A:{},B:{},C:{},D:{}}};
+        let newCustoms=[...(prev.customs||[])];
+        const newAccLog=[...(prev.accLog||[])];
+
+        incomingRows.forEach(inc=>{
+          const existIdx=existingRows.findIndex(r=>r.row===inc.row);
+          const exist=existIdx>=0?existingRows[existIdx]:null;
+          const newlyKnownCols=COLS.filter(c=>inc[c]!=null&&(exist?.[c]==null));
+          if(exist===null){
+            const entry={row:inc.row,A:inc.A,B:inc.B,C:inc.C,D:inc.D};
+            if(inc.date)entry.date=inc.date;
+            existingRows.push(entry);added++;
+          } else {
+            const merged={...exist};
+            COLS.forEach(c=>{if(inc[c]!=null)merged[c]=inc[c];});
+            if(inc.date&&!merged.date)merged.date=inc.date;
+            existingRows[existIdx]=merged;
+            if(newlyKnownCols.length>0)updated++;
+          }
+          // Auto-learn if this row was the predicted row
+          if(newlyKnownCols.length>0&&prev.preds&&prev.predRow===inc.row){
+            const actuals={};COLS.forEach(c=>{actuals[c]=inc[c]!=null?inc[c]:null;});
+            const dateCtx=inc.date?parseDate(inc.date):null;
+            const dtCtx=dateCtx?{dow:dateCtx.dow,lunar:dateCtx.lunarPhase,month:dateCtx.m,season:dateCtx.season}:null;
+            newlyKnownCols.forEach(col=>{
+              const colRegime=prev.preds[col]?prev.preds[col].regime:"normal";
+              let uw=updateW(prev.preds[col],actuals[col],nw[col],inc.row,colRegime,nc[col]);
+              uw.global=applyForgetting(uw.global,newAccLog);
+              if(dtCtx)uw=updateDateWeights(prev.preds[col],actuals[col],uw,dtCtx);
+              nw[col]=uw;
+              if(prev.preds[col])nc[col]=updateCalibration(prev.preds[col].conf,actuals[col]===prev.preds[col].top5[0]?.value,nc[col]||{});
+            });
+            const exactCount=newlyKnownCols.filter(c=>prev.preds[c]&&prev.preds[c].top5[0]?.value===actuals[c]).length;
+            newAccLog.push({at:new Date().toISOString(),targetRow:inc.row,date:inc.date||null,dateCtx:dtCtx,
+              preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?.top5[0]?.value??null])),
+              algoDetails:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?Object.fromEntries(Object.entries(prev.preds[c].details).sort((a,b)=>b[1].w-a[1].w).slice(0,20).map(([n,d])=>[n,d.pred])):{}])),
+              actuals,exactCount,knownCount:newlyKnownCols.length,autoLearned:true});
+            autoLearned++;
+            syslog("🤖 Auto-learned row "+pad2(inc.row)+": "+exactCount+"/"+newlyKnownCols.length+" exact","learn");
+          }
+        });
+        existingRows.sort((a,b)=>a.row-b.row);
+
+        // Rebuild pattern bank with new data
+        const newDs={...prev.datasets,[dsKey]:{...prev.datasets[dsKey],rows:existingRows}};
+        const newPB={...prev.patternBank||{}};
+        COLS.forEach(c=>{newPB[c]=updatePatternBank(prev.patternBank,c,newDs,newAccLog);});
+
+        // Auto-generate algos
+        const _gc=(newCustoms||[]).filter(a=>a.generated&&!a.benched).length;
+        if(shouldAutoGenerate(existingRows.length,(prev.genN||0)+1,prev.lastAutoGenRows||0,_gc)){
+          const ex2=new Set([...Object.keys(A),...newCustoms.map(a=>a.name)]);
+          const fa=generateAlgos(existingRows,ex2);
+          if(fa.length>0){newCustoms=[...newCustoms,...fa];syslog("🔧 +"+fa.length+" algos auto-generated after CSV import","gen");}
+        }
+        const parts=[];
+        if(added)parts.push(added+" new");if(updated)parts.push(updated+" updated");
+        if(autoLearned)parts.push("🤖 "+autoLearned+" auto-learned");if(errs)parts.push(errs+" skipped");
+        syslog("📂 CSV import: "+parts.join(", "),"info");
+
+        return{...prev,weights:nw,calibration:nc,customs:newCustoms,datasets:newDs,patternBank:newPB,
+          accLog:newAccLog.slice(-365),genN:(prev.genN||0)+1,lastAutoGenRows:existingRows.length};
+      });
+      const parts=[];
+      if(added)parts.push(added+" rows added");if(updated)parts.push(updated+" updated");
+      if(autoLearned)parts.push("🤖 "+autoLearned+" auto-learned");if(errs)parts.push(errs+" skipped");
+      st("CSV: "+parts.join(", "),errs&&!added&&!updated?"warn":"ok");
     };
     reader.readAsText(f);e.target.value="";
   }
@@ -3124,7 +3556,7 @@ function AppInner(){
     if(rows.length<4){st("Need at least 4 rows","warn");return;}
     st("Computing…","busy");
     const maxRow=Math.max(...rows.map(r=>r.row));
-    const target=maxRow>=31?1:maxRow+1;
+    const target=maxRow+1; // sequential global day — no monthly cycling
     // Compute target date: use predDate if set, else auto-advance from last dated row
     let tDate=predDate||"";
     if(!tDate){
@@ -3140,7 +3572,7 @@ function AppInner(){
     const _slimAccLog=(S.accLog||[]).slice(-10);
     COLS.forEach(col=>{
       const W={...S.weights[col],_metaModel:_sharedMeta,_accLog:_slimAccLog};
-      result[col]=predictCol(col,rows,W,S.customs,tDate);
+      result[col]=predictCol(col,rows,W,S.customs,tDate,S.datasets,S.patternBank);
     });
     // Joint column hint
     const knownPreds={};
@@ -3221,7 +3653,7 @@ function AppInner(){
     // Build meta model once, outside the loop
     const _meta2=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     missing.forEach(col=>{
-      const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2},S.customs,S.predDate||"");
+      const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2},S.customs,S.predDate||"",S.datasets,S.patternBank);
       if(pred&&pred.top5[0]){
         const top=pred.top5[0].value;
         newActs[col]=String(top).padStart(2,"0");
@@ -3342,10 +3774,233 @@ function AppInner(){
         const freshAlgos=generateAlgos(newRows,existing2);
         if(freshAlgos.length>0)finalCustoms=[...finalCustoms,...freshAlgos];
       }
-      return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,accLog:[...(prev.accLog||[]).slice(-50),entry],lastAutoGenRows:newRows.length};
+
+      // ── Rebuild Pattern Bank: update after every learn with full dataset context ──
+      // This keeps the cross-period long-term memory current.
+      // Every COLS entry gets updated with ALL datasets so 2026 predictions can use 2025 patterns.
+      const newPatternBank={...prev.patternBank||{}};
+      const newFullLog=[...(prev.accLog||[]).slice(-365),entry];
+      COLS.forEach(c=>{
+        if(actuals[c]!=null){ // only rebuild for cols where we just learned
+          newPatternBank[c]=updatePatternBank(prev.patternBank,c,newDs,newFullLog);
+        }
+      });
+
+      return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,accLog:newFullLog,lastAutoGenRows:newRows.length};
     });
     st("Learned! "+exactCount+"/4 exact — weights saved ✓");
+    const pct=Math.round(exactCount/knownCols.length*100);
+    syslog((exactCount===4?"🎯":"📊")+" Learn result: "+exactCount+"/"+knownCols.length+" exact ("+pct+"%)","learn");
+    if(exactCount===4)syslog("✨ Perfect prediction! Pattern well-captured — consider exporting weights.","alert");
   }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // ── BULK AUTO-TRAIN ─────────────────────────────────────────────────────
+  // Walk-forward simulation on historical data with known outcomes.
+  //
+  // Flow per row i:
+  //   1. Use rows 0..i-1 as training history
+  //   2. Predict row i using predictCol (all algos, cross-col, date signals)
+  //   3. Compare prediction vs actual (row i)
+  //   4. Update weights exactly as checkAndLearn does
+  //   5. Prune weak algos, generate new ones, update pattern bank
+  //
+  // Result: weights trained on ALL historical rows in correct temporal order.
+  // Best algos surface, worst algos get pruned. Pattern bank fully populated.
+  // ════════════════════════════════════════════════════════════════════════
+
+  function parseAutoTrainCSV(text){
+    // Accepts: Row,A,B,C,D,Date  OR  Row,A,B,C,D  (date optional)
+    // First line may be a header — auto-detected and skipped
+    const lines=text.trim().split(/\r?\n/).filter(l=>l.trim());
+    const rows=[];
+    let skipped=0;
+    lines.forEach((line,idx)=>{
+      // Skip header
+      if(idx===0&&/[a-zA-Z]{2,}/.test(line.split(",")[0]))return;
+      const pts=line.split(",").map(p=>p.trim());
+      if(pts.length<5){skipped++;return;}
+      const rowNum=parseInt(pts[0]);
+      if(isNaN(rowNum)||rowNum<1||rowNum>99999){skipped++;return;}
+      const abcd=pts.slice(1,5).map(p=>{
+        if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
+        const n=parseInt(p);
+        return(isNaN(n)||n<0||n>99)?undefined:n;
+      });
+      if(abcd.some(v=>v===undefined)){skipped++;return;}
+      // At least one column must be known
+      if(abcd.every(v=>v===null)){skipped++;return;}
+      const rowDate=pts[5]&&parseDate(pts[5])?pts[5]:null;
+      rows.push({row:rowNum,A:abcd[0],B:abcd[1],C:abcd[2],D:abcd[3],date:rowDate});
+    });
+    return{rows,skipped};
+  }
+
+  function doAutoTrain(e){
+    const f=e.target.files[0];if(!f)return;
+    e.target.value="";
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const{rows:csvRows,skipped}=parseAutoTrainCSV(ev.target.result);
+      if(csvRows.length<4){
+        st("Need at least 4 rows with known outcomes in CSV","warn");
+        return;
+      }
+      // Sort by date then row number to ensure correct temporal order
+      csvRows.sort((a,b)=>{
+        if(a.date&&b.date)return a.date.localeCompare(b.date);
+        return a.row-b.row;
+      });
+
+      autoTrainRef.current=false;
+      setAutoTrainStatus({running:true,progress:0,total:csvRows.length,done:false,log:[
+        "📂 Loaded "+csvRows.length+" rows"+(skipped?" ("+skipped+" skipped)":""),
+        "⚙ Starting walk-forward training simulation…"
+      ],result:null});
+
+      // Run async in chunks to keep UI responsive
+      setTimeout(()=>runAutoTrainLoop(csvRows),50);
+    };
+    reader.readAsText(f);
+  }
+
+  function runAutoTrainLoop(csvRows){
+    // Take a snapshot of current state — we'll build on it incrementally
+    setS(prev=>{
+      if(autoTrainRef.current){
+        setAutoTrainStatus(s=>({...s,running:false,done:true,log:[...(s?.log||[]),"⛔ Cancelled"]}));
+        return prev;
+      }
+
+      const total=csvRows.length;
+      let weights={A:{...prev.weights.A},B:{...prev.weights.B},C:{...prev.weights.C},D:{...prev.weights.D}};
+      // Deep-copy weight sub-objects to avoid mutation
+      COLS.forEach(c=>{
+        weights[c]={...weights[c],
+          global:{...weights[c].global||{}},
+          perRow:{...weights[c].perRow||{}},
+          perRange:{...weights[c].perRange||{}},
+          perRegime:{...weights[c].perRegime||{}},
+          perDOW:{...weights[c].perDOW||{}},
+          perLunar:{...weights[c].perLunar||{}},
+          neuralScores:{...weights[c].neuralScores||{}}
+        };
+      });
+      let calibration={A:{...prev.calibration?.A||{}},B:{...prev.calibration?.B||{}},C:{...prev.calibration?.C||{}},D:{...prev.calibration?.D||{}}};
+      let customs=[...(prev.customs||[])];
+      let accLog=[...(prev.accLog||[])];
+      let patternBank={...prev.patternBank||{A:{},B:{},C:{},D:{}}};
+
+      // Start with current dataset rows as base history
+      // CSV rows will be added one-by-one after each prediction
+      const dsKey=prev.active;
+      let historyRows=[...(prev.datasets[dsKey]?.rows||[])];
+
+      let exactTotal=0,nearTotal=0,totalKnown=0;
+      const log=["📂 "+total+" rows loaded","⚙ Walk-forward training started…"];
+      const milestones=new Set([Math.floor(total*0.25),Math.floor(total*0.5),Math.floor(total*0.75),total-1]);
+
+      for(let i=0;i<total;i++){
+        if(autoTrainRef.current){log.push("⛔ Cancelled at row "+(i+1));break;}
+        const csvRow=csvRows[i];
+        const knownCols=COLS.filter(c=>csvRow[c]!=null);
+        if(knownCols.length===0){historyRows=[...historyRows.filter(r=>r.row!==csvRow.row),csvRow].sort((a,b)=>a.row-b.row);continue;}
+
+        // Build datasets snapshot with current history (for cross-period signals)
+        const snapshotDs={...prev.datasets,[dsKey]:{...prev.datasets[dsKey],rows:historyRows}};
+
+        // ── Predict using all history up to this point ──
+        const metaModel=accLog.length>=3?buildMetaModel(accLog):null;
+        const slimLog=accLog.slice(-10);
+        const rowPreds={};
+        COLS.forEach(col=>{
+          if(csvRow[col]==null)return; // skip unknown cols
+          const W={...weights[col],_metaModel:metaModel,_accLog:slimLog};
+          rowPreds[col]=predictCol(col,historyRows,W,customs,csvRow.date||"",snapshotDs,patternBank);
+        });
+
+        // ── Compare & update weights ──
+        const dateCtxPd=csvRow.date?parseDate(csvRow.date):null;
+        const dateCtx=dateCtxPd?{dow:dateCtxPd.dow,lunar:dateCtxPd.lunarPhase,month:dateCtxPd.m,season:dateCtxPd.season}:null;
+        let rowExact=0,rowKnown=0;
+        const rowResults={};
+        COLS.forEach(col=>{
+          const actual=csvRow[col];
+          if(actual==null)return;
+          const pred=rowPreds[col];
+          if(!pred){rowResults[col]={predicted:null,actual,exact:false,near:false,skipped:true};return;}
+          const top1=pred.top5[0]?.value;
+          const ex=top1===actual,nr=!ex&&M.near(top1??-1,actual,2);
+          rowResults[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
+          if(ex)rowExact++;
+          rowKnown++;
+          const regime=pred.regime||"normal";
+          let uw=updateW(pred,actual,weights[col],csvRow.row,regime,calibration[col]);
+          uw.global=applyForgetting(uw.global,accLog);
+          if(dateCtx)uw=updateDateWeights(pred,actual,uw,dateCtx);
+          weights[col]=uw;
+          calibration[col]=updateCalibration(pred.conf,ex,calibration[col]||{});
+        });
+        exactTotal+=rowExact;nearTotal+=rowResults?Object.values(rowResults).filter(r=>r.near).length:0;totalKnown+=rowKnown;
+
+        // ── Add row to history ──
+        historyRows=[...historyRows.filter(r=>r.row!==csvRow.row),csvRow].sort((a,b)=>a.row-b.row);
+
+        // ── Log accLog entry ──
+        accLog=[...accLog.slice(-364),{
+          at:new Date().toISOString(),targetRow:csvRow.row,date:csvRow.date||null,dateCtx,
+          preds:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]?.top5[0]?.value??null])),
+          algoDetails:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]?Object.fromEntries(Object.entries(rowPreds[c].details||{}).sort((a,b)=>b[1].w-a[1].w).slice(0,20).map(([n,d])=>[n,d.pred])):{}])),
+          actuals:Object.fromEntries(COLS.map(c=>[c,csvRow[c]??null])),
+          results:rowResults,exactCount:rowExact,knownCount:rowKnown,autoTrained:true
+        }];
+
+        // ── Auto-generate algos every few rows ──
+        if(historyRows.length>=6&&historyRows.length%3===0){
+          const genCount=(customs||[]).filter(a=>a.generated&&!a.benched).length;
+          if(genCount<MAX_GENERATED_ALGOS){
+            const existing=new Set([...Object.keys(A),...customs.map(a=>a.name)]);
+            const newAlgos=generateAlgos(historyRows,existing);
+            if(newAlgos.length>0)customs=[...customs,...newAlgos];
+          }
+        }
+
+        // ── Auto-prune every 10 rows ──
+        if(i>0&&i%10===0){
+          const{pruned}=pruneWeakAlgos(customs,weights,historyRows);
+          customs=pruned;
+        }
+
+        // ── Milestone logging ──
+        if(milestones.has(i)){
+          const pct=totalKnown>0?Math.round(exactTotal/totalKnown*100):0;
+          log.push("📊 Row "+(i+1)+"/"+total+" — running accuracy: "+exactTotal+"/"+totalKnown+" exact ("+pct+"%)");
+        }
+      }
+
+      // ── Final prune & pattern bank rebuild ──
+      const{pruned:finalCustoms,removed}=pruneWeakAlgos(customs,weights,historyRows);
+      const finalDs={...prev.datasets,[dsKey]:{...prev.datasets[dsKey],rows:historyRows}};
+      COLS.forEach(c=>{patternBank[c]=updatePatternBank(patternBank,c,finalDs,accLog);});
+
+      const exactPct=totalKnown>0?Math.round(exactTotal/totalKnown*100):0;
+      const nearPct=totalKnown>0?Math.round((exactTotal+nearTotal)/totalKnown*100):0;
+      log.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      log.push("✅ Training complete: "+csvRows.length+" rows processed");
+      log.push("🎯 Exact: "+exactTotal+"/"+totalKnown+" ("+exactPct+"%) · Exact+Near: "+nearPct+"%");
+      log.push("🧠 Algos kept: "+finalCustoms.filter(a=>!a.benched).length+" · Pruned: "+removed.length);
+      log.push("🗂 Pattern bank: "+COLS.reduce((s,c)=>s+Object.keys(patternBank[c]?.mdProfiles||{}).length,0)+" MD-exact profiles");
+
+      setAutoTrainStatus({running:false,done:true,progress:total,total,log,
+        result:{exactPct,nearPct,total:csvRows.length,kept:finalCustoms.filter(a=>!a.benched).length,pruned:removed.length}});
+
+      const savedState={...prev,weights,calibration,customs:finalCustoms,datasets:finalDs,patternBank,
+        accLog:accLog.slice(-365),genN:(prev.genN||0)+1,lastAutoGenRows:historyRows.length};
+      saveS(savedState);
+      return savedState;
+    });
+  }
+  // ── END BULK AUTO-TRAIN ──────────────────────────────────────────────────
 
   function doGenerate(){
     if(rows.length<6){st("Need at least 6 rows","warn");return;}
@@ -3355,6 +4010,22 @@ function AppInner(){
     upd(prev=>({...prev,customs:[...(prev.customs||[]),...newAlgos],genN:(prev.genN||0)+1}));
     setGenMsg("✓ "+newAlgos.length+" new adaptive algorithms generated & saved");
     st("Generated "+newAlgos.length+" algos ✓");
+  }
+
+  function doRebuildPatternBank(){
+    if(rows.length<4){st("Need at least 4 rows with dates","warn");return;}
+    upd(prev=>{
+      const newPB={...prev.patternBank||{}};
+      COLS.forEach(c=>{
+        newPB[c]=updatePatternBank(prev.patternBank,c,prev.datasets,prev.accLog||[]);
+      });
+      const mdCount=COLS.reduce((s,c)=>s+Object.keys(newPB[c]?.mdProfiles||{}).length,0);
+      const dyCount=COLS.reduce((s,c)=>s+Object.keys(newPB[c]?.dayProfiles||{}).length,0);
+      const moCount=COLS.reduce((s,c)=>s+Object.keys(newPB[c]?.monthlyProfiles||{}).length,0);
+      syslog("🧠 Pattern bank rebuilt: "+moCount+" monthly + "+dyCount+" day-profiles + "+mdCount+" MD-exact profiles across 4 cols","info");
+      st("Pattern bank rebuilt ✓ ("+mdCount+" patterns)");
+      return{...prev,patternBank:newPB};
+    });
   }
 
   function doTournament(){
@@ -3419,20 +4090,24 @@ function AppInner(){
   const missingRows=useMemo(()=>{
     const nums=rows.map(r=>r.row).sort((a,b)=>a-b);
     const missing=[];
-    for(let i=1;i<nums.length;i++)for(let j=nums[i-1]+1;j<nums[i];j++)missing.push(j);
-    return missing;
+    // Only flag gaps of ≤5 to avoid false positives when switching months
+    for(let i=1;i<nums.length;i++){
+      const gap=nums[i]-nums[i-1];
+      if(gap>1&&gap<=5)for(let j=nums[i-1]+1;j<nums[i];j++)missing.push(j);
+    }
+    return missing.slice(0,20); // cap display at 20
   },[rows]);
 
   if(!loaded)return React.createElement("div",{style:{background:"#060709",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#4a4e6a",fontFamily:"monospace"}},"Loading…");
 
   return (
     <div style={{background:"#060709",color:"#c8d0e8",minHeight:"100vh",fontFamily:"'Courier New',monospace",fontSize:13,backgroundImage:"radial-gradient(ellipse at 15% 0%,rgba(124,109,250,.07) 0%,transparent 55%),radial-gradient(ellipse at 85% 100%,rgba(52,211,153,.05) 0%,transparent 55%)"}}>
-      <div style={{maxWidth:1100,margin:"0 auto",padding:"14px 12px 70px"}}>
+      <div style={{maxWidth:1100,margin:"0 auto",padding:"14px 12px 200px"}}>
 
         <div style={{textAlign:"center",padding:"18px 0 10px"}}>
           <div style={{fontSize:9,letterSpacing:5,color:"#252840",marginBottom:5,textTransform:"uppercase"}}>Self-Learning · Adaptive · Prediction · Engine</div>
-          <div style={{fontSize:"clamp(28px,6vw,48px)",fontWeight:900,letterSpacing:-2,lineHeight:1,background:"linear-gradient(135deg,#a78bfa,#c4b5fd 35%,#34d399 70%,#6ee7b7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>APE v13</div>
-          <div style={{fontSize:9,color:"#252840",marginTop:4}}>{ALGO_COUNT} built-in · sequential patterns · reverse detect · step/bounce algos · fitted PRNG · auto-gen · auto-prune</div>
+          <div style={{fontSize:"clamp(28px,6vw,48px)",fontWeight:900,letterSpacing:-2,lineHeight:1,background:"linear-gradient(135deg,#a78bfa,#c4b5fd 35%,#34d399 70%,#6ee7b7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>APE v16</div>
+          <div style={{fontSize:9,color:"#252840",marginTop:4}}>{ALGO_COUNT} built-in · cross-period pattern bank · global series calibration · multi-layer harmony · cross-dataset anniversary · auto-gen · live terminal</div>
           {accLog.length>0&&<div style={{marginTop:8,display:"inline-flex",gap:8,alignItems:"center",background:"rgba(52,211,153,.07)",border:"1px solid rgba(52,211,153,.18)",borderRadius:99,padding:"3px 14px",fontSize:10,color:"#34d399"}}>🧠 {accLog.length} sessions · {overallPct}% exact · {customs.length} algos</div>}
         </div>
 
@@ -3458,7 +4133,7 @@ function AppInner(){
           <Card>
             <SL>Add Row — {S.datasets[S.active]?S.datasets[S.active].name:"?"}</SL>
             <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
-              <FI label="Row #" val={rowIn} onChange={setRowIn} w={56}/>
+              <FI label="Day #" val={rowIn} onChange={setRowIn} w={62} maxLen={4}/>
               <div>
                 <div style={{fontSize:9,color:"#a78bfa",marginBottom:3,letterSpacing:2}}>DATE</div>
                 <input type="date" value={dateIn} onChange={e=>setDateIn(e.target.value)} style={{background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:"7px 6px",borderRadius:6,fontSize:11,fontFamily:"monospace",outline:"none",width:130,colorScheme:"dark"}}/>
@@ -3474,11 +4149,72 @@ function AppInner(){
             {missingRows.length>0&&<div style={{marginTop:8,fontSize:10,color:"#fbbf24",background:"rgba(251,191,36,.06)",border:"1px solid rgba(251,191,36,.18)",borderRadius:5,padding:"4px 10px"}}>⚠ Missing rows: {missingRows.map(r=>pad2(r)).join(", ")}</div>}
           </Card>
           <div style={{marginBottom:12}}>
+            {/* ── AUTO-TRAIN CARD ── */}
+            <div style={{background:"linear-gradient(135deg,rgba(167,139,250,.08),rgba(52,211,153,.05))",border:"1px solid rgba(167,139,250,.25)",borderRadius:10,padding:"12px 14px",marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
+                <div>
+                  <div style={{fontSize:11,fontWeight:700,color:"#a78bfa",marginBottom:3}}>⚡ Auto-Train on Historical Data</div>
+                  <div style={{fontSize:10,color:"#4a4e6a",lineHeight:1.6,maxWidth:480}}>
+                    Upload a CSV of <b style={{color:"#c8d0e8"}}>past data with known outcomes</b>. APE simulates predictions row-by-row in time order, compares each prediction to the actual, updates weights, prunes weak algos, and builds the pattern bank — all automatically.
+                  </div>
+                  <div style={{marginTop:8,fontSize:9,color:"#2d3158",fontFamily:"monospace",background:"rgba(0,0,0,.3)",borderRadius:5,padding:"5px 8px",display:"inline-block",lineHeight:1.8}}>
+                    <span style={{color:"#fbbf24"}}>CSV Format:</span><br/>
+                    Row,A,B,C,D,Date<br/>
+                    <span style={{color:"#4a4e6a"}}>1,42,87,13,65,2025-01-01</span><br/>
+                    <span style={{color:"#4a4e6a"}}>2,91,10,55,30,2025-01-02</span><br/>
+                    <span style={{color:"#34d399"}}>• Date column optional but strongly recommended</span><br/>
+                    <span style={{color:"#34d399"}}>• Use XX for unknown columns</span><br/>
+                    <span style={{color:"#34d399"}}>• Row = day number (any integer, no cycling)</span>
+                  </div>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  <label style={{background:"linear-gradient(135deg,#7c3aed,#a78bfa)",border:"none",color:"#fff",padding:"10px 18px",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit",textAlign:"center",lineHeight:1.4}}>
+                    🚀 Upload & Auto-Train
+                    <span style={{fontSize:9,opacity:.8,display:"block"}}>CSV with known outcomes</span>
+                    <input type="file" accept=".csv,.txt" onChange={doAutoTrain} style={{display:"none"}}/>
+                  </label>
+                  {autoTrainStatus?.running&&<button onClick={()=>{autoTrainRef.current=true;}} style={{background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#f87171",padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>⛔ Stop</button>}
+                </div>
+              </div>
+              {/* Progress */}
+              {autoTrainStatus&&<div style={{marginTop:10}}>
+                {autoTrainStatus.running&&<div style={{marginBottom:6}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#4a4e6a",marginBottom:3}}>
+                    <span>Training…</span>
+                    <span>{autoTrainStatus.progress}/{autoTrainStatus.total} rows</span>
+                  </div>
+                  <div style={{height:4,background:"#1a1e35",borderRadius:99}}>
+                    <div style={{height:"100%",width:Math.round((autoTrainStatus.progress/autoTrainStatus.total||0)*100)+"%",background:"linear-gradient(90deg,#7c3aed,#34d399)",borderRadius:99,transition:"width .3s"}}/>
+                  </div>
+                </div>}
+                {autoTrainStatus.result&&<div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:6}}>
+                  <div style={{background:"rgba(52,211,153,.08)",border:"1px solid rgba(52,211,153,.2)",borderRadius:6,padding:"4px 10px",fontSize:10}}>
+                    <span style={{color:"#34d399",fontWeight:700}}>{autoTrainStatus.result.exactPct}%</span> <span style={{color:"#4a4e6a"}}>exact</span>
+                  </div>
+                  <div style={{background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.2)",borderRadius:6,padding:"4px 10px",fontSize:10}}>
+                    <span style={{color:"#a78bfa",fontWeight:700}}>{autoTrainStatus.result.nearPct}%</span> <span style={{color:"#4a4e6a"}}>exact+near</span>
+                  </div>
+                  <div style={{background:"rgba(251,191,36,.06)",border:"1px solid rgba(251,191,36,.15)",borderRadius:6,padding:"4px 10px",fontSize:10}}>
+                    <span style={{color:"#fbbf24",fontWeight:700}}>{autoTrainStatus.result.kept}</span> <span style={{color:"#4a4e6a"}}>algos kept</span>
+                  </div>
+                  <div style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.15)",borderRadius:6,padding:"4px 10px",fontSize:10}}>
+                    <span style={{color:"#f87171",fontWeight:700}}>{autoTrainStatus.result.pruned}</span> <span style={{color:"#4a4e6a"}}>pruned</span>
+                  </div>
+                </div>}
+                <div style={{background:"#060709",border:"1px solid #12152a",borderRadius:6,padding:"6px 10px",maxHeight:120,overflowY:"auto",fontFamily:"monospace",fontSize:9,lineHeight:1.7}}>
+                  {(autoTrainStatus.log||[]).map((l,i)=><div key={i} style={{color:l.startsWith("✅")||l.startsWith("🎯")?"#34d399":l.startsWith("❌")||l.startsWith("⛔")?"#f87171":l.startsWith("📊")?"#fbbf24":l.startsWith("🧠")?"#a78bfa":"#4a4e6a"}}>{l}</div>)}
+                </div>
+              </div>}
+            </div>
+
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-              <GB onClick={()=>setShowBulk(!showBulk)}>{showBulk?"▲":"▼"} Bulk CSV</GB>
-              <GB onClick={()=>doExportCSV(rows,S.preds,S.predRow)}>📥 CSV</GB>
-              <GB onClick={()=>doExportJSON(S)}>📦 JSON</GB>
-              <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>📂 Import<input type="file" accept=".json" onChange={doImport} style={{display:"none"}}/></label>
+              <GB onClick={()=>setShowBulk(!showBulk)}>{showBulk?"▲":"▼"} Bulk Paste</GB>
+              <GB onClick={()=>doExportCSV(rows,S.preds,S.predRow)}>📥 Export CSV</GB>
+              <GB onClick={()=>doExportJSON(S)}>📦 Export JSON</GB>
+              <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>📂 Import JSON<input type="file" accept=".json" onChange={doImport} style={{display:"none"}}/></label>
+              <button onClick={doRebuildPatternBank} style={{background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.25)",color:"#a78bfa",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>
+                🧠 Rebuild Patterns ({COLS.reduce((s,c)=>s+Object.keys((S.patternBank||{})[c]?.mdProfiles||{}).length,0)} stored)
+              </button>
             </div>
             {showBulk&&<div style={{marginTop:8,background:"#0c0e1a",border:"1px solid #1a1e35",borderRadius:8,padding:12}}>
               <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,02,10,92,XX\n02,91,10,30,68"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
@@ -3878,11 +4614,30 @@ function AppInner(){
 
       </div>
 
-      <div style={{position:"fixed",bottom:0,left:0,right:0,height:36,background:"#0c0e1a",borderTop:"1px solid #12152a",display:"flex",alignItems:"center",padding:"0 14px",gap:10,fontSize:10,zIndex:100}}>
-        <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:stClr,boxShadow:"0 0 "+(msg.c==="busy"?8:5)+"px "+stClr}}/>
-        <span style={{color:stClr}}>{msg.t}</span>
-        <div style={{flex:1}}/>
-        <span style={{color:"#1e2240"}}>{rows.length} rows · {accLog.length} sessions · {ALGO_COUNT+customs.length} algos · DB ✓</span>
+      {/* ── LIVE TERMINAL PANEL ── */}
+      <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:200,background:"#060709",borderTop:"2px solid #1a1e35"}}>
+        {/* Terminal header */}
+        <div style={{display:"flex",alignItems:"center",padding:"3px 12px",background:"#0c0e1a",borderBottom:"1px solid #12152a",gap:8}}>
+          <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:stClr,boxShadow:"0 0 "+(msg.c==="busy"?8:5)+"px "+stClr}}/>
+          <span style={{color:stClr,fontSize:10,flex:1}}>{msg.t}</span>
+          <span style={{color:"#1e2240",fontSize:9}}>{rows.length} rows · {accLog.length} sessions · {ALGO_COUNT+customs.length} algos</span>
+          <button onClick={()=>setShowTerminal(p=>!p)} style={{background:"transparent",border:"1px solid #1a1e35",color:"#4a4e6a",padding:"1px 8px",borderRadius:4,cursor:"pointer",fontSize:9,fontFamily:"monospace"}}>{showTerminal?"▼ hide":"▲ terminal"}</button>
+          <button onClick={()=>setSysLog([{t:Date.now(),lvl:"info",msg:"Terminal cleared"}])} style={{background:"transparent",border:"1px solid #1a1e35",color:"#252840",padding:"1px 8px",borderRadius:4,cursor:"pointer",fontSize:9,fontFamily:"monospace"}}>⊘</button>
+        </div>
+        {/* Terminal body */}
+        {showTerminal&&<div ref={sysRef} style={{height:120,overflowY:"auto",padding:"6px 12px",fontFamily:"'Courier New',monospace",fontSize:10,lineHeight:1.6}}>
+          {sysLog.map((e,i)=>{
+            const clr=e.lvl==="alert"?"#f87171":e.lvl==="gen"?"#a78bfa":e.lvl==="prune"?"#fbbf24":e.lvl==="learn"?"#34d399":e.lvl==="data"?"#34d399":e.lvl==="refit"?"#60a5fa":"#4a4e6a";
+            const ts=new Date(e.t);
+            const timeStr=String(ts.getHours()).padStart(2,"0")+":"+String(ts.getMinutes()).padStart(2,"0")+":"+String(ts.getSeconds()).padStart(2,"0");
+            return <div key={i} style={{display:"flex",gap:8,marginBottom:1}}>
+              <span style={{color:"#252840",flexShrink:0}}>{timeStr}</span>
+              <span style={{color:clr}}>{e.msg}</span>
+              {e.lvl==="alert"&&<span style={{color:"#f87171",animation:"pulse 1s infinite"}}>◉ SAVE NOW</span>}
+            </div>;
+          })}
+          {sysLog.length===0&&<span style={{color:"#1e2240"}}>No events yet…</span>}
+        </div>}
       </div>
     </div>
   );
@@ -4054,6 +4809,6 @@ function DateBadge({pd,showDate,fullRow}){
 }
 function Card(p){return <div style={{background:"#0c0e1a",border:"1px solid #1a1e35",borderRadius:10,padding:14,marginBottom:12,...(p.style||{})}}>{p.children}</div>;}
 function SL(p){return <div style={{fontSize:9,letterSpacing:3,color:"#2d3158",textTransform:"uppercase",marginBottom:10,...(p.style||{})}}>{p.children}</div>;}
-function FI(p){return <div><div style={{fontSize:9,color:p.color||"#4a4e6a",marginBottom:3,letterSpacing:2}}>{p.label}</div><input type="text" inputMode="numeric" maxLength={2} value={p.val} onChange={e=>p.onChange(e.target.value.replace(/\D/g,"").slice(0,2))} placeholder="00" style={{width:p.w||62,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:"8px 6px",borderRadius:6,fontSize:14,fontFamily:"monospace",textAlign:"center",outline:"none"}}/></div>;}
+function FI(p){return <div><div style={{fontSize:9,color:p.color||"#4a4e6a",marginBottom:3,letterSpacing:2}}>{p.label}</div><input type="text" inputMode="numeric" maxLength={p.maxLen||2} value={p.val} onChange={e=>p.onChange(e.target.value.replace(/\D/g,"").slice(0,p.maxLen||2))} placeholder={p.maxLen&&p.maxLen>2?"001":"00"} style={{width:p.w||62,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:"8px 6px",borderRadius:6,fontSize:14,fontFamily:"monospace",textAlign:"center",outline:"none"}}/></div>;}
 function PB(p){return <button onClick={p.onClick} style={{background:"#a78bfa",border:"none",color:"#fff",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontFamily:"'Courier New',monospace",fontWeight:700,alignSelf:"flex-end",...(p.style||{})}}>{p.children}</button>;}
 function GB(p){return <button onClick={p.onClick} style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"'Courier New',monospace",alignSelf:"flex-end"}}>{p.children}</button>;}
