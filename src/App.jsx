@@ -25,7 +25,7 @@ const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 // data, not just the current dataset. 2025 + 2026 data together = much better calibration.
 function getGlobalSeries(col,datasets){
   const totalLen=Object.values(datasets||{}).reduce((s,ds)=>s+(ds.rows?.length||0),0);
-  const ck=col+"_"+totalLen;
+  const ck=col+"_"+totalLen+"_"+_TC._ver;
   if(_TC.gs[ck])return _TC.gs[ck];
   const allRows=[];
   Object.values(datasets||{}).forEach(ds=>{
@@ -53,65 +53,17 @@ let ALGO_COUNT=0; // filled after A{} definition
 // Keys auto-invalidate because data length increments each row.
 // ══════════════════════════════════════════════════════════════════
 const _TC={
-  tx:{},      // mineTransform:    "srcCol_tgtCol_len"
-  sp:{},      // getSharedRowProps: "col_len"
-  cg:{},      // getColGapSignals:  "col_len"
-  gs:{},      // getGlobalSeries:   "col_totalLen"
+  tx:{},      // mineTransform:    "srcCol_tgtCol_len_ver"
+  sp:{},      // getSharedRowProps: "col_len_ver"
+  cg:{},      // getColGapSignals:  "col_len_ver"
+  gs:{},      // getGlobalSeries:   "col_totalLen_ver"
   trainingMode:false, // freeze cache during batch training to avoid per-row invalidation
+  _ver:0,     // increments on any data mutation — invalidates stale same-length cache hits
+  bumpVer(){this._ver=(this._ver+1)%1e9;}, // wraps to avoid unbounded int growth
   clear(){this.tx={};this.sp={};this.cg={};this.gs={};}
 };
 
-// ── BATCHED AUTO-TRAINING CONTROLLER ─────────────────────────────
-// Processes rows in small batches with requestIdleCallback to avoid
-// UI blocking. Freezes cache during batch to avoid per-row invalidation.
-// ══════════════════════════════════════════════════════════════════
-const TrainingController={
-  queue:[],
-  processing:false,
-  async processBatch(rows,onProgress){
-    if(!rows||rows.length===0)return;
-    this.queue=rows;
-    this.processing=true;
-    _TC.trainingMode=true;
-    
-    const batchSize=Math.max(1,Math.ceil(rows.length/10)); // 10 batches
-    let processed=0;
-    
-    return new Promise(resolve=>{
-      const processNextBatch=()=>{
-        if(processed>=rows.length){
-          _TC.trainingMode=false;
-          this.processing=false;
-          resolve();
-          return;
-        }
-        const end=Math.min(processed+batchSize,rows.length);
-        // Process rows in this batch (algos will cache results)
-        for(let i=processed;i<end;i++){
-          const r=rows[i];
-          // Trigger all algos for this row (they cache internally)
-          COLS.forEach(col=>{
-            const series=getSeries(col,rows.slice(0,i+1));
-            if(series.length>0){
-              Object.keys(A).forEach(aname=>{
-                try{A[aname](series);}catch(e){}
-              });
-            }
-          });
-        }
-        processed=end;
-        if(onProgress)onProgress(Math.round(100*processed/rows.length));
-        // Use requestIdleCallback if available, else setTimeout
-        if(typeof requestIdleCallback==='function'){
-          requestIdleCallback(processNextBatch,{timeout:50});
-        }else{
-          setTimeout(processNextBatch,10);
-        }
-      };
-      processNextBatch();
-    });
-  }
-};
+// (TrainingController removed — actual training runs via autoTrainTick/autoTrainFinish in AppInner)
 
 // ── BUILT-IN ALGORITHMS (count auto-tracked in ALGO_COUNT) ───────
 const A={
@@ -160,16 +112,19 @@ const A={
     return[M.mod(s[n-bestLag])];},
   WtdMomentum:    s=>{
     if(s.length<2)return[s[0]||0];
+    // Cap to last 40 values — 1.8^40≈1e8, well within float range; beyond 40 adds no signal
+    const sl=s.slice(-40);
     let ws=0,wd=0;
-    for(let i=1;i<s.length;i++){
+    for(let i=1;i<sl.length;i++){
       const w=Math.pow(1.8,i);
-      let d=s[i]-s[i-1];if(d>50)d-=100;if(d<-50)d+=100;
+      let d=sl[i]-sl[i-1];if(d>50)d-=100;if(d<-50)d+=100;
       ws+=w;wd+=d*w;
     }
+    if(!ws)return[sl[sl.length-1]];
     const rawGap=wd/ws;
     // Cap extreme projections to ±25 to avoid overshooting
     const cappedGap=Math.max(-25,Math.min(25,Math.round(rawGap)));
-    return[M.mod(s[s.length-1]+cappedGap)];
+    return[M.mod(sl[sl.length-1]+cappedGap)];
   },
   SecondDiff:     s=>{if(s.length<3)return[s[s.length-1]];const n=s.length;let d1=s[n-1]-s[n-2],d2=s[n-2]-s[n-3];if(d1>50)d1-=100;if(d1<-50)d1+=100;if(d2>50)d2-=100;if(d2<-50)d2+=100;return[M.mod(s[n-1]+(2*d1-d2))];},
   LastGap:        s=>{if(s.length<2)return[s[0]||0];let g=s[s.length-1]-s[s.length-2];if(g>50)g-=100;if(g<-50)g+=100;return[M.mod(s[s.length-1]+g)];},
@@ -279,37 +234,40 @@ const A={
     return[M.mod(Math.round(bestR*(x)*(1-x)*99))];},
   PhaseNN:        s=>{if(s.length<6)return[s[s.length-1]];const n=s.length;let best={dist:Infinity,next:s[n-1]};for(let i=2;i<n-1;i++){const d=M.cd(s[i],s[n-1])+M.cd(s[i-1],s[n-2])+M.cd(s[i-2],s[n-3]);if(d<best.dist)best={dist:d,next:s[i+1]};}return[best.next];},
   FreqDecay:      s=>{
+    // Cap to last 50: 1.6^49≈2e11, safe; beyond this all earlier weights vanish to noise
+    const sl=s.slice(-50);
     const freq={};
-    s.forEach((v,i)=>{
+    sl.forEach((v,i)=>{
       // Exponential recency: more recent = much stronger weight
       freq[v]=(freq[v]||0)+Math.pow(1.6,i);
     });
-    // Also add extra weight for last 3 values
-    s.slice(-3).forEach(v=>{freq[v]=(freq[v]||0)+5;});
+    // Extra weight for last 3 values (now meaningfully impactful on the capped window)
+    sl.slice(-3).forEach(v=>{freq[v]=(freq[v]||0)+5;});
     return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([v])=>parseInt(v));
   },
   Markov:         s=>{
     if(s.length<2)return[s[0]||0];
+    // Cap to last 60 — older transitions get near-zero weight anyway (w=1 vs w=4 for recent)
+    const sl=s.slice(-60);
     const tr={};
     const trDec={};
-    const n=s.length;
+    const n=sl.length;
     for(let i=1;i<n;i++){
-      const k=s[i-1];
-      // Exponential recency: last 4 = weight 4, next 4 = weight 2, rest = 1
+      const k=sl[i-1];
       const w=i>=n-4?4:i>=n-8?2:1;
       if(!tr[k])tr[k]={};
-      tr[k][s[i]]=(tr[k][s[i]]||0)+w;
-      const dk=Math.floor(s[i-1]/10);
+      tr[k][sl[i]]=(tr[k][sl[i]]||0)+w;
+      const dk=Math.floor(sl[i-1]/10);
       if(!trDec[dk])trDec[dk]={};
-      trDec[dk][Math.floor(s[i]/10)]=(trDec[dk][Math.floor(s[i]/10)]||0)+w;
+      trDec[dk][Math.floor(sl[i]/10)]=(trDec[dk][Math.floor(sl[i]/10)]||0)+w;
     }
-    const k=s[n-1];
+    const k=sl[n-1];
     if(tr[k]&&Object.keys(tr[k]).length>0)
       return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
     const dk=Math.floor(k/10);
     if(trDec[dk]&&Object.keys(trDec[dk]).length>0){
       const bestDecade=parseInt(Object.entries(trDec[dk]).sort((a,b)=>b[1]-a[1])[0][0]);
-      const decVals=s.filter(v=>Math.floor(v/10)===bestDecade);
+      const decVals=sl.filter(v=>Math.floor(v/10)===bestDecade);
       return[decVals.length?M.mod(Math.round(M.mean(decVals))):bestDecade*10+5];
     }
     return[k];
@@ -2425,10 +2383,18 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const rgw=W.perRegime&&W.perRegime[regime]?W.perRegime[regime]:{};
   const algoCache={};
   const allowedAlgos=new Set(Object.keys(A).filter(n=>algoAllowed(n,regime)));
+  // Training cache passed in via W during auto-train — avoids redundant btScore/walkFwd calls
+  const extBtCache=W._btCache;const extBtCol=W._btCacheCol;
 
   // ── Pre-cache: use globalSeries for btScore to leverage all historical data ──
+  // During auto-train, W._btCache holds pre-computed scores — use them directly (O(1) vs O(n·algos))
   if(btSeries.length>=5){
     allowedAlgos.forEach(name=>{
+      // Fast path: use pre-computed training cache when available
+      if(extBtCache&&extBtCol){
+        const ck=extBtCache[extBtCol+"__"+name];
+        if(ck){algoCache[name]={bt:ck.bt,wfBoost:ck.wfBoost};return;}
+      }
       const fn=A[name];
       try{
         const bt=btScore(fn,btSeries); // ← uses global series
@@ -2571,11 +2537,16 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     });
   }
 
-  // Pre-cache custom algos (uses globalSeries for btScore)
+  // Pre-cache custom algos (uses training btCache when available, else globalSeries btScore)
   (customs||[]).filter(ca=>ca.enabled&&ca.code).forEach(ca=>{
     if(algoCache[ca.name])return;
     try{
       const fn=makeCustomFn(ca.code);if(!fn)return;
+      // Fast path: use pre-computed training cache
+      if(extBtCache&&extBtCol){
+        const ck=extBtCache[extBtCol+"__"+ca.name];
+        if(ck){algoCache[ca.name]={bt:ck.bt,wfBoost:ck.wfBoost,fn};return;}
+      }
       const bt=btScore(fn,btSeries); // ← global series
       let wfBoost=1.0;
       if(btSeries.length>=10){
@@ -3448,8 +3419,18 @@ const SK="ape-v13";
 // Debounced save: batches rapid state changes (e.g. during predict) into one write
 let _saveTimer=null;
 let _saveWarned=false;
+const _TC_MAX_ENTRIES=300; // hard cap per sub-cache to prevent unbounded growth
+function _tcEvict(){
+  // Simple eviction: if any sub-cache exceeds cap, clear that sub-cache
+  if(Object.keys(_TC.gs).length>_TC_MAX_ENTRIES)_TC.gs={};
+  if(Object.keys(_TC.sp).length>_TC_MAX_ENTRIES)_TC.sp={};
+  if(Object.keys(_TC.cg).length>_TC_MAX_ENTRIES)_TC.cg={};
+  if(Object.keys(_TC.tx).length>_TC_MAX_ENTRIES)_TC.tx={};
+}
 function saveS(s){
   clearTimeout(_saveTimer);
+  // Bump version so any same-length cache hits from the previous state are invalidated
+  if(!_TC.trainingMode){_TC.bumpVer();_tcEvict();}
   _saveTimer=setTimeout(()=>{
     try{
       const str=JSON.stringify(s);
@@ -3528,14 +3509,20 @@ function AppInner(){
   const[showTerminal,setShowTerminal]=useState(true);
   const sysRef=React.useRef(null);
 
-  // Push to terminal log — capped at 200 entries, auto-scrolls
+  // Push to terminal log — capped at 200 entries, auto-scrolls (debounced to 1 timer max)
+  const _scrollPending=React.useRef(false);
   const syslog=React.useCallback((msg,lvl="info")=>{
     setSysLog(prev=>{
       const entry={t:Date.now(),lvl,msg};
-      const next=[...prev.slice(-199),entry];
-      return next;
+      return[...prev.slice(-199),entry];
     });
-    setTimeout(()=>{if(sysRef.current)sysRef.current.scrollTop=sysRef.current.scrollHeight;},30);
+    if(!_scrollPending.current){
+      _scrollPending.current=true;
+      setTimeout(()=>{
+        _scrollPending.current=false;
+        if(sysRef.current)sysRef.current.scrollTop=sysRef.current.scrollHeight;
+      },30);
+    }
   },[]);
   const[missingPreds,setMissingPreds]=useState({});
   const[dateIn,setDateIn]=useState(todayStr());
@@ -3562,8 +3549,7 @@ function AppInner(){
   }
 
   useEffect(()=>{
-    loadS().then(saved=>{
-      if(saved){
+    loadS().then(saved=>{      if(saved){
         if(saved.dataset&&!saved.datasets){saved.datasets={def:{name:"Dataset 1",rows:saved.dataset}};saved.active="def";delete saved.dataset;}
         if(!saved.active)saved.active="def";
         if(!saved.weights||!saved.weights.A||!saved.weights.A.global)saved.weights={A:{global:{},perRow:{},perRange:{},neuralScores:{}},B:{global:{},perRow:{},perRange:{},neuralScores:{}},C:{global:{},perRow:{},perRange:{},neuralScores:{}},D:{global:{},perRow:{},perRange:{},neuralScores:{}}};
@@ -3586,6 +3572,9 @@ function AppInner(){
     });
   },[]);
 
+  // Cleanup: cancel any pending debounced save on unmount to prevent writing stale state
+  useEffect(()=>()=>{clearTimeout(_saveTimer);},[]);
+
   function addRow(){
     const r=parseInt(rowIn);
     if(isNaN(r)||r<1||r>9999){st("Day # must be 1–9999","err");return;}
@@ -3598,71 +3587,77 @@ function AppInner(){
       entry[col]=n;
     }
     if(COLS.every(c=>entry[c]===null)){st("Enter at least one value","err");return;}
-    setRows(prev=>{
-      const updated=[...prev.filter(x=>x.row!==r),entry].sort((a,b)=>a.row-b.row);
-      setTimeout(()=>{
-        setS(cur=>{
-          const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
-          const _genCount=(cur.customs||[]).filter(a=>a.generated&&!a.benched).length;
-          let next=cur;
-          // ── Auto-generate new algos ──
-          if(shouldAutoGenerate(curRows.length,cur.genN,cur.lastAutoGenRows,_genCount)){
-            const existing=new Set([...Object.keys(A),...(cur.customs||[]).map(a=>a.name)]);
-            const newAlgos=generateAlgos(curRows,existing);
-            if(newAlgos.length>0){
-              const log=cur.autoGenLog||[];
-              const msg="+"+newAlgos.length+" algos generated ("+curRows.length+" rows)";
-              next={...next,customs:[...(next.customs||[]),...newAlgos],genN:(next.genN||0)+1,lastAutoGenRows:curRows.length,autoGenLog:[...log.slice(-9),{at:new Date().toISOString(),msg}]};
-              setAutoGenLog(p=>[...p.slice(-4),msg]);
-              syslog("🔧 "+msg,"gen");
-              // Notify if strong pattern detected
-              const strongAlgos=newAlgos.filter(a=>a.name.startsWith("Cyc_")||a.name.startsWith("Rec2_")||a.name.startsWith("XorLag_"));
-              if(strongAlgos.length>0)syslog("⚡ Strong pattern detected: "+strongAlgos.map(a=>a.name).join(", ")+" — consider exporting weights!","alert");
-            }
+
+    // ── Commit the new row atomically via upd() (pure — no side effects inside) ──
+    upd(prev=>{
+      const curRows=prev.datasets&&prev.datasets[prev.active]?prev.datasets[prev.active].rows:[];
+      const updatedRows=[...curRows.filter(x=>x.row!==r),entry].sort((a,b)=>a.row-b.row);
+      const ds={...prev.datasets};
+      ds[prev.active]={...ds[prev.active],rows:updatedRows};
+      return{...prev,datasets:ds};
+    });
+
+    // ── Side effects run AFTER state update, safely outside the updater ──
+    setTimeout(()=>{
+      setS(cur=>{
+        const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
+        const _genCount=(cur.customs||[]).filter(a=>a.generated&&!a.benched).length;
+        let next=cur;
+        // ── Auto-generate new algos ──
+        if(shouldAutoGenerate(curRows.length,cur.genN,cur.lastAutoGenRows,_genCount)){
+          const existing=new Set([...Object.keys(A),...(cur.customs||[]).map(a=>a.name)]);
+          const newAlgos=generateAlgos(curRows,existing);
+          if(newAlgos.length>0){
+            const log=cur.autoGenLog||[];
+            const msg="+"+newAlgos.length+" algos generated ("+curRows.length+" rows)";
+            next={...next,customs:[...(next.customs||[]),...newAlgos],genN:(next.genN||0)+1,lastAutoGenRows:curRows.length,autoGenLog:[...log.slice(-9),{at:new Date().toISOString(),msg}]};
+            setAutoGenLog(p=>[...p.slice(-4),msg]);
+            syslog("🔧 "+msg,"gen");
+            // Notify if strong pattern detected
+            const strongAlgos=newAlgos.filter(a=>a.name.startsWith("Cyc_")||a.name.startsWith("Rec2_")||a.name.startsWith("XorLag_"));
+            if(strongAlgos.length>0)syslog("⚡ Strong pattern detected: "+strongAlgos.map(a=>a.name).join(", ")+" — consider exporting weights!","alert");
           }
-          // ── Auto-prune on every row add ──
-          if(shouldAutoPrune(next.customs,curRows.length)){
-            const {pruned,removed}=pruneWeakAlgos(next.customs||[],next.weights||cur.weights,curRows);
-            if(removed.length>0){
-              setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
-              removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
-              next={...next,customs:pruned};
-            }
+        }
+        // ── Auto-prune on every row add ──
+        if(shouldAutoPrune(next.customs,curRows.length)){
+          const {pruned,removed}=pruneWeakAlgos(next.customs||[],next.weights||cur.weights,curRows);
+          if(removed.length>0){
+            setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(rm=>"Pruned: "+rm.name)]);
+            removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
+            next={...next,customs:pruned};
           }
-          // ── Re-fit stale Gap/Lin algos ──
-          if(curRows.length>=8&&curRows.length%4===0){
-            let refitCount=0;
-            next={...next,customs:(next.customs||[]).map(ca=>{
-              if(!ca.generated||ca.benched)return ca;
-              if(ca.name.startsWith("Gap_")){
-                const col=ca.name.split("_")[1];
-                const s=getSeries(col,curRows);if(s.length<4)return ca;
-                const gs=[];for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gs.push(g);}
-                const ng=Math.round(M.mean(gs.slice(-6)));
-                if(ng!==0&&Math.abs(ng-(parseInt(ca.name.split("_")[2])||0))>2){
-                  refitCount++;
-                  return{...ca,code:"(s,M)=>[M.mod(s[s.length-1]+("+ng+"))]",updatedAt:Date.now()};
-                }
+        }
+        // ── Re-fit stale Gap/Lin algos ──
+        if(curRows.length>=8&&curRows.length%4===0){
+          let refitCount=0;
+          next={...next,customs:(next.customs||[]).map(ca=>{
+            if(!ca.generated||ca.benched)return ca;
+            if(ca.name.startsWith("Gap_")){
+              const col=ca.name.split("_")[1];
+              const s=getSeries(col,curRows);if(s.length<4)return ca;
+              const gs=[];for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gs.push(g);}
+              const ng=Math.round(M.mean(gs.slice(-6)));
+              if(ng!==0&&Math.abs(ng-(parseInt(ca.name.split("_")[2])||0))>2){
+                refitCount++;
+                return{...ca,code:"(s,M)=>[M.mod(s[s.length-1]+("+ng+"))]",updatedAt:Date.now()};
               }
-              return ca;
-            })};
-            if(refitCount>0)syslog("♻ Re-fitted "+refitCount+" gap algo(s) to current drift","refit");
-          }
-          if(next!==cur)saveS(next);
-          return next;
-        });
-      },100);
-      return updated;
-    });
-    // Auto-advance date by 1 day and day# by 1
+            }
+            return ca;
+          })};
+          if(refitCount>0)syslog("♻ Re-fitted "+refitCount+" gap algo(s) to current drift","refit");
+        }
+        if(next!==cur)saveS(next);
+        return next;
+      });
+    },100);
+
+    // ── UI housekeeping — safe outside any updater ──
+    // Auto-advance date by 1 day
     if(dateIn){const nd=new Date(dateIn+"T12:00:00");nd.setDate(nd.getDate()+1);setDateIn(nd.getFullYear()+"-"+String(nd.getMonth()+1).padStart(2,"0")+"-"+String(nd.getDate()).padStart(2,"0"));}
-    // Next day = max row in dataset + 1 (sequential, not 1-31 cycle)
-    setS(cur=>{
-      const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
-      const maxR=curRows.length?Math.max(...curRows.map(x=>x.row)):r;
-      setRowIn(String(maxR+1));
-      return cur;
-    });
+    // Advance day# to max+1 without nesting setRowIn inside setS
+    const curRowsNow=S.datasets&&S.datasets[S.active]?S.datasets[S.active].rows:[];
+    const maxR=curRowsNow.length?Math.max(...curRowsNow.map(x=>x.row)):r;
+    setRowIn(String(Math.max(r,maxR)+1));
     setVals({A:"",B:"",C:"",D:""});
     st("Day "+pad2(r)+" saved ✓");
     syslog("📥 Day "+r+(dateIn?" ("+dateIn+")":"")+" saved","data");
@@ -4286,7 +4281,7 @@ function AppInner(){
         const top1=pred.top5[0]?.value;
         const ex=top1===actual,nr=!ex&&M.near(top1??-1,actual,2);
         rowResults[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
-        if(ex)rowExact++;rowKnown++;
+        if(ex){rowExact++;}rowKnown++;
         const regime=pred.regime||"normal";
         // Skip applyForgetting in hot path — deferred to autoTrainFinish
         let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col]);
@@ -4344,8 +4339,8 @@ function AppInner(){
 
     tr.index=batchEnd;
 
-    // UI update: only every 10 rows or on milestone
-    if(tr.logLines.length||tr.index%10===0||tr.index>=tr.total){
+    // UI update: every 3 rows (more responsive on mobile) or on milestone/finish
+    if(tr.logLines.length||tr.index%3===0||tr.index>=tr.total){
       const lines=[...tr.logLines];tr.logLines=[];
       setAutoTrainStatus(s=>({...s,progress:tr.index,
         log:lines.length?[...(s?.log||[]),...lines]:s?.log||[]}));
@@ -4359,8 +4354,15 @@ function AppInner(){
     }
   }
 
-  // ── Binary-insert into sorted historyRows ─────────────────────────────
+  // Binary-insert into sorted historyRows ─────────────────────────────
+  // Sort order: dated rows first (by date string), then undated rows (by row number).
   // Dedup key = date+row so cycling row numbers (1-31 monthly) all stay in history
+  function _cmpRows(a,b){
+    if(a.date&&b.date)return a.date.localeCompare(b.date); // both dated: by date
+    if(a.date)return -1;  // dated sorts before undated
+    if(b.date)return 1;
+    return a.row-b.row;   // both undated: by row number
+  }
   function _atInsert(tr,row){
     const h=tr.historyRows;
     // Match on BOTH row number AND date (if present) — prevents month-cycle overwrites
@@ -4371,13 +4373,11 @@ function AppInner(){
       return false; // don't overwrite dated row with undated or vice versa
     });
     if(ex>=0)h.splice(ex,1);
-    // Sort by date first, then row number
+    // Binary search using consistent _cmpRows comparator
     let lo=0,hi=h.length;
     while(lo<hi){
       const m=(lo+hi)>>1;
-      const hm=h[m];
-      const cmp=row.date&&hm.date?row.date.localeCompare(hm.date):hm.row<=row.row?0:1;
-      cmp<=0?lo=m+1:hi=m;
+      _cmpRows(row,h[m])>0?lo=m+1:hi=m;
     }
     h.splice(lo,0,row);
     tr.allDs[tr.dsKey]={rows:h};
