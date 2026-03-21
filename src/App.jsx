@@ -3710,9 +3710,12 @@ function AppInner(){
   function doImport(e){
     const f=e.target.files[0];if(!f)return;
     const reader=new FileReader();
-    reader.onerror=()=>st("Failed to read file","err");
+    reader.onerror=(ev)=>{
+      const code=ev?.target?.error?.name||"UnknownError";
+      st("Failed to read file ("+code+")","err");
+    };
     reader.onload=ev=>{
-      e.target.value=""; // reset here, AFTER file is fully read
+      e.target.value="";
       try{
         const parsed=JSON.parse(ev.target.result||"{}");
         if(parsed.dataset&&!parsed.datasets){parsed.datasets={def:{name:"Imported",rows:parsed.dataset}};parsed.active="def";}
@@ -3730,14 +3733,17 @@ function AppInner(){
   function doImportCSV(e){
     const f=e.target.files[0];if(!f)return;
     const reader=new FileReader();
-    reader.onerror=()=>st("Failed to read CSV file","err");
+    reader.onerror=(ev)=>{
+      const code=ev?.target?.error?.name||"UnknownError";
+      st("Failed to read CSV ("+code+") — try saving file locally first","err");
+    };
     reader.onload=ev=>{
-      e.target.value=""; // reset here, AFTER file is fully read
-      const raw=ev.target.result||"";
-      // Strip BOM if present (Windows CSV files often start with \ufeff)
-      const text=raw.charCodeAt(0)===0xFEFF?raw.slice(1):raw;
-      const lines=text.trim().split(/\r?\n/).filter(l=>l.trim()&&!l.toLowerCase().startsWith("row,a"));
-      let added=0,updated=0,autoLearned=0,errs=0;
+      e.target.value="";
+      try{
+        const raw=ev.target.result||"";
+        const text=raw.charCodeAt(0)===0xFEFF?raw.slice(1):raw;
+        const lines=text.trim().split(/\r?\n/).filter(l=>l.trim()&&!l.toLowerCase().startsWith("row,a"));
+        let added=0,updated=0,autoLearned=0,errs=0;
       const incomingRows=[];
       lines.forEach(line=>{
         const pts=line.split(",").map(p=>p.trim());
@@ -3825,6 +3831,10 @@ function AppInner(){
       if(added)parts.push(added+" rows added");if(updated)parts.push(updated+" updated");
       if(autoLearned)parts.push("🤖 "+autoLearned+" auto-learned");if(errs)parts.push(errs+" skipped");
       st("CSV: "+parts.join(", "),errs&&!added&&!updated?"warn":"ok");
+      }catch(err){
+        st("CSV error: "+err.message,"err");
+        syslog("❌ CSV import error: "+err.message,"err");
+      }
     };
     reader.readAsText(f);
   }
@@ -4145,35 +4155,41 @@ function AppInner(){
 
   function doAutoTrain(e){
     const f=e.target.files[0];if(!f)return;
-    // Guard: cancel any in-progress training before starting new one
-    autoTrainRef.current=false;
     const reader=new FileReader();
-    reader.onerror=()=>{
-      st("Failed to read file","err");
-      syslog("❌ File read error — make sure it's a plain text CSV","err");
+    reader.onerror=(ev)=>{
+      const code=ev?.target?.error?.name||"UnknownError";
+      const msg=ev?.target?.error?.message||"";
+      st("Failed to read file ("+code+")","err");
+      syslog("❌ File read error: "+code+(msg?" — "+msg:"")+" — Try saving as CSV from your files app first","err");
       setAutoTrainStatus(s=>s?{...s,running:false,done:true}:s);
     };
     reader.onload=ev=>{
-      e.target.value=""; // reset here, AFTER file is fully read
-      const raw=ev.target.result||"";
-      // Strip BOM if present (Windows CSV files often start with \ufeff)
-      const clean=raw.charCodeAt(0)===0xFEFF?raw.slice(1):raw;
-      const{rows:csvRows,skipped}=parseAutoTrainCSV(clean);
-      if(csvRows.length<4){
-        st("Need ≥4 rows with known outcomes — check CSV format","warn");
-        syslog("❌ Auto-train aborted — only "+csvRows.length+" valid rows found"+(skipped?" ("+skipped+" lines skipped — check format)":""),"err");
+      e.target.value="";
+      autoTrainRef.current=false; // cancel any previous training
+      try{
+        const raw=ev.target.result||"";
+        const clean=raw.charCodeAt(0)===0xFEFF?raw.slice(1):raw;
+        const{rows:csvRows,skipped}=parseAutoTrainCSV(clean);
+        if(csvRows.length<4){
+          st("Need ≥4 rows with known outcomes — check CSV format","warn");
+          syslog("❌ Auto-train aborted — only "+csvRows.length+" valid rows found"+(skipped?" ("+skipped+" lines skipped — check format)":""),"err");
+          setAutoTrainStatus(null);
+          return;
+        }
+        csvRows.sort((a,b)=>{
+          if(a.date&&b.date)return a.date.localeCompare(b.date);
+          return a.row-b.row;
+        });
+        setAutoTrainStatus({running:true,progress:0,total:csvRows.length,done:false,log:[
+          "📂 Loaded "+csvRows.length+" rows"+(skipped?" ("+skipped+" skipped)":""),
+          "⚙ Starting walk-forward training simulation…"
+        ],result:null});
+        setTimeout(()=>runAutoTrainLoop(csvRows),80);
+      }catch(err){
+        st("CSV parse error: "+err.message,"err");
+        syslog("❌ CSV parse error: "+err.message,"err");
         setAutoTrainStatus(null);
-        return;
       }
-      csvRows.sort((a,b)=>{
-        if(a.date&&b.date)return a.date.localeCompare(b.date);
-        return a.row-b.row;
-      });
-      setAutoTrainStatus({running:true,progress:0,total:csvRows.length,done:false,log:[
-        "📂 Loaded "+csvRows.length+" rows"+(skipped?" ("+skipped+" skipped)":""),
-        "⚙ Starting walk-forward training simulation…"
-      ],result:null});
-      setTimeout(()=>runAutoTrainLoop(csvRows),80);
     };
     reader.readAsText(f);
   }
@@ -4621,7 +4637,7 @@ function AppInner(){
                   <label style={{background:"linear-gradient(135deg,#7c3aed,#a78bfa)",border:"none",color:"#fff",padding:"10px 18px",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit",textAlign:"center",lineHeight:1.4}}>
                     🚀 Upload & Auto-Train
                     <span style={{fontSize:9,opacity:.8,display:"block"}}>CSV with known outcomes</span>
-                    <input type="file" accept=".csv,.txt" onChange={doAutoTrain} style={{display:"none"}}/>
+                    <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={doAutoTrain} style={{display:"none"}}/>
                   </label>
                   {autoTrainStatus?.running&&<button onClick={()=>{autoTrainRef.current=false;syslog("⛔ Training stopped by user","warn");}} style={{background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#f87171",padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>⛔ Stop</button>}
                 </div>
@@ -4662,7 +4678,7 @@ function AppInner(){
               <GB onClick={()=>doExportCSV(rows,S.preds,S.predRow)}>📤 Export CSV</GB>
               <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit",display:"inline-block",lineHeight:"normal"}}>
                 📂 Import CSV
-                <input type="file" accept=".csv,.txt" onChange={doImportCSV} style={{display:"none"}}/>
+                <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={doImportCSV} style={{display:"none"}}/>
               </label>
               <GB onClick={()=>doExportJSON(S)}>📦 Export JSON</GB>
               <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit",display:"inline-block",lineHeight:"normal"}}>📂 Import JSON<input type="file" accept=".json" onChange={doImport} style={{display:"none"}}/></label>
