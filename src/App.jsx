@@ -131,7 +131,7 @@ const A={
   SqrtMod:        s=>[M.mod(Math.floor(Math.sqrt(s[s.length-1])*10))],
   TriNum:         s=>{const v=s[s.length-1]%13;return[M.mod(v*(v+1)/2)];},
   DigSumProd:     s=>{const v=s[s.length-1];return[M.mod(M.ds(v)*v)];},
-  CollatzStep:    s=>{const v=s[s.length-1];return[M.mod(v%2===0?v/2:3*v+1)];},
+  CollatzStep:    s=>{const v=s[s.length-1];if(v===0)return[1];return v%2===0?[M.mod(Math.floor(v/2))]:[M.mod(Math.floor((3*v+1)/2))];},
   Mean3:          s=>[M.mod(Math.round(M.mean(s.slice(-3))))],
   Mean5:          s=>[M.mod(Math.round(M.mean(s.slice(-5))))],
   WtdMean:        s=>{const sl=s.slice(-6),tot=sl.reduce((a,_,i)=>a+Math.pow(2,i),0)||1;return[M.mod(Math.round(sl.reduce((a,v,i)=>a+v*Math.pow(2,i),0)/tot))];},
@@ -148,14 +148,15 @@ const A={
   BandPass:       s=>{if(s.length<4)return[s[s.length-1]];const avg=M.mean(s.slice(-8)),std=M.std(s.slice(-8));const filt=s.filter(v=>Math.abs(v-avg)<=std);if(!filt.length)return[s[s.length-1]];return[M.mod(Math.round(M.mean(filt.slice(-4))))];},
   DiffFilt:       s=>{if(s.length<3)return[s[s.length-1]];const diffs=[];for(let i=1;i<s.length;i++){let d=s[i]-s[i-1];if(d>50)d-=100;if(d<-50)d+=100;diffs.push(d);}return[M.mod(s[s.length-1]+Math.round(M.mean(diffs.slice(-4))))];},
   AutoCorr:       s=>{if(s.length<6)return[s[s.length-1]];const n=s.length,avg=M.mean(s);
-    // Fix: denominator uses same overlapping range as numerator (both i=lag..n)
-    let bestLag=1,bestAcf=-2;
+    let bestLag=1,bestAcf=0; // start at 0 not -2
     for(let lag=1;lag<=Math.min(8,n-2);lag++){
       let num=0,den0=0,den1=0;
       for(let i=lag;i<n;i++){num+=(s[i]-avg)*(s[i-lag]-avg);den0+=(s[i]-avg)**2;den1+=(s[i-lag]-avg)**2;}
       const acf=(den0*den1)>0?num/Math.sqrt(den0*den1):0;
       if(Math.abs(acf)>Math.abs(bestAcf)){bestAcf=acf;bestLag=lag;}
     }
+    // Significance gate: if no lag has meaningful ACF, don't predict from noise
+    if(Math.abs(bestAcf)<0.20)return[s[n-1]];
     return[M.mod(s[n-bestLag])];},
   WtdMomentum:    s=>{
     if(s.length<2)return[s[0]||0];
@@ -188,7 +189,14 @@ const A={
     return[M.mod(s[s.length-1]+Math.round(med))];
   },
   LinFit:         s=>{const n=s.length;let sx=0,sy=0,sxy=0,sx2=0;s.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});const D=n*sx2-sx*sx;if(!D)return[s[n-1]];const a=(n*sxy-sx*sy)/D,b=(sy-a*sx)/n;return[M.mod(Math.round(a*n+b))];},
-  QuadFit:        s=>{if(s.length<4)return[s[s.length-1]];try{const n=s.length;let sx=0,sx2=0,sx3=0,sx4=0,sy=0,sxy=0,sx2y=0;s.forEach((v,i)=>{sx+=i;sx2+=i*i;sx3+=i*i*i;sx4+=i*i*i*i;sy+=v;sxy+=i*v;sx2y+=i*i*v;});const det=n*(sx2*sx4-sx3*sx3)-sx*(sx*sx4-sx3*sx2)+sx2*(sx*sx3-sx2*sx2);if(!det)return[s[n-1]];const c0=(sy*(sx2*sx4-sx3*sx3)-sx*(sxy*sx4-sx3*sx2y)+sx2*(sxy*sx3-sx2*sx2y))/det;const c1=(n*(sxy*sx4-sx3*sx2y)-sy*(sx*sx4-sx3*sx2)+sx2*(sx*sx2y-sxy*sx2))/det;const c2=(n*(sx2*sx2y-sxy*sx3)-sx*(sx*sx2y-sxy*sx2)+sy*(sx*sx3-sx2*sx2))/det;return[M.mod(Math.round(c0+c1*n+c2*n*n))];}catch(e){return[s[s.length-1]];}},
+  QuadFit:        s=>{if(s.length<4)return[s[s.length-1]];try{
+    // Cap to 20 most recent points — quadratic on full history diverges badly
+    const win=s.length>20?s.slice(-20):s;
+    const n=win.length;let sx=0,sx2=0,sx3=0,sx4=0,sy=0,sxy=0,sx2y=0;win.forEach((v,i)=>{sx+=i;sx2+=i*i;sx3+=i*i*i;sx4+=i*i*i*i;sy+=v;sxy+=i*v;sx2y+=i*i*v;});const det=n*(sx2*sx4-sx3*sx3)-sx*(sx*sx4-sx3*sx2)+sx2*(sx*sx3-sx2*sx2);if(!det)return[win[n-1]];const c0=(sy*(sx2*sx4-sx3*sx3)-sx*(sxy*sx4-sx3*sx2y)+sx2*(sxy*sx3-sx2*sx2y))/det;const c1=(n*(sxy*sx4-sx3*sx2y)-sy*(sx*sx4-sx3*sx2)+sx2*(sx*sx2y-sxy*sx2))/det;const c2=(n*(sx2*sx2y-sxy*sx3)-sx*(sx*sx2y-sxy*sx2)+sy*(sx*sx3-sx2*sx2))/det;const pred=c0+c1*n+c2*n*n;
+    // Sanity clamp: if wild extrapolation, return windowed mean
+    const lo=Math.min(...win)-15,hi=Math.max(...win)+15;
+    if(pred<lo||pred>hi)return[M.mod(Math.round(M.mean(win)))];
+    return[M.mod(Math.round(pred))];}catch(e){return[s[s.length-1]];}},
   LCGFit:         s=>{
     if(s.length<3)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,a:1,c:0};
@@ -263,7 +271,12 @@ const A={
     return[best.pred];
   },
   MovReg:         s=>{const sl=s.slice(-6),n=sl.length;let sx=0,sy=0,sxy=0,sx2=0;sl.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});const D=n*sx2-sx*sx;if(!D)return[sl[n-1]];const a=(n*sxy-sx*sy)/D,b=(sy-a*sx)/n;return[M.mod(Math.round(a*n+b))];},
-  LogMap:         s=>{if(s.length<3)return[s[s.length-1]];const x=s[s.length-1]/99;let bestR=3.5,bestSc=-1;for(let r=2.5;r<=3.99;r+=0.04){let sc=0,xr=s[0]/99;for(let i=1;i<s.length;i++){xr=r*xr*(1-xr);if(Math.abs(xr*99-s[i])<4)sc++;}if(sc>bestSc){bestSc=sc;bestR=r;if(sc>=s.length-2)break;}}return[M.mod(Math.round(bestR*(x)*(1-x)*99))];},
+  LogMap:         s=>{if(s.length<3)return[s[s.length-1]];const x=s[s.length-1]/99;
+    // Phase 1: coarse scan
+    let bestR=3.5,bestSc=-1;for(let r=2.5;r<=3.99;r+=0.05){let sc=0,xr=s[0]/99;for(let i=1;i<s.length;i++){xr=r*xr*(1-xr);if(Math.abs(xr*99-s[i])<5)sc++;}if(sc>bestSc){bestSc=sc;bestR=r;if(sc>=s.length-2)break;}}
+    // Phase 2: fine scan around best r for higher precision
+    for(let r=bestR-0.05;r<=bestR+0.05;r+=0.005){if(r<2.5||r>3.99)continue;let sc=0,xr=s[0]/99;for(let i=1;i<s.length;i++){xr=r*xr*(1-xr);if(Math.abs(xr*99-s[i])<4)sc++;}if(sc>bestSc){bestSc=sc;bestR=r;}}
+    return[M.mod(Math.round(bestR*(x)*(1-x)*99))];},
   PhaseNN:        s=>{if(s.length<6)return[s[s.length-1]];const n=s.length;let best={dist:Infinity,next:s[n-1]};for(let i=2;i<n-1;i++){const d=M.cd(s[i],s[n-1])+M.cd(s[i-1],s[n-2])+M.cd(s[i-2],s[n-3]);if(d<best.dist)best={dist:d,next:s[i+1]};}return[best.next];},
   FreqDecay:      s=>{
     const freq={};
@@ -304,20 +317,16 @@ const A={
   Bigram:         s=>{if(s.length<3)return[s[s.length-1]];const tr={};for(let i=1;i<s.length-1;i++){const k=s[i-1]+"_"+s[i];if(!tr[k])tr[k]={};tr[k][s[i+1]]=(tr[k][s[i+1]]||0)+1;}const k=s[s.length-2]+"_"+s[s.length-1];if(!tr[k])return[s[s.length-1]];return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));},
   Trigram:        s=>{if(s.length<4)return[s[s.length-1]];const tr={};for(let i=2;i<s.length-1;i++){const k=s[i-2]+"_"+s[i-1]+"_"+s[i];if(!tr[k])tr[k]={};tr[k][s[i+1]]=(tr[k][s[i+1]]||0)+1;}const k=s[s.length-3]+"_"+s[s.length-2]+"_"+s[s.length-1];if(!tr[k])return[s[s.length-1]];return Object.entries(tr[k]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));},
   ZigZag:         s=>{if(s.length<4)return[s[s.length-1]];const n=s.length;let zz=0;
-    // Fix: count zigzags up to the last complete triplet (i<n-1 is correct)
-    for(let i=1;i<n-1;i++){const a=s[i]-s[i-1],b=s[i+1]-s[i];if((a>0&&b<0)||(a<0&&b>0))zz++;}
+    for(let i=1;i<n-1;i++){let a=s[i]-s[i-1];if(a>50)a-=100;if(a<-50)a+=100;let b=s[i+1]-s[i];if(b>50)b-=100;if(b<-50)b+=100;if((a>0&&b<0)||(a<0&&b>0))zz++;}
     if(zz/(n-2)>0.55){
-      // Last gap tells us current direction; reverse it for prediction
       let d=s[n-1]-s[n-2];if(d>50)d-=100;if(d<-50)d+=100;
-      // Also consider the gap before to estimate reversal magnitude
-      let d2=s[n-2]-s[n-3];if(d2>50)d2-=100;if(d2<-50)d2+=100;
-      const mag=Math.round((Math.abs(d)+Math.abs(d2))/2);
-      return[M.mod(s[n-1]+(-Math.sign(d))*mag)];
+      let d2=s[n-2]-s[n-3];if(d2>50)d2-=100;if(d2<-50)d2+=100; // Fix: circular-safe
+      const mag=Math.max(1,Math.round((Math.abs(d)+Math.abs(d2))/2));
+      return[M.mod(s[n-1]+(-Math.sign(d)||1)*mag)];
     }
     return[s[n-1]];},
   Sticky:         s=>{const freq={};s.forEach(v=>{freq[v]=(freq[v]||0)+1;});const top=Object.entries(freq).filter(([,c])=>c>=2).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([v])=>parseInt(v));return top.length?top:[s[s.length-1]];},
   XorHeur:        s=>{if(s.length<2)return[s[0]||0];const l=s[s.length-1],p=s[s.length-2];return[(M.d1(l)^M.d1(p))*10+(M.d2(l)^M.d2(p))];},
-  RevLag2:        s=>s.length>=3?[M.rev(s[s.length-3])]:[s[s.length-1]],
 
   // ── PSEUDO-RANDOM STRUCTURE ALGOS (v13 enhanced) ──
   // All now FITTED to data - best parameters found via brute-force search
@@ -743,20 +752,9 @@ const A={
   },
   // ── V14 REVERSE & SEQUENTIAL PATTERN ALGOS ────────
 
-  // Mirror: reflect value around midpoint 50 (50→50, 30→70, 20→80)
-  MirrorAt50:     s=>[M.mod(100-s[s.length-1])],
-
-  // StepDown1: last value minus 1 (detects -1 per row patterns)
-  StepDown1:      s=>[M.mod(s[s.length-1]-1)],
-
-  // StepUp1: last value plus 1 (detects +1 per row patterns)
-  StepUp1:        s=>[M.mod(s[s.length-1]+1)],
-
-  // StepDown2: minus 2 per step
-  StepDown2:      s=>[M.mod(s[s.length-1]-2)],
-
-  // StepUp2: plus 2 per step
-  StepUp2:        s=>[M.mod(s[s.length-1]+2)],
+  // Mirror: removed — identical to Complement (100-x)
+  // StepDown1/StepUp1/StepDown2/StepUp2: removed — all degenerate cases of BestStep ±steps
+  // RevLag2: removed — too narrow, PhaseNN finds relevant lags dynamically
 
   // BestStep: brute-force best constant step (−10 to +10) from history
   BestStep:       s=>{
@@ -1314,25 +1312,155 @@ const A={
   DecadeSticky:   s=>{
     if(s.length<4)return[s[s.length-1]];
     const recent=s.slice(-10);
-    // Weight decades by recency
     const decFreq={};
-    recent.forEach((v,i)=>{
-      const dec=Math.floor(v/10);
-      decFreq[dec]=(decFreq[dec]||0)+Math.pow(1.6,i);
-    });
+    recent.forEach((v,i)=>{const dec=Math.floor(v/10);decFreq[dec]=(decFreq[dec]||0)+Math.pow(1.6,i);});
     const topDec=parseInt(Object.entries(decFreq).sort((a,b)=>b[1]-a[1])[0][0]);
-    // Within that decade, find the historically most frequent values
     const decVals=s.filter(v=>Math.floor(v/10)===topDec);
     if(decVals.length<2)return[topDec*10+5];
     const valFreq={};
-    decVals.forEach((v,i)=>{
-      const rw=i>=decVals.length-4?2.0:1.0;
-      valFreq[v]=(valFreq[v]||0)+rw;
-    });
+    decVals.forEach((v,i)=>{const rw=i>=decVals.length-4?2.0:1.0;valFreq[v]=(valFreq[v]||0)+rw;});
     const topVals=Object.entries(valFreq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
     return topVals.length?topVals:[M.mod(Math.round(M.mean(decVals)))];
   },
+
+  // ── KALMAN FILTER — optimal Bayesian state estimator ─────────────────────
+  // Maintains belief about the current state that updates as evidence arrives.
+  // Dynamically adapts gain based on measurement noise vs process noise.
+  // Outperforms fixed-alpha EMA when series volatility varies over time.
+  KalmanFilter:   s=>{
+    if(s.length<3)return[s[s.length-1]];
+    const recent=s.slice(-8),std=M.std(recent)||10;
+    const Q=std*0.25,R=std*std;
+    let x=s[0],p=R;
+    for(let i=1;i<s.length;i++){
+      p=p+Q;
+      const K=p/(p+R);
+      x=x+K*(s[i]-x);
+      p=(1-K)*p;
+    }
+    const n=s.length;
+    let vel=0;
+    if(n>=2){vel=s[n-1]-s[n-2];if(vel>50)vel-=100;if(vel<-50)vel+=100;vel*=0.35;}
+    return[M.mod(Math.round(x+vel))];
+  },
+
+  // ── ADAPTIVE SIGMA — variable-rate EMA ──────────────────────────────────
+  // Alpha adapts to turbulence: fast-moving region → high alpha (quick tracking).
+  // Stable region → low alpha (exploit structure). Better than fixed-rate EMA.
+  AdaptiveSigma:  s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const errs=[];
+    for(let i=1;i<s.length;i++){let e=Math.abs(s[i]-s[i-1]);if(e>50)e=100-e;errs.push(e);}
+    const meanErr=M.mean(errs.slice(-8))||1;
+    let ema=s[0];
+    for(let i=1;i<s.length;i++){
+      let e=Math.abs(s[i]-s[i-1]);if(e>50)e=100-e;
+      const alpha=Math.min(0.88,Math.max(0.05,e/(meanErr*2+1)));
+      ema=alpha*s[i]+(1-alpha)*ema;
+    }
+    return[M.mod(Math.round(ema))];
+  },
+
+  // ── RESONANCE DETECT — phase-locked value repeats ──────────────────────
+  // Finds values that recur at fixed phase within a dominant period.
+  // Stronger than Cyclic: confirms the SAME value repeats at same phase,
+  // not just that some value repeats with that period.
+  ResonanceDetect: s=>{
+    if(s.length<8)return[s[s.length-1]];
+    const n=s.length;
+    let best={score:-1,period:2,phaseVal:s[n-1]};
+    for(let p=2;p<=Math.min(12,Math.floor(n/3));p++){
+      const phase=n%p;
+      const phaseVals=[];
+      for(let i=phase;i<n;i+=p)phaseVals.push(s[i]);
+      if(phaseVals.length<2)continue;
+      const std=M.std(phaseVals);
+      const score=phaseVals.length/(std+1);
+      if(score>best.score)best={score,period:p,phaseVal:M.mod(Math.round(M.mean(phaseVals)))};
+    }
+    if(best.score<1.8)return[s[n-1]];
+    return[best.phaseVal];
+  },
+
+  // ── HOEFFDING DRIFT — concept drift / change-point detector ────────────
+  // Finds if the series underwent a statistical regime shift.
+  // After a confirmed drift point, uses ONLY post-drift data for prediction.
+  // Prevents old regime patterns poisoning new regime predictions.
+  HoeffdingDrift: s=>{
+    if(s.length<10)return[s[s.length-1]];
+    const n=s.length;
+    let bestSplit=Math.floor(n/2),bestDiff=0;
+    for(let sp=4;sp<n-4;sp++){
+      const diff=Math.abs(M.mean(s.slice(sp))-M.mean(s.slice(0,sp)));
+      if(diff>bestDiff){bestDiff=diff;bestSplit=sp;}
+    }
+    const isDrift=bestDiff>10&&bestSplit>Math.floor(n*0.6);
+    const pd=isDrift?s.slice(bestSplit):s;
+    if(pd.length<3)return[s[n-1]];
+    const pn=pd.length;
+    let sx=0,sy=0,sxy=0,sx2=0;
+    pd.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});
+    const D=pn*sx2-sx*sx;
+    if(!D)return[M.mod(Math.round(M.mean(pd)))];
+    const slope=(pn*sxy-sx*sy)/D,intercept=(sy-slope*sx)/pn;
+    return[M.mod(Math.round(slope*pn+intercept))];
+  },
+
+  // ── LOCAL MODE PREDICT — entropy-adaptive window mode ──────────────────
+  // Entropy-gated window: high entropy (chaotic) → small window, focus recent.
+  // Low entropy (structured) → large window, exploit stable repeat pattern.
+  LocalModePredict: s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const w8=s.slice(-8),freq8={};
+    w8.forEach(v=>{freq8[v]=(freq8[v]||0)+1;});
+    const probs=Object.values(freq8).map(c=>c/w8.length);
+    const entropy=-probs.reduce((sum,p)=>sum+p*Math.log2(p+1e-10),0);
+    const windowSize=Math.max(4,Math.min(s.length,Math.round(20-entropy*3)));
+    const win=s.slice(-windowSize),freq={};
+    win.forEach((v,i)=>{const rw=Math.pow(1.6,i);freq[v]=(freq[v]||0)+rw;});
+    const sorted=Object.entries(freq).sort((a,b)=>b[1]-a[1]);
+    return sorted.slice(0,2).map(([v])=>parseInt(v));
+  },
+
+  // ── GRADIENT BAND — trend-band mean reversion ──────────────────────────
+  // Fits linear trend to recent window. If current value deviates >1.5σ from
+  // expected band, predicts reversion. If inside band, predicts continuation.
+  GradientBand:   s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const win=s.slice(-Math.min(s.length,12));
+    const wn=win.length;
+    let sx=0,sy=0,sxy=0,sx2=0;
+    win.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});
+    const D=wn*sx2-sx*sx;
+    if(!D)return[M.mod(Math.round(M.mean(win)))];
+    const slope=(wn*sxy-sx*sy)/D,intercept=(sy-slope*sx)/wn;
+    const expected=slope*(wn-1)+intercept;
+    const residuals=win.map((v,i)=>v-(slope*i+intercept));
+    const residStd=M.std(residuals)||5;
+    let dev=s[s.length-1]-expected;
+    if(dev>50)dev-=100;if(dev<-50)dev+=100;
+    const absDev=Math.abs(dev);
+    if(absDev>residStd*1.5)return[M.mod(Math.round(expected+dev*0.45))];
+    return[M.mod(Math.round(expected+slope))];
+  },
+
+  // ── RECENCY GRAVITY — value-space gravitational pull ───────────────────
+  // Values that were recently close to current value exert gravitational pull.
+  // Combines recency (how recently) with proximity (how close in value space).
+  // More physically intuitive than pure frequency or pure recency alone.
+  RecencyGravity: s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const n=s.length,gravity={};
+    for(let i=0;i<n;i++){
+      const v=s[i],age=n-1-i,dist=M.cd(v,s[n-1]);
+      const g=Math.exp(-age*0.20)*Math.exp(-dist*0.10);
+      gravity[v]=(gravity[v]||0)+g;
+    }
+    const sorted=Object.entries(gravity).sort((a,b)=>b[1]-a[1]);
+    return sorted.slice(0,3).map(([v])=>parseInt(v));
+  },
 };
+ALGO_COUNT=Object.keys(A).length; // Fix: was never populated — now accurate
 console.log("Algo count:",ALGO_COUNT);
 
 // ── ALGO FAMILY MAP ───────────────────────────────
@@ -1340,16 +1468,27 @@ console.log("Algo count:",ALGO_COUNT);
 // This prevents a cluster of similar algos from dominating just by sheer count.
 const _FAM={};
 const _FAMS={
-  stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt","RetraceRebound","SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend"],
-  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget"],
-  momentum:["WtdMomentum","SecondDiff","LastGap","AutoCorr","Cyclic","AR3","LCGFit","Recurrence2","LogMap","XorChain","ModSearch","BestStep","ArithSeqDetect","StepAccelerate","ZigZag","DFTPeriod","ALFG","CrossLagSelf","FreqMomentum"],
-  transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur","RevLag2","SymmetricMirror","BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget"],
-  prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong"],
+  stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt",
+    // NEW: KalmanFilter, AdaptiveSigma, GradientBand added to stat family
+    "KalmanFilter","AdaptiveSigma","GradientBand",
+    // KalmanFilter, AdaptiveSigma, GradientBand added above
+    "SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend"],
+  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov",
+    "EpisodicMemory",  // FIX: was "EpisodicMem" — real key is EpisodicMemory (diversity bonus now works)
+    "FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget",
+    "LocalModePredict","RecencyGravity"],  // NEW
+  momentum:["WtdMomentum","SecondDiff","LastGap","AutoCorr","Cyclic","AR3","LCGFit","Recurrence2","LogMap","XorChain","ModSearch","BestStep","ArithSeqDetect","StepAccelerate","ZigZag","DFTPeriod","ALFG","CrossLagSelf","FreqMomentum",
+    "ResonanceDetect","HoeffdingDrift"],  // NEW
+  transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur",
+    // REMOVED: "RevLag2" (too narrow), "MirrorAt50" (=Complement), "StepDown/Up 1/2" (=BestStep)
+    "ComplementPairs",  // FIX: was "SymmetricMirror" — real key is ComplementPairs
+    "BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget"],
+  prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong","CombinedLCG","ALFG"],
 };
 Object.entries(_FAMS).forEach(([fam,names])=>names.forEach(n=>{_FAM[n]=fam;}));
 function _getFamily(name){
   if(_FAM[name])return _FAM[name];
-  if(name.startsWith("Lin_")||name.startsWith("Gap_")||name.startsWith("Cyc_")||name.startsWith("Rec2_")||name.startsWith("ModStep_"))return"momentum";
+  if(name.startsWith("Lin_")||name.startsWith("Gap_")||name.startsWith("Cyc_")||name.startsWith("Rec2_")||name.startsWith("ModStep_")||name.startsWith("XorLag_")||name.startsWith("MPShift_")||name.startsWith("CompChain_"))return"momentum";
   if(name.startsWith("DsChain_")||name.startsWith("Cross_"))return"transform";
   if(name.startsWith("Mut_"))return"seq";
   return"other";
@@ -2016,7 +2155,7 @@ function btScore(fn,series){
   // Hard cap: 150 rows max — beyond this accuracy gain is negligible, cost grows O(n)
   const s=series.length>150?series.slice(-150):series;
   const n=s.length;if(n<5)return 0.05;
-  // Only backtest last 40 steps (was 31 — slightly wider for better signal)
+  // Only backtest last 40 steps
   const from=Math.max(3,n-40);let score=0,cnt=0;
   const hist=s.slice(0,from);
   const recentStd=n>=8?M.std(s.slice(-8)):15;
@@ -2026,10 +2165,11 @@ function btScore(fn,series){
       const p=fn(hist),a=s[i];
       const pm=p.length===1?1.0:p.length===2?0.8:p.length===3?0.65:0.5;
       const age=n-1-i;
-      const rw=age<4?3.0:age<8?2.0:age<15?1.4:1.0;
+      // Sharpened recency: last 4=4×, 5-8=2.5×, 9-15=1.6×, older=1× (was 3/2/1.4/1)
+      const rw=age<4?4.0:age<8?2.5:age<15?1.6:1.0;
       if(p.some(v=>v===a))score+=(1.0*pm)*rw;
       else if(p.some(v=>M.near(v,a,nearTol)))score+=(0.4*pm)*rw;
-      if(p[0]===a)score+=0.35*rw;
+      if(p[0]===a)score+=0.5*rw; // top-1 exact bonus raised from 0.35
       cnt+=rw;
       hist.push(s[i]);
     }catch(e){hist.push(s[i]);}
@@ -2202,10 +2342,14 @@ function getRegime(series){
 }
 // Regime-gated algo pool: FULL exclusion not just multipliers
 const REGIME_POOLS={
-  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget"]),
-  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod"]),
-  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG"]),
-  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5"]),
+  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget",
+    "KalmanFilter","AdaptiveSigma","HoeffdingDrift"]),  // NEW: Kalman+Adaptive thrive in volatile
+  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod",
+    "LocalModePredict","ResonanceDetect","RecencyGravity"]),  // NEW: mode/resonance shine in flat
+  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG",
+    "HoeffdingDrift","GradientBand","KalmanFilter"]),  // NEW: drift+gradient ideal for trending
+  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5",
+    "LocalModePredict","RecencyGravity"]),  // NEW: gravity/local mode work on bimodal clusters
   normal:null
 };
 function algoAllowed(name,regime){
@@ -2292,7 +2436,16 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const nScore=ns[name]!=null?ns[name]:0;
       const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
       const btFactor=0.2+Math.sqrt(bt)*3.5;
-      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult;
+      // ── REGIME-FAMILY MULTIPLIER: damp wrong families for each regime ─────
+      // volatile: smoothers hurt (×0.55), PRNGs thrive (×1.3)
+      // flat: momentum gives false signals (×0.45), seq patterns shine (×1.4)
+      // trending: transforms are regime-agnostic (×0.60), momentum is ideal (×1.5)
+      const algoFam=_getFamily(name);
+      const rfMult=regime==="volatile"?(algoFam==="stat"?0.55:algoFam==="prng"?1.3:1.0)
+        :regime==="flat"?(algoFam==="momentum"?0.45:algoFam==="seq"?1.4:1.0)
+        :regime==="trending"?(algoFam==="transform"?0.60:algoFam==="momentum"?1.5:1.0)
+        :1.0;
+      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*rfMult;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
       details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin"};
@@ -2420,7 +2573,12 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const nScore=ns[ca.name]!=null?ns[ca.name]:0;
       const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
       const btFactor=0.2+Math.sqrt(bt)*3.5;
-      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult;
+      const caFam=_getFamily(ca.name);
+      const caRfMult=regime==="volatile"?(caFam==="stat"?0.55:caFam==="prng"?1.3:1.0)
+        :regime==="flat"?(caFam==="momentum"?0.45:caFam==="seq"?1.4:1.0)
+        :regime==="trending"?(caFam==="transform"?0.60:caFam==="momentum"?1.5:1.0)
+        :1.0;
+      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*caRfMult;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1)));
       details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom"};
@@ -2548,10 +2706,34 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const highThr=Math.max(12,40-ac*0.18);
   const medThr=Math.max(6,20-ac*0.09);
   const top1FamSupport=top5[0]?((votesByFamily[top5[0].value]||new Set()).size):0;
-  const conf=_ensembleVar>25?"LOW"
+  let conf=_ensembleVar>25?"LOW"
     :t1pct>highThr&&_ensembleVar<12&&top1FamSupport>=2?"HIGH"
     :t1pct>medThr||top1FamSupport>=3?"MED"
     :"LOW";
+
+  // ── CONFLICT-AWARE CONFIDENCE ──────────────────────────────────────────
+  // When algorithm families strongly disagree with each other, it's chaos —
+  // downgrade confidence regardless of how strongly one value leads the vote.
+  {
+    const famPreds={};
+    Object.entries(details).forEach(([name,info])=>{
+      if(!ok(info.pred))return;
+      const fam=_getFamily(name);
+      if(!famPreds[fam])famPreds[fam]=[];
+      famPreds[fam].push(info.pred);
+    });
+    const famMeans=Object.entries(famPreds)
+      .filter(([,preds])=>preds.length>=3)
+      .map(([,preds])=>M.mean(preds));
+    if(famMeans.length>=3){
+      const interFamStd=M.std(famMeans);
+      // Families disagree >18 units on average → prediction is chaos → force LOW
+      if(interFamStd>18)conf="LOW";
+      // Moderate disagreement: downgrade HIGH → MED
+      else if(interFamStd>10&&conf==="HIGH")conf="MED";
+    }
+  }
+
   const confClr=conf==="HIGH"?"#34d399":conf==="MED"?"#fbbf24":"#f87171";
   const allP=Object.values(details).map(d=>d.pred).filter(ok);
   const sAllP=[...allP].sort((a,b)=>a-b);
