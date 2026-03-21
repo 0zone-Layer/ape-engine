@@ -3910,9 +3910,9 @@ function AppInner(){
     }
     if(tr.index>=tr.total){autoTrainFinish(tr);return;}
 
-    // Adaptive batch: small while history is short (scores unstable), larger once stable
+    // Adaptive batch: small while history is short, larger once stable
     const hlen=tr.historyRows.length;
-    const batchSize=hlen<15?1:hlen<50?5:hlen<150?12:20;
+    const batchSize=hlen<15?1:hlen<50?3:hlen<200?6:10;
     const batchEnd=Math.min(tr.index+batchSize,tr.total);
 
     for(let bi=tr.index;bi<batchEnd;bi++){
@@ -3924,17 +3924,17 @@ function AppInner(){
       if(!knownCols.length){_atInsert(tr,csvRow);continue;}
 
       // ── btCache refresh schedule ──────────────────────────────────────
-      // Early (<20 rows): every 3 — history changing fast
-      // Mid (20-100): every 10
-      // Late (100+): every 20 — scores stabilise
-      const cacheInterval=hlen<20?3:hlen<100?10:20;
+      // First run always. Then: every 5 rows early, every 20 mid, every 40 late.
+      // walkFwd only starts after enough history to be meaningful (>=20 rows).
+      // This is the single biggest perf lever — don't refresh too often.
+      const cacheInterval=hlen<15?5:hlen<60?15:hlen<200?30:50;
       if(!tr.btCacheAge||tr.btCacheAge>=cacheInterval){
         _atRefreshBtCache(tr);
         tr.btCacheAge=1;
       } else {tr.btCacheAge++;}
 
-      // ── metaModel refresh every 25 rows ──────────────────────────────
-      if(tr.accLog.length>=3&&(!tr.metaModelAge||tr.metaModelAge>=25)){
+      // ── metaModel refresh every 30 rows ──────────────────────────────
+      if(tr.accLog.length>=3&&(!tr.metaModelAge||tr.metaModelAge>=30)){
         tr.cachedMeta=buildMetaModel(tr.accLog);
         tr.metaModelAge=1;
       } else if(tr.metaModelAge){tr.metaModelAge++;}
@@ -3998,8 +3998,10 @@ function AppInner(){
         }
       }
 
-      // ── Prune every 25 rows using btCache ─────────────────────────────
-      if(bi>0&&bi%25===0){
+      // ── Prune every 40 rows, but ONLY after 50+ history rows ─────────
+      // Too-early pruning eliminates algos before they've had enough data
+      // to demonstrate their value — causes the "1 algo" problem.
+      if(bi>0&&bi%40===0&&tr.historyRows.length>=50){
         const{pruned}=pruneWeakAlgos(tr.customs,tr.weights,tr.historyRows,tr.btCache);
         tr.customs=pruned;
       }
@@ -4027,12 +4029,25 @@ function AppInner(){
   }
 
   // ── Binary-insert into sorted historyRows ─────────────────────────────
+  // Dedup key = date+row so cycling row numbers (1-31 monthly) all stay in history
   function _atInsert(tr,row){
     const h=tr.historyRows;
-    const ex=h.findIndex(r=>r.row===row.row);
+    // Match on BOTH row number AND date (if present) — prevents month-cycle overwrites
+    const deupKey=row.date?row.date+"_"+row.row:null;
+    const ex=h.findIndex(r=>{
+      if(deupKey&&r.date)return r.date===row.date&&r.row===row.row; // exact date match
+      if(!row.date&&!r.date)return r.row===row.row; // no dates: fallback to row# only
+      return false; // don't overwrite dated row with undated or vice versa
+    });
     if(ex>=0)h.splice(ex,1);
+    // Sort by date first, then row number
     let lo=0,hi=h.length;
-    while(lo<hi){const m=(lo+hi)>>1;h[m].row<=row.row?lo=m+1:hi=m;}
+    while(lo<hi){
+      const m=(lo+hi)>>1;
+      const hm=h[m];
+      const cmp=row.date&&hm.date?row.date.localeCompare(hm.date):hm.row<=row.row?0:1;
+      cmp<=0?lo=m+1:hi=m;
+    }
     h.splice(lo,0,row);
     tr.allDs[tr.dsKey]={rows:h};
   }
@@ -4040,18 +4055,25 @@ function AppInner(){
   // ── Rebuild btScore+walkFwd cache for all algos ───────────────────────
   function _atRefreshBtCache(tr){
     const cache={};
+    const hlen=tr.historyRows.length;
+    // walkFwd only when history is long enough to be reliable
+    const doWalkFwd=hlen>=25;
     COLS.forEach(col=>{
       const localSer=getSeries(col,tr.historyRows);
       const globalSer=getGlobalSeries(col,tr.allDs);
-      const btSer=(globalSer.length>localSer.length?globalSer:localSer).slice(-150);
+      // Cap at 120 hard — beyond this btScore gain is <1% but cost grows linearly
+      const btSer=(globalSer.length>localSer.length?globalSer:localSer).slice(-120);
       if(btSer.length<4)return;
       const regime=getRegime(localSer);
-      // Built-in algos
-      Object.keys(A).filter(n=>algoAllowed(n,regime)).forEach(name=>{
+      const allowedNames=Object.keys(A).filter(n=>algoAllowed(n,regime));
+      allowedNames.forEach(name=>{
         try{
           const bt=btScore(A[name],btSer);
           let wfBoost=1.0;
-          if(btSer.length>=12){const wf=walkFwd(A[name],btSer);if(wf&&wf.total>=3){const r=(wf.exact+wf.near*0.4)/wf.total;wfBoost=0.6+r*0.8;}}
+          if(doWalkFwd&&btSer.length>=15){
+            const wf=walkFwd(A[name],btSer);
+            if(wf&&wf.total>=3){const r=(wf.exact+wf.near*0.4)/wf.total;wfBoost=0.6+r*0.8;}
+          }
           cache[col+"__"+name]={bt,wfBoost};
         }catch(e){cache[col+"__"+name]={bt:0.05,wfBoost:1.0};}
       });
@@ -4061,7 +4083,10 @@ function AppInner(){
           const fn=makeCustomFn(ca.code);if(!fn)return;
           const bt=btScore(fn,btSer);
           let wfBoost=1.0;
-          if(btSer.length>=12){const wf=walkFwd(fn,btSer);if(wf&&wf.total>=3){const r=(wf.exact+wf.near*0.4)/wf.total;wfBoost=0.6+r*0.8;}}
+          if(doWalkFwd&&btSer.length>=15){
+            const wf=walkFwd(fn,btSer);
+            if(wf&&wf.total>=3){const r=(wf.exact+wf.near*0.4)/wf.total;wfBoost=0.6+r*0.8;}
+          }
           cache[col+"__"+ca.name]={bt,wfBoost,fn};
         }catch(e){}
       });
@@ -4571,7 +4596,7 @@ function AppInner(){
               <span style={{fontSize:9,color:"#4a4e6a"}}>Running accuracy (positive = good)</span>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:10}}>
-              {COLS.map(col=><NeuralScoreCol key={col} col={col} scores={S.weights[col]?S.weights[col].neuralScores||{}:{}}/>)}
+              {COLS.map(col=><NeuralScoreCol key={col} col={col} scores={S.weights[col]?S.weights[col].neuralScores||{}:{}} customs={S.customs||[]}/>)}
             </div>
           </Card>}
         </div>}
@@ -4677,7 +4702,15 @@ function AppInner(){
                   <div style={{fontSize:9,color:"#2d3158",marginBottom:2}}>{algo.desc}</div>
                   <code style={{fontSize:9,color:"#4a4e6a",wordBreak:"break-all"}}>{(algo.code||"").slice(0,80)}{(algo.code||"").length>80?"…":""}</code>
                 </div>
-                <div style={{display:"flex",gap:6}}>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  <button onClick={()=>{
+                    const text="Name: "+algo.name+"\nCode: "+algo.code+"\nDesc: "+algo.desc;
+                    navigator.clipboard.writeText(text).catch(()=>{});
+                    setCopyMsg(algo.name);setTimeout(()=>setCopyMsg(""),2000);
+                  }} style={{background:"rgba(251,191,36,.08)",border:"1px solid rgba(251,191,36,.25)",color:"#fbbf24",padding:"4px 8px",borderRadius:5,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>
+                    {copyMsg===algo.name?"✓ Copied":"📋"}
+                  </button>
+                  <button onClick={()=>{setCName(algo.name+"_copy");setCCode(algo.code);setTab("algos");}} style={{background:"rgba(52,211,153,.08)",border:"1px solid rgba(52,211,153,.2)",color:"#34d399",padding:"4px 8px",borderRadius:5,cursor:"pointer",fontSize:9,fontFamily:"inherit"}} title="Clone into editor">✎</button>
                   <button onClick={()=>toggleCustom(algo.name)} style={{background:algo.enabled?"rgba(52,211,153,.1)":"rgba(255,255,255,.04)",border:"1px solid "+(algo.enabled?"rgba(52,211,153,.3)":"#1a1e35"),color:algo.enabled?"#34d399":"#4a4e6a",padding:"4px 10px",borderRadius:5,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>{algo.enabled?"ON":"OFF"}</button>
                   <button onClick={()=>deleteCustom(algo.name)} style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.2)",color:"#f87171",padding:"4px 8px",borderRadius:5,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>✕</button>
                 </div>
@@ -4866,14 +4899,23 @@ function CalibCol(p){
 }
 function NeuralScoreCol(p){
   const entries=Object.entries(p.scores).filter(([k])=>!k.startsWith("_")).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const[copied,setCopied]=React.useState("");
   if(!entries.length)return <div style={{fontSize:9,color:"#2d3158"}}>No data yet</div>;
   return <div>
     <div style={{fontSize:9,color:CLR[p.col],letterSpacing:2,marginBottom:6}}>{p.col}</div>
     {entries.map(([name,score])=>{
       const clr=score>1?"#34d399":score>0?"#a78bfa":score<-0.5?"#f87171":"#4a4e6a";
+      const customCode=p.customs&&p.customs.find(c=>c.name===name);
       return <div key={name} style={{display:"flex",gap:5,alignItems:"center",marginBottom:3}}>
         <span style={{fontSize:9,color:"#4a4e6a",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
         <span style={{fontSize:9,color:clr,fontWeight:700,minWidth:36,textAlign:"right"}}>{score>0?"+":""}{score.toFixed(2)}</span>
+        <button onClick={()=>{
+          const txt=customCode?"Name: "+name+"\nCode: "+customCode.code:"Algo: "+name+" (built-in)";
+          navigator.clipboard.writeText(txt).catch(()=>{});
+          setCopied(name);setTimeout(()=>setCopied(""),1500);
+        }} style={{background:"transparent",border:"none",color:copied===name?"#34d399":"#2d3158",cursor:"pointer",fontSize:10,padding:"0 2px",lineHeight:1}}>
+          {copied===name?"✓":"📋"}
+        </button>
       </div>;
     })}
   </div>;
