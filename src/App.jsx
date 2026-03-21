@@ -3764,7 +3764,14 @@ function AppInner(){
         const newAccLog=[...(prev.accLog||[])];
 
         incomingRows.forEach(inc=>{
-          const existIdx=existingRows.findIndex(r=>r.row===inc.row);
+          // Dedup key: prefer date+row (multi-month support), fall back to row-only
+          // This is the critical fix: without date, row=1 Jan and row=1 Feb are the same key
+          // and Feb overwrites Jan, leaving only ~20-31 rows for a year of data.
+          const existIdx=existingRows.findIndex(r=>{
+            if(inc.date&&r.date)return r.date===inc.date&&r.row===inc.row; // exact: same date+day
+            if(!inc.date&&!r.date)return r.row===inc.row; // both undated: by row# only
+            return false; // one has date, other doesn't — treat as different rows
+          });
           const exist=existIdx>=0?existingRows[existIdx]:null;
           const newlyKnownCols=COLS.filter(c=>inc[c]!=null&&(exist?.[c]==null));
           if(exist===null){
@@ -3800,7 +3807,11 @@ function AppInner(){
             syslog("🤖 Auto-learned row "+pad2(inc.row)+": "+exactCount+"/"+newlyKnownCols.length+" exact","learn");
           }
         });
-        existingRows.sort((a,b)=>a.row-b.row);
+        existingRows.sort((a,b)=>{
+          if(a.date&&b.date)return a.date.localeCompare(b.date)||a.row-b.row;
+          if(a.date)return -1;if(b.date)return 1;
+          return a.row-b.row;
+        });
 
         // Rebuild pattern bank with new data
         const newDs={...prev.datasets,[dsKey]:{...prev.datasets[dsKey],rows:existingRows}};
@@ -4221,168 +4232,157 @@ function AppInner(){
   const _EXPENSIVE_ALGOS=new Set(["TruncLCG","PCGLike","ICG","CombinedLCG","RowSeedLCG",
     "Recurrence2","AR3","LCGFit","CubicCong","ALFG","SWB","WichmannHill","BBS","MersenneMod"]);
 
-  // ── Single tick: processes ONE row then yields — browser stays responsive ──
+  // ── Auto-train tick: adaptive batching, never double-schedules ──────────
+  // KEY DESIGN: NO return/finally pattern inside try — that double-calls _scheduleNextTick.
+  // All scheduling happens in ONE place at the very bottom of this function.
   function autoTrainTick(){
     const tr=autoTrainRef.current;
     if(!tr||tr===false){
       setAutoTrainStatus(s=>s?{...s,running:false,done:true,log:[...(s?.log||[]),"⛔ Cancelled"]}:s);
-      return; // no finally scheduling — intentionally stopped
+      return; // intentionally stopped — no scheduling
     }
-    if(tr.index>=tr.total){autoTrainFinish(tr);return;} // done — no further ticks
+    if(tr.index>=tr.total){autoTrainFinish(tr);return;} // done — no scheduling
 
-    try{
-      const bi=tr.index;
-      const hlen=tr.historyRows.length;
-      const csvRow=tr.csvRows[bi];
-      const knownCols=COLS.filter(c=>csvRow[c]!=null);
+    // Adaptive batch size: small early (predictCol is expensive with few algos),
+    // larger once btCache is warm and history is stable.
+    const hlen=tr.historyRows.length;
+    const batchSize=hlen<10?2:hlen<30?5:hlen<80?10:hlen<200?15:20;
+    const batchEnd=Math.min(tr.index+batchSize,tr.total);
 
-      // Rows with no values — add to history only, log it, continue
-      if(!knownCols.length){
-        _atInsert(tr,csvRow);
-        tr.index=bi+1;
-        syslog("⏭ ["+(bi+1)+"/"+tr.total+"] row "+csvRow.row+" — no values, skipped","info");
-        setAutoTrainStatus(s=>({...s,progress:tr.index}));
-        _scheduleNextTick();
-        return;
-      }
+    for(let bi=tr.index;bi<batchEnd;bi++){
+      if(!autoTrainRef.current||autoTrainRef.current===false)break;
 
-      // ── btCache refresh ─────────────────────────────────────────────────
-      const cacheInterval=hlen<15?5:hlen<60?15:hlen<200?30:50;
-      const shouldRefreshCache=hlen>=5&&(!tr.btCacheAge||tr.btCacheAge>=cacheInterval);
-      if(shouldRefreshCache){
-        try{_atRefreshBtCache(tr,hlen);}catch(e){console.warn("btCache refresh failed",e);}
-        tr.btCacheAge=1;
-        syslog("🔄 btCache rebuilt ("+hlen+" history rows)","info");
-      } else if(tr.btCacheAge){tr.btCacheAge++;}
+      try{
+        const csvRow=tr.csvRows[bi];
+        const knownCols=COLS.filter(c=>csvRow[c]!=null);
 
-      // ── metaModel refresh every 30 rows ────────────────────────────────
-      if(tr.accLog.length>=3&&(!tr.metaModelAge||tr.metaModelAge>=30)){
-        try{tr.cachedMeta=buildMetaModel(tr.accLog);}catch(e){}
-        tr.metaModelAge=1;
-      } else if(tr.metaModelAge){tr.metaModelAge++;}
+        // No values — add to history only
+        if(!knownCols.length){
+          try{_atInsert(tr,csvRow);}catch(e){tr.historyRows.push(csvRow);}
+          syslog("⏭ ["+(bi+1)+"/"+tr.total+"] row "+csvRow.row+" — no values, skipped","info");
+          continue; // next iteration — NO early return, NO extra schedule
+        }
 
-      // ── Predict ─────────────────────────────────────────────────────────
-      const rowPreds={};
-      knownCols.forEach(col=>{
-        try{
-          const W={...tr.weights[col],
-            _metaModel:tr.cachedMeta,
-            _accLog:tr.accLog.slice(-6),
-            _btCache:tr.btCache,_btCacheCol:col};
-          rowPreds[col]=predictCol(col,tr.historyRows,W,tr.customs,csvRow.date||"",tr.allDs,tr.patternBank);
-        }catch(e){console.warn("predictCol failed col="+col,e);}
-      });
+        // ── btCache refresh ───────────────────────────────────────────────
+        const cacheInterval=hlen<15?5:hlen<60?15:hlen<200?30:50;
+        const shouldRefreshCache=hlen>=5&&(!tr.btCacheAge||tr.btCacheAge>=cacheInterval);
+        if(shouldRefreshCache){
+          try{_atRefreshBtCache(tr,hlen);}catch(e){console.warn("btCache err",e);}
+          tr.btCacheAge=1;
+          syslog("🔄 btCache rebuilt ("+hlen+" rows)","info");
+        }else if(tr.btCacheAge){tr.btCacheAge++;}
 
-      // ── Compare & weight update ─────────────────────────────────────────
-      const dateCtxPd=csvRow.date?parseDate(csvRow.date):null;
-      const dateCtx=dateCtxPd?{dow:dateCtxPd.dow,lunar:dateCtxPd.lunarPhase,month:dateCtxPd.m,season:dateCtxPd.season}:null;
-      let rowExact=0,rowKnown=0;
-      const rowResults={};
-      knownCols.forEach(col=>{
-        try{
-          const actual=csvRow[col];
-          const pred=rowPreds[col];
-          if(!pred){rowResults[col]={predicted:null,actual,exact:false,near:false,skipped:true};return;}
-          const top1=pred.top5[0]?.value;
-          const ex=top1===actual,nr=!ex&&M.near(top1??-1,actual,2);
-          rowResults[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
-          if(ex){rowExact++;}rowKnown++;
-          const regime=pred.regime||"normal";
-          let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col]);
-          if(dateCtx)uw=updateDateWeights(pred,actual,uw,dateCtx);
-          tr.weights[col]=uw;
-          tr.calibration[col]=updateCalibration(pred.conf,ex,tr.calibration[col]||{});
-        }catch(e){console.warn("weight update failed col="+col,e);}
-      });
-      tr.exactTotal+=rowExact;
-      tr.nearTotal+=Object.values(rowResults).filter(r=>r.near).length;
-      tr.totalKnown+=rowKnown;
+        // ── metaModel refresh every 30 rows ────────────────────────────────
+        if(tr.accLog.length>=3&&(!tr.metaModelAge||tr.metaModelAge>=30)){
+          try{tr.cachedMeta=buildMetaModel(tr.accLog);}catch(e){}
+          tr.metaModelAge=1;
+        }else if(tr.metaModelAge){tr.metaModelAge++;}
 
-      // ── Insert row into history ─────────────────────────────────────────
-      try{_atInsert(tr,csvRow);}catch(e){tr.historyRows.push(csvRow);}
+        // ── Predict ────────────────────────────────────────────────────────
+        const rowPreds={};
+        knownCols.forEach(col=>{
+          try{
+            const W={...tr.weights[col],
+              _metaModel:tr.cachedMeta,
+              _accLog:tr.accLog.slice(-6),
+              _btCache:tr.btCache,_btCacheCol:col};
+            rowPreds[col]=predictCol(col,tr.historyRows,W,tr.customs,csvRow.date||"",tr.allDs,tr.patternBank);
+          }catch(e){console.warn("predictCol err col="+col,e);}
+        });
 
-      // ── Compact accLog entry ────────────────────────────────────────────
-      tr.accLog.push({
-        at:bi,targetRow:csvRow.row,date:csvRow.date||null,dateCtx,
-        preds:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]?.top5[0]?.value??null])),
-        algoDetails:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]
-          ?Object.fromEntries(Object.entries(rowPreds[c].details||{}).sort((a,b)=>b[1].w-a[1].w).slice(0,15).map(([n,d])=>[n,d.pred]))
-          :{}])),
-        actuals:Object.fromEntries(COLS.map(c=>[c,csvRow[c]??null])),
-        results:rowResults,exactCount:rowExact,knownCount:rowKnown,autoTrained:true
-      });
-      if(tr.accLog.length>365)tr.accLog=tr.accLog.slice(-365);
+        // ── Compare & weight update ────────────────────────────────────────
+        const dateCtxPd=csvRow.date?parseDate(csvRow.date):null;
+        const dateCtx=dateCtxPd?{dow:dateCtxPd.dow,lunar:dateCtxPd.lunarPhase,month:dateCtxPd.m,season:dateCtxPd.season}:null;
+        let rowExact=0,rowKnown=0;
+        const rowResults={};
+        knownCols.forEach(col=>{
+          try{
+            const actual=csvRow[col];
+            const pred=rowPreds[col];
+            if(!pred){rowResults[col]={predicted:null,actual,exact:false,near:false,skipped:true};return;}
+            const top1=pred.top5[0]?.value;
+            const ex=top1===actual,nr=!ex&&M.near(top1??-1,actual,2);
+            rowResults[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
+            if(ex){rowExact++;}rowKnown++;
+            const regime=pred.regime||"normal";
+            let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col]);
+            if(dateCtx)uw=updateDateWeights(pred,actual,uw,dateCtx);
+            tr.weights[col]=uw;
+            tr.calibration[col]=updateCalibration(pred.conf,ex,tr.calibration[col]||{});
+          }catch(e){console.warn("weight update err col="+col,e);}
+        });
+        tr.exactTotal+=rowExact;
+        tr.nearTotal+=Object.values(rowResults).filter(r=>r.near).length;
+        tr.totalKnown+=rowKnown;
 
-      // ── Generate algos every 8 rows ─────────────────────────────────────
-      if(tr.historyRows.length>=8&&bi>0&&bi%8===0){
-        try{
-          const genCount=tr.customs.filter(a=>a.generated&&!a.benched).length;
-          if(genCount<MAX_GENERATED_ALGOS){
-            const existing=new Set([...Object.keys(A),...tr.customs.map(a=>a.name)]);
-            const fresh=generateAlgos(tr.historyRows,existing);
-            if(fresh.length){
-              tr.customs=[...tr.customs,...fresh];
-              syslog("🔧 +"+fresh.length+" algos generated ("+tr.historyRows.length+" rows)","gen");
+        // ── Insert row into history ────────────────────────────────────────
+        try{_atInsert(tr,csvRow);}catch(e){tr.historyRows.push(csvRow);}
+
+        // ── Compact accLog entry ───────────────────────────────────────────
+        tr.accLog.push({
+          at:bi,targetRow:csvRow.row,date:csvRow.date||null,dateCtx,
+          preds:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]?.top5[0]?.value??null])),
+          algoDetails:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]
+            ?Object.fromEntries(Object.entries(rowPreds[c].details||{}).sort((a,b)=>b[1].w-a[1].w).slice(0,15).map(([n,d])=>[n,d.pred]))
+            :{}])),
+          actuals:Object.fromEntries(COLS.map(c=>[c,csvRow[c]??null])),
+          results:rowResults,exactCount:rowExact,knownCount:rowKnown,autoTrained:true
+        });
+        if(tr.accLog.length>365)tr.accLog=tr.accLog.slice(-365);
+
+        // ── Generate algos every 8 rows ───────────────────────────────────
+        if(tr.historyRows.length>=8&&bi>0&&bi%8===0){
+          try{
+            const genCount=tr.customs.filter(a=>a.generated&&!a.benched).length;
+            if(genCount<MAX_GENERATED_ALGOS){
+              const existing=new Set([...Object.keys(A),...tr.customs.map(a=>a.name)]);
+              const fresh=generateAlgos(tr.historyRows,existing);
+              if(fresh.length){tr.customs=[...tr.customs,...fresh];syslog("🔧 +"+fresh.length+" algos ("+tr.historyRows.length+" rows)","gen");}
             }
-          }
-        }catch(e){console.warn("algo gen failed",e);}
+          }catch(e){console.warn("gen err",e);}
+        }
+
+        // ── Prune every 40 rows, only after 50+ history rows ──────────────
+        if(bi>0&&bi%40===0&&tr.historyRows.length>=50){
+          try{
+            const{pruned,removed}=pruneWeakAlgos(tr.customs,tr.weights,tr.historyRows,tr.btCache);
+            tr.customs=pruned;
+            if(removed.length)syslog("🗑 Pruned "+removed.length+" weak algos","prune");
+          }catch(e){console.warn("prune err",e);}
+        }
+
+        // ── Per-row terminal output ────────────────────────────────────────
+        const pct=tr.totalKnown>0?Math.round(tr.exactTotal/tr.totalKnown*100):0;
+        const icons=COLS.map(c=>{const r=rowResults[c];return(!r||r.skipped)?"·":r.exact?"✅":r.near?"🟡":"❌";}).join("");
+        syslog("["+(bi+1)+"/"+tr.total+"] "+(csvRow.date||"row"+pad2(csvRow.row))+" | "+icons+" | "+pct+"% · "+tr.exactTotal+"/"+tr.totalKnown,"info");
+
+      }catch(fatalErr){
+        // Row-level catch: log, skip, keep going
+        console.error("Row "+(bi+1)+" fatal",fatalErr);
+        syslog("⚠ Row "+(bi+1)+" error: "+fatalErr.message,"err");
       }
+    } // end for-loop
 
-      // ── Prune every 40 rows, only after 50+ history rows ───────────────
-      if(bi>0&&bi%40===0&&tr.historyRows.length>=50){
-        try{
-          const{pruned,removed}=pruneWeakAlgos(tr.customs,tr.weights,tr.historyRows,tr.btCache);
-          tr.customs=pruned;
-          if(removed.length)syslog("🗑 Pruned "+removed.length+" weak algos","prune");
-        }catch(e){console.warn("prune failed",e);}
-      }
+    tr.index=batchEnd;
 
-      // ── Live terminal output every row ──────────────────────────────────
-      tr.index=bi+1;
-      const pct=tr.totalKnown>0?Math.round(tr.exactTotal/tr.totalKnown*100):0;
-      const icons=COLS.map(c=>{
-        const r=rowResults[c];
-        if(!r||r.skipped)return"·";
-        return r.exact?"✅":r.near?"🟡":"❌";
-      }).join("");
-      const rowLine="["+(bi+1)+"/"+tr.total+"] row "+(csvRow.date||pad2(csvRow.row))
-        +" | "+icons+" | "+pct+"% exact · "+tr.exactTotal+"/"+tr.totalKnown;
-      syslog(rowLine,"info");
-
-      // Milestone summaries at 25/50/75/100%
-      const milestones=[Math.floor(tr.total*0.25),Math.floor(tr.total*0.50),Math.floor(tr.total*0.75),tr.total-1];
-      if(milestones.includes(bi)){
-        const nearPct=tr.totalKnown>0?Math.round((tr.exactTotal+tr.nearTotal)/tr.totalKnown*100):0;
-        const summaryLine="━━ "+Math.round(tr.index/tr.total*100)+"% done · exact:"+pct+"% · near+:"+nearPct+"% · algos:"+(tr.customs.filter(a=>!a.benched).length);
-        syslog("📊 "+summaryLine,"info");
-        setAutoTrainStatus(s=>({...s,progress:tr.index,log:[...(s?.log||[]),summaryLine]}));
-      }else{
-        setAutoTrainStatus(s=>({...s,progress:tr.index}));
-      }
-
-    }catch(fatalErr){
-      // Catch-all: log the error, skip this row, keep training alive
-      const errMsg="⚠ Row "+(autoTrainRef.current?.index||"?")+" error: "+fatalErr.message;
-      console.error("autoTrainTick fatal",fatalErr);
-      syslog(errMsg,"err");
-      if(autoTrainRef.current&&autoTrainRef.current!==false){
-        autoTrainRef.current.index=(autoTrainRef.current.index||0)+1;
-        setAutoTrainStatus(s=>({...s,progress:autoTrainRef.current.index,
-          log:[...(s?.log||[]),errMsg]}));
-      }
-    }finally{
-      // ALWAYS schedule next tick — training cannot die from any single row error
-      _scheduleNextTick();
-    }
-  }
-
-  // Always yield between ticks — critical for mobile not to freeze the UI thread
-  function _scheduleNextTick(){
-    if(!autoTrainRef.current||autoTrainRef.current===false)return;
-    if(typeof requestIdleCallback==='function'){
-      requestIdleCallback(autoTrainTick,{timeout:150});
+    // ── UI update once per batch ───────────────────────────────────────────
+    const pct=tr.totalKnown>0?Math.round(tr.exactTotal/tr.totalKnown*100):0;
+    const milestones=[Math.floor(tr.total*0.25),Math.floor(tr.total*0.50),Math.floor(tr.total*0.75),tr.total-1];
+    const hitMilestone=milestones.some(m=>m>=tr.index-batchSize&&m<tr.index);
+    if(hitMilestone){
+      const nearPct=tr.totalKnown>0?Math.round((tr.exactTotal+tr.nearTotal)/tr.totalKnown*100):0;
+      const s="━━ "+Math.round(tr.index/tr.total*100)+"% done · exact:"+pct+"% · near+:"+nearPct+"% · algos:"+(tr.customs.filter(a=>!a.benched).length);
+      syslog("📊 "+s,"info");
+      setAutoTrainStatus(prev=>({...prev,progress:tr.index,log:[...(prev?.log||[]).slice(-49),s]}));
     }else{
-      setTimeout(autoTrainTick,0);
+      setAutoTrainStatus(prev=>({...prev,progress:tr.index}));
+    }
+
+    // ── Schedule next batch — ONE call, always at the bottom ──────────────
+    if(autoTrainRef.current&&autoTrainRef.current!==false){
+      if(tr.index>=tr.total){autoTrainFinish(tr);}
+      else if(typeof requestIdleCallback==='function'){requestIdleCallback(autoTrainTick,{timeout:200});}
+      else{setTimeout(autoTrainTick,0);}
     }
   }
 
