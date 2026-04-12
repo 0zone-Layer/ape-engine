@@ -1352,9 +1352,11 @@ function parseDate(dateStr){
   };
 }
 
+/** Formats a Date as YYYY-MM-DD. */
 function formatDateISO(dt){
   return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
 }
+/** Returns next day as YYYY-MM-DD; empty string if input is invalid. */
 function nextDateISO(dateStr){
   if(!dateStr)return"";
   const dt=new Date(dateStr+"T12:00:00");
@@ -1362,6 +1364,7 @@ function nextDateISO(dateStr){
   dt.setDate(dt.getDate()+1);
   return formatDateISO(dt);
 }
+/** Returns epoch timestamp for YYYY-MM-DD, or null if invalid. */
 function dateTs(dateStr){
   if(!dateStr)return null;
   const dt=new Date(dateStr+"T12:00:00");
@@ -3673,10 +3676,10 @@ function AppInner(){
     const target=maxRow+1; // sequential global day — no monthly cycling
     // Compute target date from the latest dated row in dataset.
     // Keep manual override only when it is beyond the latest dataset date.
-    const latestDatedInfo=rows.reduce((mx,r)=>{
+    const latestDatedInfo=rows.reduce((latestSoFar,r)=>{
       const ts=dateTs(r.date);
-      if(ts===null)return mx;
-      return(!mx||ts>mx.ts)?{date:r.date,ts}:mx;
+      if(ts===null)return latestSoFar;
+      return(!latestSoFar||ts>latestSoFar.ts)?{date:r.date,ts}:latestSoFar;
     },null);
     const latestDated=latestDatedInfo?.date||"";
     const autoDate=latestDated?nextDateISO(latestDated):"";
