@@ -48,6 +48,7 @@ function getGlobalSeries(col,datasets){
   return result;
 }
 const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#60a5fa",F:"#f472b6",G:"#22d3ee"};
+const HASH_WEIGHTS=[3,5,7,11,13,17,19,23,29,31,37,41,43,47];
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
 const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}}]));
@@ -1946,7 +1947,7 @@ function getTemporalChain(targetCol,data){
   if(prev&&ok(prev[targetCol])&&ok(prev[aR])&&ok(last[aR]))res.LagDelta=[M.mod(last[aR]+(prev[targetCol]-prev[aR]))];
   if(COLS.every(c=>ok(last[c]))){
     res.RowSum=[M.mod(COLS.reduce((sum,c)=>sum+last[c],0))];
-    res.RowHash=[M.mod(COLS.reduce((hash,c,i)=>hash+last[c]*(i*4+3),0)%100)];
+    res.RowHash=[M.mod(COLS.reduce((hash,c,i)=>hash+last[c]*HASH_WEIGHTS[i%HASH_WEIGHTS.length],0)%100)];
   }
   for(let i=0;i<COLS.length;i++){
     for(let j=i+1;j<COLS.length;j++){
@@ -4461,8 +4462,8 @@ function AppInner(){
                   <div style={{marginTop:8,fontSize:9,color:"#2d3158",fontFamily:"monospace",background:"rgba(0,0,0,.3)",borderRadius:5,padding:"5px 8px",display:"inline-block",lineHeight:1.8}}>
                     <span style={{color:"#fbbf24"}}>CSV Format:</span><br/>
                     {"Row,"+COLS.join(",")+",Date"}<br/>
-                    <span style={{color:"#4a4e6a"}}>1,42,87,13,65,24,50,91,2025-01-01</span><br/>
-                    <span style={{color:"#4a4e6a"}}>2,91,10,55,30,77,12,48,2025-01-02</span><br/>
+                    <span style={{color:"#4a4e6a"}}>{"1,"+COLS.map((_,i)=>pad2((42+i*13)%100)).join(",")+",2025-01-01"}</span><br/>
+                    <span style={{color:"#4a4e6a"}}>{"2,"+COLS.map((_,i)=>pad2((91+i*19)%100)).join(",")+",2025-01-02"}</span><br/>
                     <span style={{color:"#34d399"}}>• Date column optional but strongly recommended</span><br/>
                     <span style={{color:"#34d399"}}>• Use XX for unknown columns</span><br/>
                     <span style={{color:"#34d399"}}>• Row = day number (any integer, no cycling)</span>
