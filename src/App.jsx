@@ -2154,171 +2154,6 @@ function computeRowDifficulty(accLog){
   return difficulty;
 }
 
-const WF_MIN_TRAIN_SIZE=6;
-const WF_MIN_TEST_SIZE=3;
-const REGIME_SHIFT_STALE_THRESHOLD_MIN=0.35;
-const REGIME_SHIFT_STALE_THRESHOLD_MAX=0.7;
-const REGIME_BOOST_FACTOR_CAP=0.6;
-const REGIME_BOOST_MULTIPLIER=0.7;
-const REGIME_SHIFT_STD_WEIGHT=0.6;
-const REGIME_SHIFT_DRIFT_WEIGHT=0.4;
-const REGIME_SHIFT_DRIFT_MIN=5;
-const REGIME_SHIFT_DRIFT_SCALE=30;
-const BLEND_FALLBACK_ACCURACY_RATE=0.28;
-const BLEND_MULT_MIN=0.55;
-const BLEND_MULT_MAX=1.9;
-const BLEND_MULT_BASE=0.7;
-const BLEND_MULT_GLOBAL_FACTOR=0.6;
-const BLEND_MULT_REGIME_FACTOR=0.8;
-const MIN_BLEND_GLOBAL_SAMPLES=3;
-const MIN_BLEND_REGIME_SAMPLES=2;
-const RELIABILITY_CURVE_BINS=5;
-function getSignalCategory(type,name){
-  if(type==="date"||type==="patternbank")return"date";
-  if(type==="temporal"||type==="rowhistory"||type==="colgap"||type==="cross")return"cross-col";
-  if(type==="builtin"||type==="custom")return"sequence";
-  if(/Date|DOW|Lunar|Season|Month|Week|Anniv/i.test(name||""))return"date";
-  if(/Cross|Gap|Temp|Nearest|Tx_|XL_/i.test(name||""))return"cross-col";
-  return"sequence";
-}
-function buildPredictionExplain(details,topVal){
-  if(!details||!ok(topVal))return{topSignals:[],byBucket:[]};
-  const bucketW={date:0,sequence:0,"cross-col":0};
-  const sig=[];
-  Object.entries(details).forEach(([name,info])=>{
-    if(!ok(info?.pred)||M.mod(Math.round(info.pred))!==topVal)return;
-    const b=getSignalCategory(info.type,name);
-    const w=info.w||0;
-    bucketW[b]+=w;
-    sig.push({name,type:info.type||"?",bucket:b,w,pred:M.mod(Math.round(info.pred))});
-  });
-  const byBucket=Object.entries(bucketW).map(([bucket,w])=>({bucket,w:+w.toFixed(2)})).sort((a,b)=>b.w-a.w);
-  const topSignals=sig.sort((a,b)=>b.w-a.w).slice(0,8).map(s=>({...s,w:+s.w.toFixed(2)}));
-  return{topSignals,byBucket};
-}
-function detectRegimeShift(series){
-  if(!series||series.length<14)return{score:0,level:"stable",recentStd:0,baseStd:0,recentDrift:0};
-  const recent=series.slice(-7),base=series.slice(-14,-7);
-  const recentStd=M.std(recent),baseStd=M.std(base)||1;
-  const recentMean=M.mean(recent),baseMean=M.mean(base);
-  const drift=M.cd(M.mod(Math.round(recentMean)),M.mod(Math.round(baseMean)));
-  const stdRatio=recentStd/baseStd;
-  const score=Math.max(0,Math.min(1,+((Math.max(0,stdRatio-1)*REGIME_SHIFT_STD_WEIGHT)+(Math.max(0,drift-REGIME_SHIFT_DRIFT_MIN)/REGIME_SHIFT_DRIFT_SCALE)*REGIME_SHIFT_DRIFT_WEIGHT).toFixed(3)));
-  const level=score>0.72?"high":score>0.45?"medium":"stable";
-  return{score,level,recentStd:+recentStd.toFixed(2),baseStd:+baseStd.toFixed(2),recentDrift:+drift.toFixed(2)};
-}
-function buildBlendModel(accLog){
-  if(!accLog||accLog.length<8)return null;
-  const stats={};
-  accLog.slice(-180).forEach(entry=>{
-    if(!entry?.algoDetails)return;
-    COLS.forEach(col=>{
-      const actual=entry.actuals&&entry.actuals[col];
-      if(!ok(actual))return;
-      const regime=(entry.predMeta&&entry.predMeta[col]&&entry.predMeta[col].regime)||"normal";
-      const details=entry.algoDetails[col]||{};
-      Object.entries(details).forEach(([name,pred])=>{
-        if(!ok(pred))return;
-        if(!stats[col])stats[col]={global:{},perRegime:{}};
-        if(!stats[col].global[name])stats[col].global[name]={hit:0,total:0};
-        stats[col].global[name].total++;
-        const ex=M.mod(Math.round(pred))===actual;
-        const nr=!ex&&M.near(M.mod(Math.round(pred)),actual,2);
-        stats[col].global[name].hit+=ex?1:nr?0.4:0;
-        if(!stats[col].perRegime[regime])stats[col].perRegime[regime]={};
-        if(!stats[col].perRegime[regime][name])stats[col].perRegime[regime][name]={hit:0,total:0};
-        stats[col].perRegime[regime][name].total++;
-        stats[col].perRegime[regime][name].hit+=ex?1:nr?0.4:0;
-      });
-    });
-  });
-  const model={};
-  Object.entries(stats).forEach(([col,obj])=>{
-    const g={};
-    Object.entries(obj.global).forEach(([name,s])=>{if(s.total>=MIN_BLEND_GLOBAL_SAMPLES)g[name]=+(s.hit/s.total).toFixed(3);});
-    const pr={};
-    Object.entries(obj.perRegime).forEach(([regime,map])=>{
-      const cur={};
-      Object.entries(map).forEach(([name,s])=>{if(s.total>=MIN_BLEND_REGIME_SAMPLES)cur[name]=+(s.hit/s.total).toFixed(3);});
-      if(Object.keys(cur).length)pr[regime]=cur;
-    });
-    model[col]={global:g,perRegime:pr};
-  });
-  return model;
-}
-function buildReliabilityData(accLog,calibration){
-  const byCol={};
-  COLS.forEach(col=>{
-    const bins={HIGH:{right:0,total:0},MED:{right:0,total:0},LOW:{right:0,total:0}};
-    const curveBins=Array.from({length:RELIABILITY_CURVE_BINS},(_,i)=>({i,min:i/RELIABILITY_CURVE_BINS,max:(i+1)/RELIABILITY_CURVE_BINS,right:0,total:0}));
-    (accLog||[]).forEach(e=>{
-      const actual=e.actuals&&e.actuals[col];
-      const pred=e.preds&&e.preds[col];
-      if(!ok(actual)||!ok(pred))return;
-      const meta=e.predMeta&&e.predMeta[col];
-      const conf=meta&&meta.conf?meta.conf:null;
-      if(conf&&bins[conf]){bins[conf].total++;if(M.mod(Math.round(pred))===actual)bins[conf].right++;}
-      if(meta&&ok(meta.top1pct)){
-        const confScore=Math.max(0,Math.min(1,meta.top1pct/100));
-        const idx=Math.min(RELIABILITY_CURVE_BINS-1,Math.max(0,Math.floor(confScore*RELIABILITY_CURVE_BINS)));
-        curveBins[idx].total++;
-        if(M.mod(Math.round(pred))===actual)curveBins[idx].right++;
-      }
-    });
-    const map=["HIGH","MED","LOW"].map(level=>{
-      const d=bins[level];
-      const rate=d.total?Math.round(d.right/d.total*100):(calibration&&calibration[col]&&calibration[col][level]&&calibration[col][level].total?Math.round(calibration[col][level].right/calibration[col][level].total*100):0);
-      const total=d.total||(calibration&&calibration[col]&&calibration[col][level]?calibration[col][level].total:0)||0;
-      return{level,rate,total};
-    });
-    const curve=curveBins.filter(b=>b.total>0).map(b=>({x:Math.round((b.min+b.max)*50),y:Math.round(b.right/b.total*100),total:b.total}));
-    byCol[col]={map,curve};
-  });
-  return byCol;
-}
-function walkForwardExplorer(series,algoNames){
-  if(!series||series.length<20)return null;
-  const names=(algoNames&&algoNames.length?algoNames:CORE_ALGO_PRIORITY).filter(n=>A[n]).slice(0,16);
-  const splitCount=3;
-  const splitSize=Math.max(5,Math.floor(series.length/(splitCount+2)));
-  const splitRows=[];
-  const regimeStats={normal:{hit:0,total:0},volatile:{hit:0,total:0},flat:{hit:0,total:0},trending:{hit:0,total:0},bimodal:{hit:0,total:0}};
-  const modelStats={};
-  names.forEach(name=>{modelStats[name]={hit:0,total:0};});
-  for(let s=0;s<splitCount;s++){
-    const testStart=series.length-splitSize*(splitCount-s);
-    const testEnd=Math.min(series.length,testStart+splitSize);
-    if(testStart<WF_MIN_TRAIN_SIZE||testEnd-testStart<WF_MIN_TEST_SIZE)continue;
-    let splitHit=0,splitTotal=0;
-    for(let i=testStart;i<testEnd;i++){
-      const hist=series.slice(0,i),actual=series[i];
-      const regime=getRegime(hist);
-      let best={name:null,score:-1,pred:null};
-      names.forEach(name=>{
-        const fn=A[name];
-        if(!fn)return;
-        const wf=walkFwd(fn,hist);
-        const score=wf?wf.pct:5;
-        try{
-          const pred=fn(hist)[0];
-          if(score>best.score&&ok(pred))best={name,score,pred:M.mod(Math.round(pred))};
-        }catch(e){}
-      });
-      if(!best.name)continue;
-      const ex=best.pred===actual;
-      const nr=!ex&&M.near(best.pred,actual,2);
-      const hit=ex?1:nr?0.4:0;
-      splitHit+=hit;splitTotal++;
-      if(regimeStats[regime]){regimeStats[regime].hit+=hit;regimeStats[regime].total++;}
-      modelStats[best.name].hit+=hit;modelStats[best.name].total++;
-    }
-    splitRows.push({split:s+1,testStart,testEnd,score:splitTotal?Math.round(splitHit/splitTotal*100):0,total:splitTotal});
-  }
-  const regimes=Object.entries(regimeStats).filter(([,v])=>v.total>0).map(([k,v])=>({regime:k,score:Math.round(v.hit/v.total*100),total:v.total}));
-  const models=Object.entries(modelStats).filter(([,v])=>v.total>=2).map(([name,v])=>({name,score:Math.round(v.hit/v.total*100),total:v.total})).sort((a,b)=>b.score-a.score).slice(0,6);
-  return{splits:splitRows,regimes:regimes.sort((a,b)=>b.score-a.score),models};
-}
-
 // ── REGIME DETECTION ──────────────────────────
 function getRegime(series){
   if(series.length<6)return"normal";
@@ -2402,25 +2237,11 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const btSeries=globalSeries.length>series.length?globalSeries:series;
 
   const gw=W.global||{},rw=W.perRow||{},rnw=W.perRange||{};
-  const blendGlobal=W._blend&&W._blend.global?W._blend.global:{};
   const ns=W.neuralScores||{};
   const maxRow=data.length?data.reduce((m,r)=>r.row>m?r.row:m,0)||1:1;
   const predRow=maxRow+1;
   const curRange=Math.floor((series[series.length-1]||0)/25);
   const regime=getRegime(series);
-  const blendRegime=W._blend&&W._blend.perRegime&&W._blend.perRegime[regime]?W._blend.perRegime[regime]:{};
-  const shift=W._regimeShift||{score:0,level:"stable"};
-  const shiftScore=shift.score||0;
-  const staleMix=Math.max(0,Math.min(REGIME_SHIFT_STALE_THRESHOLD_MAX,shiftScore-REGIME_SHIFT_STALE_THRESHOLD_MIN));
-  const regimeBoost=1+Math.min(REGIME_BOOST_FACTOR_CAP,shiftScore*REGIME_BOOST_MULTIPLIER);
-  const blendMultFor=name=>{
-    const bg=blendGlobal[name];
-    const br=blendRegime[name];
-    if(bg==null&&br==null)return 1;
-    const g=bg!=null?bg:BLEND_FALLBACK_ACCURACY_RATE;
-    const r=br!=null?br:g;
-    return Math.max(BLEND_MULT_MIN,Math.min(BLEND_MULT_MAX,BLEND_MULT_BASE+g*BLEND_MULT_GLOBAL_FACTOR+r*BLEND_MULT_REGIME_FACTOR));
-  };
   const votes={},_contribSets={},details={};
   const cast=(name,val,w)=>{
     const v=M.mod(Math.round(val));
@@ -2474,20 +2295,15 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const rowW=rw[predRow]?rw[predRow][name]!=null?rw[predRow][name]:1:1;
       const ranW=rnw[curRange]?rnw[curRange][name]!=null?rnw[curRange][name]:1:1;
       const regW=rgw[name]!=null?rgw[name]:1;
-      const blendMult=blendMultFor(name);
       const nScore=ns[name]!=null?ns[name]:0;
       const lb=W._leaderboard&&W._leaderboard[name]!=null?W._leaderboard[name]:0;
       const lbMult=lb>2?1.35:lb>1?1.2:lb>0.4?1.08:lb<0.05?0.85:1.0;
       const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
       const btFactor=0.2+Math.sqrt(bt)*3.5;
-      const lw2=lw*(1-staleMix)+staleMix;
-      const rowW2=rowW*(1-staleMix*0.9)+staleMix*0.9;
-      const ranW2=ranW*(1-staleMix*0.9)+staleMix*0.9;
-      const regW2=regW*regimeBoost;
-      const w=btFactor*wfBoost*Math.max(0.05,lw2)*Math.max(0.1,rowW2)*Math.max(0.1,ranW2)*Math.max(0.1,regW2)*nMult*lbMult*blendMult;
+      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
-      details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),blend:+blendMult.toFixed(2),type:"builtin"};
+      details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin"};
     }catch(e){}
   });
   perf.builtinMs+=PERF_NOW()-builtinT0;
@@ -2498,16 +2314,14 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   Object.entries(cross).forEach(([name,preds])=>{
     if(!preds||!preds.length||!ok(preds[0]))return;
     const lw=gw[name]!=null?gw[name]:1;
-    const blendMult=blendMultFor(name);
     const tBoost=TEMPORAL_BOOST[name]||(name.startsWith("Tx_")?2.0:name.startsWith("Corr_")?1.6:name.startsWith("XL_")?2.2:1.8);
     const signalQ=name.startsWith("Tx_")?0.9:name.startsWith("Corr_")?0.85:name.startsWith("Gap_")?0.8:0.75;
     if(lightweight&&signalQ<0.8)return;
-    const lw2=lw*(1-staleMix)+staleMix;
-    const w=tBoost*Math.max(0.05,lw2)*signalQ*blendMult;
+    const w=tBoost*Math.max(0.05,lw)*signalQ;
     if(w<MIN_CROSS_SIGNAL_WEIGHT)return;
     preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
     const isTemp=!!(TEMPORAL_BOOST[name]||name.startsWith("Tx_")||name.startsWith("XL_"));
-    details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),blend:+blendMult.toFixed(2),type:isTemp?"temporal":"cross"};
+    details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:isTemp?"temporal":"cross"};
   });
   perf.crossMs+=PERF_NOW()-crossT0;
 
@@ -2518,12 +2332,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     Object.entries(dateSigs).forEach(([name,preds])=>{
       if(!preds||!preds.length||!ok(preds[0]))return;
       const lw=gw[name]!=null?gw[name]:1;
-      const blendMult=blendMultFor(name);
       const baseW=DATE_SIGNAL_WEIGHTS[name]||1.0;
-      const lw2=lw*(1-staleMix)+staleMix;
-      const w=baseW*Math.max(0.05,lw2)*blendMult;
+      const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
-      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),blend:+blendMult.toFixed(2),type:"date"};
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"date"};
     });
   }
   perf.dateMs+=PERF_NOW()-dateT0;
@@ -2536,12 +2348,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     Object.entries(pbSigs).forEach(([name,preds])=>{
       if(!preds||!preds[0]||!ok(preds[0]))return;
       const lw=gw[name]!=null?gw[name]:1;
-      const blendMult=blendMultFor(name);
       const baseW=DATE_SIGNAL_WEIGHTS[name]||2.0;
-      const lw2=lw*(1-staleMix)+staleMix;
-      const w=baseW*Math.max(0.05,lw2)*blendMult;
+      const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>{if(ok(p))cast(name,p,w/(i*0.5+1));});
-      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),blend:+blendMult.toFixed(2),type:"patternbank"};
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"patternbank"};
     });
   }
 
@@ -2569,7 +2379,6 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     const sameRowSigs=getSameRowHistory(col,data,predRow,allDatasets);
     Object.entries(sameRowSigs).forEach(([name,preds])=>{
       const lw=gw[name]!=null?gw[name]:1;
-      const blendMult=blendMultFor(name);
       // Expanded weights: anniversary signals are very high
       const baseW=name==="CrossDsAnnivTight"?5.5
         :name==="CrossDsAnniversary"?4.0
@@ -2581,10 +2390,9 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
         :name==="SameRowLast"?2.4
         :name==="SameRowMed"?2.2
         :1.8; // SameRowTrend
-      const lw2=lw*(1-staleMix)+staleMix;
-      const w=baseW*Math.max(0.05,lw2)*blendMult;
+      const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
-      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),blend:+blendMult.toFixed(2),
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),
         type:name.startsWith("CrossDs")?"patternbank":"rowhistory"};
     });
   }
@@ -2594,12 +2402,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     const gapSigs=getColGapSignals(col,data);
     Object.entries(gapSigs).forEach(([name,preds])=>{
       const lw=gw[name]!=null?gw[name]:1;
-      const blendMult=blendMultFor(name);
       const baseW=name.startsWith("Gap_")?2.0:1.6;
-      const lw2=lw*(1-staleMix)+staleMix;
-      const w=baseW*Math.max(0.05,lw2)*blendMult;
+      const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
-      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),blend:+blendMult.toFixed(2),type:"colgap"};
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"colgap"};
     });
   }
 
@@ -2636,20 +2442,15 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const rowW=rw[predRow]?rw[predRow][ca.name]!=null?rw[predRow][ca.name]:1:1;
       const ranW=rnw[curRange]?rnw[curRange][ca.name]!=null?rnw[curRange][ca.name]:1:1;
       const regW=rgw[ca.name]!=null?rgw[ca.name]:1;
-      const blendMult=blendMultFor(ca.name);
       const nScore=ns[ca.name]!=null?ns[ca.name]:0;
       const lb=W._leaderboard&&W._leaderboard[ca.name]!=null?W._leaderboard[ca.name]:0;
       const lbMult=lb>2?1.35:lb>1?1.2:lb>0.4?1.08:lb<0.05?0.85:1.0;
       const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
       const btFactor=0.2+Math.sqrt(bt)*3.5;
-      const lw2=lw*(1-staleMix)+staleMix;
-      const rowW2=rowW*(1-staleMix*0.9)+staleMix*0.9;
-      const ranW2=ranW*(1-staleMix*0.9)+staleMix*0.9;
-      const regW2=regW*regimeBoost;
-      const w=btFactor*wfBoost*Math.max(0.05,lw2)*Math.max(0.1,rowW2)*Math.max(0.1,ranW2)*Math.max(0.1,regW2)*nMult*lbMult*blendMult;
+      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1)));
-      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),blend:+blendMult.toFixed(2),type:"custom"};
+      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom"};
     }catch(e){}
   });
   perf.customMs+=PERF_NOW()-customT0;
@@ -2791,9 +2592,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const dateSigList=Object.entries(details).filter(([,d])=>(d.type==="date"||d.type==="patternbank")&&ok(d.pred)).map(([name,d])=>({name,pred:M.mod(Math.round(d.pred)),w:d.w,match:topVal!=null&&M.mod(Math.round(d.pred))===topVal}));
   const dateAgree=dateSigList.filter(s=>s.match).length;
   const dateTotal=dateSigList.length;
-  const explain=buildPredictionExplain(details,topVal);
   perf.totalMs=PERF_NOW()-tStart;
-  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,shift,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,explain,perf,algoBudget,lightweight};
+  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,perf,algoBudget,lightweight};
 }
 
 // ── NEURAL RUNNING SCORE (per-algo accuracy tracker) ──
@@ -3532,7 +3332,6 @@ function AppInner(){
   const[cErr,setCErr]=useState("");
   const[genMsg,setGenMsg]=useState("");
   const[wfRes,setWfRes]=useState(null);
-  const[wfExplorer,setWfExplorer]=useState(null);
   const[corrM,setCorrM]=useState(null);
   const[dsName,setDsName]=useState("");
   const[copyMsg,setCopyMsg]=useState("");
@@ -3814,7 +3613,6 @@ function AppInner(){
             newAccLog.push({at:new Date().toISOString(),targetRow:inc.row,date:inc.date||null,dateCtx:dtCtx,
               preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?.top5[0]?.value??null])),
               algoDetails:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?Object.fromEntries(Object.entries(prev.preds[c].details).sort((a,b)=>b[1].w-a[1].w).slice(0,20).map(([n,d])=>[n,d.pred])):{}])),
-              predMeta:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?{conf:prev.preds[c].conf,regime:prev.preds[c].regime,variance:prev.preds[c].variance,top1pct:prev.preds[c].top5&&prev.preds[c].top5[0]?prev.preds[c].top5[0].pct:0,shift:prev.preds[c].shift||null}:null])),
               actuals,exactCount,knownCount:newlyKnownCols.length,autoLearned:true});
             autoLearned++;
             syslog("🤖 Auto-learned row "+pad2(inc.row)+": "+exactCount+"/"+newlyKnownCols.length+" exact","learn");
@@ -3891,8 +3689,7 @@ function AppInner(){
     const _sharedMeta=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     const _slimAccLog=(S.accLog||[]).slice(-10);
     COLS.forEach(col=>{
-      const W={...S.weights[col],_metaModel:_sharedMeta,_accLog:_slimAccLog,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},
-        _blend:blendModel&&blendModel[col]?blendModel[col]:null,_regimeShift:regimeShiftByCol[col]||{score:0,level:"stable"}};
+      const W={...S.weights[col],_metaModel:_sharedMeta,_accLog:_slimAccLog,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{}};
       result[col]=predictCol(col,rows,W,S.customs,tDate,S.datasets,S.patternBank);
     });
     // Joint column hint
@@ -4069,7 +3866,7 @@ function AppInner(){
         ):{}
       ]));
       const entry={at:new Date().toISOString(),targetRow:prev.predRow,date:prev.predDate||null,dateCtx,
-        preds:predsTop1,algoDetails,predMeta:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?{conf:prev.preds[c].conf,regime:prev.preds[c].regime,variance:prev.preds[c].variance,top1pct:prev.preds[c].top5&&prev.preds[c].top5[0]?prev.preds[c].top5[0].pct:0,shift:prev.preds[c].shift||null}:null])),actuals,results,exactCount,knownCount};
+        preds:predsTop1,algoDetails,actuals,results,exactCount,knownCount};
       // Auto-prune weak generated algos
       const curRows=prev.datasets&&prev.datasets[prev.active]?prev.datasets[prev.active].rows:[];
       const {pruned,removed}=pruneWeakAlgos(prev.customs||[],nw,curRows);
@@ -4327,7 +4124,6 @@ function AppInner(){
         algoDetails:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]
           ?Object.fromEntries(Object.entries(rowPreds[c].details||{}).sort((a,b)=>b[1].w-a[1].w).slice(0,15).map(([n,d])=>[n,d.pred]))
           :{}])),
-        predMeta:Object.fromEntries(COLS.map(c=>[c,rowPreds[c]?{conf:rowPreds[c].conf,regime:rowPreds[c].regime,variance:rowPreds[c].variance,top1pct:rowPreds[c].top5&&rowPreds[c].top5[0]?rowPreds[c].top5[0].pct:0,shift:rowPreds[c].shift||null}:null])),
         actuals:Object.fromEntries(COLS.map(c=>[c,csvRow[c]??null])),
         results:rowResults,exactCount:rowExact,knownCount:rowKnown,autoTrained:true
       });
@@ -4550,7 +4346,7 @@ function AppInner(){
     upd(prev=>({...prev,datasets:{...(prev.datasets||{}),[id]:{name,rows:[]}},active:id}));
     setDsName("");
   }
-  function resetAll(){if(!confirm("Clear ALL data?"))return;const s=fresh();setS(s);saveS(s);setCheckRes(null);setActs({A:"",B:"",C:"",D:""});setWfRes(null);setWfExplorer(null);setCorrM(null);st("Reset","warn");}
+  function resetAll(){if(!confirm("Clear ALL data?"))return;const s=fresh();setS(s);saveS(s);setCheckRes(null);setActs({A:"",B:"",C:"",D:""});setWfRes(null);setCorrM(null);st("Reset","warn");}
 
   const accLog=S.accLog||[];
   // useMemo: avoid recomputing on every keystroke/input change
@@ -4566,9 +4362,6 @@ function AppInner(){
   const stClr=msg.c==="ok"?"#34d399":msg.c==="err"?"#f87171":msg.c==="warn"?"#fbbf24":msg.c==="busy"?"#a78bfa":"#4a4e6a";
   const dsKeys=Object.keys(S.datasets||{});
   const customs=S.customs||[];
-  const blendModel=useMemo(()=>buildBlendModel(accLog),[accLog]);
-  const reliabilityByCol=useMemo(()=>buildReliabilityData(accLog,S.calibration||{}),[accLog,S.calibration]);
-  const regimeShiftByCol=useMemo(()=>Object.fromEntries(COLS.map(col=>[col,detectRegimeShift(getSeries(col,rows))])),[rows]);
 
   const rowDifficulty=useMemo(()=>computeRowDifficulty(accLog),[accLog]);
   const predRowDiff=S.predRow&&rowDifficulty[S.predRow]!=null?rowDifficulty[S.predRow]:null;
@@ -4828,13 +4621,6 @@ function AppInner(){
                       }}>{pad2(s.pred)}<span style={{fontSize:6,opacity:.6,marginLeft:2}}>{s.name.split("_")[0]}</span></span>)}
                     </div>
                   </div>}
-                  {pred.explain&&pred.explain.byBucket&&pred.explain.byBucket.length>0&&<div style={{marginBottom:8,padding:"5px 8px",background:"rgba(56,189,248,.04)",border:"1px solid rgba(56,189,248,.12)",borderRadius:6}}>
-                    <div style={{fontSize:8,color:"#38bdf8",letterSpacing:2,marginBottom:4}}>🧭 FEATURE IMPORTANCE</div>
-                    <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:4}}>
-                      {pred.explain.byBucket.map(b=><span key={b.bucket} style={{fontSize:8,padding:"1px 5px",borderRadius:4,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.2)",color:"#7dd3fc"}}>{b.bucket}:{b.w}</span>)}
-                    </div>
-                    <div style={{fontSize:8,color:"#2d3158",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{pred.explain.topSignals.slice(0,3).map(s=>s.name).join(" · ")}</div>
-                  </div>}
                   {pred.top5.map((p,i)=><div key={i} style={{marginBottom:i<4?6:0}}>
                     <div style={{display:"flex",alignItems:"center",gap:5}}>
                       <span style={{fontWeight:700,fontSize:i===0?20:12,color:i===0?clr:i===1?clr+"88":"#2d3158",minWidth:i===0?36:26,fontFamily:"monospace"}}>{i===0?"▶":" "+(i+1)} {pad2(p.value)}</span>
@@ -4844,20 +4630,19 @@ function AppInner(){
                     {i===0&&<div style={{fontSize:9,color:"#2d3158",marginLeft:36,marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:155}}>{p.algos.slice(0,5).join(" · ")}</div>}
                   </div>)}
                   <button onClick={()=>setExpCol(expCol===col?null:col)} style={{marginTop:10,width:"100%",background:"transparent",border:"1px solid #1a1e35",color:"#2d3158",borderRadius:6,padding:"4px 0",fontSize:9,cursor:"pointer",fontFamily:"inherit"}}>{expCol===col?"▲ Hide":"▼ All algo votes"}</button>
-                  {expCol===col&&<div aria-label={"Algorithm vote details for column "+col} style={{marginTop:8,maxHeight:260,overflowY:"auto"}}>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto auto",gap:2,fontSize:9,color:"#2d3158",borderBottom:"1px solid #1a1e35",paddingBottom:3,marginBottom:3}}>
-                      <span>Algo</span><span>Pred</span><span>BT%</span><span>GlobalW</span><span>RowW</span><span>Blend</span>
+                  {expCol===col&&<div style={{marginTop:8,maxHeight:260,overflowY:"auto"}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:2,fontSize:9,color:"#2d3158",borderBottom:"1px solid #1a1e35",paddingBottom:3,marginBottom:3}}>
+                      <span>Algo</span><span>Pred</span><span>BT%</span><span>Gw</span><span>Rw</span>
                     </div>
                     {Object.entries(pred.details).sort((a,b)=>b[1].w-a[1].w).map(([name,info])=>{
                       const inTop=pred.top5.some(t=>t.value===info.pred&&t.algos.includes(name));
                       const tc=info.type==="date"?"#a78bfa":info.type==="temporal"?"#34d399":info.type==="rowhistory"?"#f59e0b":info.type==="colgap"?"#38bdf8":info.type==="custom"?"#f87171":info.type==="cross"?"#fbbf24":"#4a4e6a";
-                      return <div key={name} style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto auto",gap:3,padding:"2px 0",borderBottom:"1px solid rgba(255,255,255,.015)",background:inTop?clr+"08":"transparent",fontSize:9}}>
+                      return <div key={name} style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:3,padding:"2px 0",borderBottom:"1px solid rgba(255,255,255,.015)",background:inTop?clr+"08":"transparent",fontSize:9}}>
                         <span style={{color:tc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
                         <span style={{color:inTop?clr:"#4a4e6a",fontWeight:inTop?700:400,textAlign:"center"}}>{pad2(info.pred)}</span>
                         <span style={{color:info.bt===null?"#fbbf24":info.bt>20?"#34d399":info.bt>7?"#fbbf24":"#2d3158",textAlign:"right"}}>{info.bt===null?"⊕":info.bt+"%"}</span>
                         <span style={{color:info.lw>1.5?"#34d399":info.lw<0.5?"#f87171":"#4a4e6a",textAlign:"right"}}>{info.lw}×</span>
                         <span style={{color:info.rw>1.2?"#34d399":info.rw<0.8?"#f87171":"#4a4e6a",textAlign:"right"}}>{info.rw}×</span>
-                        <span style={{color:(info.blend||1)>1.1?"#34d399":(info.blend||1)<0.9?"#f87171":"#4a4e6a",textAlign:"right"}}>{(info.blend||1).toFixed(2)}×</span>
                       </div>;
                     })}
                   </div>}
@@ -4961,7 +4746,7 @@ function AppInner(){
               <span style={{fontSize:9,color:"#4a4e6a"}}>How accurate are HIGH/MED/LOW labels?</span>
             </div>
             <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
-              {COLS.map(col=><CalibCol key={col} col={col} cal={S.calibration[col]||{}} rel={reliabilityByCol[col]||{map:[],curve:[]}}/>)}
+              {COLS.map(col=><CalibCol key={col} col={col} cal={S.calibration[col]||{}}/>)}
             </div>
           </Card>}
 
@@ -5004,38 +4789,8 @@ function AppInner(){
               {COLS.map(col=><HotColdCol key={col} col={col} rows={rows}/>)}
             </div>
           </Card>}
-          <Card style={{marginBottom:14}}>
-            <SL>Anomaly / Regime Shift Detection</SL>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:10}}>
-              {COLS.map(col=>{
-                const rs=regimeShiftByCol[col]||{score:0,level:"stable"};
-                const clr=rs.level==="high"?"#f87171":rs.level==="medium"?"#fbbf24":"#34d399";
-                return <div key={col} style={{background:"rgba(255,255,255,.01)",border:"1px solid #1a1e35",borderRadius:8,padding:"8px 10px"}}>
-                  <div style={{fontSize:9,color:CLR[col],letterSpacing:2,marginBottom:4}}>Col {col}</div>
-                  <div style={{fontSize:10,color:clr,fontWeight:700,marginBottom:4}}>{rs.level.toUpperCase()} shift · {Math.round(rs.score*100)}%</div>
-                  <div style={{fontSize:8,color:"#4a4e6a"}}>σ recent/base: {rs.recentStd}/{rs.baseStd} · drift: {rs.recentDrift}</div>
-                  <div style={{fontSize:8,color:"#2d3158",marginTop:4}}>Auto strategy: {rs.score>0.45?"shifting weight to regime-aware/blend signals":"stable weighting"}</div>
-                </div>;
-              })}
-            </div>
-          </Card>
-          <Card style={{marginBottom:14}}>
-            <SL>Ensemble Optimizer (Per Column / Regime)</SL>
-            {!blendModel?<div style={{fontSize:11,color:"#2d3158"}}>Need more learned history (8+ sessions) to fit blend model.</div>:<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10}}>
-              {COLS.map(col=>{
-                const bm=blendModel[col]||{global:{},perRegime:{}};
-                const topGlobal=Object.entries(bm.global||{}).sort((a,b)=>b[1]-a[1]).slice(0,4);
-                const topRegimes=Object.entries(bm.perRegime||{}).slice(0,3);
-                return <div key={col} style={{background:"rgba(255,255,255,.01)",border:"1px solid #1a1e35",borderRadius:8,padding:"8px 10px"}}>
-                  <div style={{fontSize:9,color:CLR[col],letterSpacing:2,marginBottom:5}}>Col {col}</div>
-                  <div style={{fontSize:8,color:"#34d399",marginBottom:4}}>Global: {topGlobal.map(([n,v])=>n+":"+Math.round(v*100)+"%").join(" · ")||"n/a"}</div>
-                  <div style={{fontSize:8,color:"#a78bfa"}}>{topRegimes.map(([r,map])=>r+"→"+Object.entries(map).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([n,v])=>n+":"+Math.round(v*100)+"%").join(",")).join(" · ")||"no regime data yet"}</div>
-                </div>;
-              })}
-            </div>}
-          </Card>
           <Card>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><SL style={{margin:0}}>Walk-Forward Test</SL><GB onClick={()=>{if(rows.length<8){st("Need at least 8 rows","warn");return;}const wf={},expl={};COLS.forEach(col=>{const series=getSeries(col,rows);const cr={};Object.entries(A).forEach(([name,fn])=>{const r=walkFwd(fn,series);if(r)cr[name]=r;});wf[col]=Object.entries(cr).sort((a,b)=>b[1].pct-a[1].pct).slice(0,8);expl[col]=walkForwardExplorer(series,CORE_ALGO_PRIORITY);});setWfRes(wf);setWfExplorer(expl);st("Walk-forward explorer done ✓");}}>Run Test</GB></div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><SL style={{margin:0}}>Walk-Forward Test</SL><GB onClick={()=>{if(rows.length<8){st("Need at least 8 rows","warn");return;}const wf={};COLS.forEach(col=>{const series=getSeries(col,rows);const cr={};Object.entries(A).forEach(([name,fn])=>{const r=walkFwd(fn,series);if(r)cr[name]=r;});wf[col]=Object.entries(cr).sort((a,b)=>b[1].pct-a[1].pct).slice(0,8);});setWfRes(wf);st("Walk-forward done ✓");}}>Run Test</GB></div>
             {wfRes?<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10}}>
               {COLS.map(col=><div key={col}><div style={{fontSize:9,color:CLR[col],letterSpacing:2,marginBottom:6}}>Best algos for {col}</div>
                 {(wfRes[col]||[]).map(([name,r])=><div key={name} style={{display:"flex",gap:6,alignItems:"center",marginBottom:3,fontSize:9}}>
@@ -5045,18 +4800,6 @@ function AppInner(){
                 </div>)}
               </div>)}
             </div>:<div style={{fontSize:11,color:"#2d3158"}}>Click Run Test. Needs at least 8 rows.</div>}
-            {wfExplorer&&<div style={{marginTop:12,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10}}>
-              {COLS.map(col=>{
-                const ex=wfExplorer[col];
-                if(!ex)return <div key={col} style={{fontSize:10,color:"#2d3158"}}>{col}: not enough rows</div>;
-                return <div key={col} style={{background:"rgba(255,255,255,.01)",border:"1px solid #1a1e35",borderRadius:8,padding:"8px 10px"}}>
-                  <div style={{fontSize:9,color:CLR[col],letterSpacing:2,marginBottom:6}}>{col} split explorer</div>
-                  <div style={{fontSize:8,color:"#4a4e6a",marginBottom:5}}>Splits: {ex.splits.map(s=>"S"+s.split+":"+s.score+"%").join(" · ")||"n/a"}</div>
-                  <div style={{fontSize:8,color:"#fbbf24",marginBottom:4}}>Per-regime: {(ex.regimes||[]).map(r=>r.regime+":"+r.score+"%").join(" · ")||"n/a"}</div>
-                  <div style={{fontSize:8,color:"#34d399"}}>Top blends: {(ex.models||[]).map(m=>m.name+":"+m.score+"%").join(" · ")||"n/a"}</div>
-                </div>;
-              })}
-            </div>}
           </Card>
         </div>}
 
@@ -5296,7 +5039,6 @@ function HotColdCol(p){
 }
 function CalibCol(p){
   const cal=p.cal;
-  const rel=p.rel||{map:[],curve:[]};
   const levels=["HIGH","MED","LOW"];
   return <div>
     <div style={{fontSize:9,color:CLR[p.col],letterSpacing:2,marginBottom:6}}>{p.col}</div>
@@ -5313,14 +5055,6 @@ function CalibCol(p){
         <span style={{fontSize:9,color:clr,minWidth:32,textAlign:"right"}}>{rate}% ({d.total})</span>
       </div>;
     })}
-    {rel.map&&rel.map.some(x=>x.total>0)&&<div style={{marginTop:5,fontSize:8,color:"#4a4e6a"}}>
-      map: {rel.map.filter(x=>x.total>0).map(x=>x.level+"→"+x.rate+"%").join(" · ")}
-    </div>}
-    {rel.curve&&rel.curve.length>0&&<div style={{marginTop:4,display:"flex",gap:3,alignItems:"flex-end",height:26}}>
-      {rel.curve.map((pt,i)=><div key={i} title={"conf "+pt.x+" / hit "+pt.y+" ("+pt.total+")"} style={{flex:1,minWidth:10,background:"rgba(255,255,255,.03)",border:"1px solid #1a1e35",borderRadius:3,position:"relative",overflow:"hidden"}}>
-        <div style={{position:"absolute",left:0,right:0,bottom:0,height:Math.max(2,Math.round(pt.y*0.22)),background:pt.y>=pt.x?"#34d399":"#fbbf24"}}/>
-      </div>)}
-    </div>}
   </div>;
 }
 function NeuralScoreCol(p){
