@@ -558,6 +558,74 @@ const A={
     return[M.mod(best.a*nextRow+best.b*nextRow*nextRow+best.c)];
   },
 
+  // AdaptivePRNG: blends multiple pseudo-random detectors and votes by fit quality
+  AdaptivePRNG:   s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const hist=s.slice(-Math.min(50,s.length));
+    const n=hist.length,last=hist[n-1];
+    const models=[];
+
+    // 1) LCG fit: x[n+1]=(a*x[n]+c) mod 100
+    let bestLCG={sc:-1,p:last};
+    for(const a of[1,3,5,7,9,11,13,17,19,23,29,31,37,41,47,53,61,71,79,83,89,97])
+      for(const c of[0,1,3,5,7,11,13,17,19,23,29,31,37,41,47,53,59,67,71,73,79,83,89,97]){
+        let sc=0;
+        for(let i=1;i<n;i++){
+          const p=M.mod(a*hist[i-1]+c);
+          if(p===hist[i])sc+=1;
+          else if(M.near(p,hist[i],1))sc+=0.35;
+        }
+        if(sc>bestLCG.sc)bestLCG={sc,p:M.mod(a*last+c)};
+      }
+    models.push(bestLCG);
+
+    // 2) Xorshift-7 fit
+    let bestXS={sc:-1,p:last};
+    for(const a of[2,3,4,5])for(const b of[3,4,5,6])for(const c of[1,2,3,4]){
+      let sc=0;
+      for(let i=1;i<n;i++){
+        let x=hist[i-1]&0x7F;
+        x^=(x<<a)&0x7F;x^=(x>>b)&0x7F;x^=(x<<c)&0x7F;
+        const p=M.mod(x);
+        if(p===hist[i])sc+=1;
+        else if(M.near(p,hist[i],2))sc+=0.3;
+      }
+      if(sc>bestXS.sc){
+        let x=last&0x7F;
+        x^=(x<<a)&0x7F;x^=(x>>b)&0x7F;x^=(x<<c)&0x7F;
+        bestXS={sc,p:M.mod(x)};
+      }
+    }
+    models.push(bestXS);
+
+    // 3) Lagged feedback (xor/add/sub)
+    let bestLag={sc:-1,p:last};
+    for(let j=2;j<=Math.min(10,n-1);j++)for(let k=1;k<j;k++)for(const op of["xor","add","sub"]){
+      let sc=0;
+      for(let i=j;i<n;i++){
+        const a=hist[i-k],b=hist[i-j];
+        const p=op==="xor"?M.mod(a^b):op==="add"?M.mod(a+b):M.mod(a-b);
+        if(p===hist[i])sc+=1;
+        else if(M.near(p,hist[i],2))sc+=0.3;
+      }
+      if(sc>bestLag.sc){
+        const a=hist[n-k],b=hist[n-j];
+        bestLag={sc,p:op==="xor"?M.mod(a^b):op==="add"?M.mod(a+b):M.mod(a-b)};
+      }
+    }
+    models.push(bestLag);
+
+    const votes={};
+    models.forEach(m=>{
+      if(m&&ok(m.p)){
+        const w=Math.max(0.05,m.sc/Math.max(1,n-1));
+        votes[m.p]=(votes[m.p]||0)+w;
+      }
+    });
+    const ranked=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v,10));
+    return ranked.length?ranked:[last];
+  },
+
   // ── PATTERN MEMORY BANK ─────────────────────────
   PatternMemBank: s=>{
     if(s.length<6)return[s[s.length-1]];
@@ -1419,7 +1487,6 @@ const A={
   },
 };
 ALGO_COUNT=Object.keys(A).length; // Fix: was never populated — now accurate
-console.log("Algo count:",ALGO_COUNT);
 
 // ── ALGO FAMILY MAP ───────────────────────────────
 // Diversity bonus: when multiple INDEPENDENT families agree on a value, boost it.
@@ -1441,7 +1508,7 @@ const _FAMS={
     // REMOVED: "RevLag2" (too narrow), "MirrorAt50" (=Complement), "StepDown/Up 1/2" (=BestStep)
     "ComplementPairs",  // FIX: was "SymmetricMirror" — real key is ComplementPairs
     "BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget"],
-  prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong","CombinedLCG","ALFG"],
+  prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong","CombinedLCG","AdaptivePRNG","ALFG"],
 };
 Object.entries(_FAMS).forEach(([fam,names])=>names.forEach(n=>{_FAM[n]=fam;}));
 function _getFamily(name){
@@ -4218,7 +4285,7 @@ function AppInner(){
 
   // ── Expensive PRNG-search algos: skip btCache scoring when series too short ──
   // These have 1,000–8,000 param combos — on mobile they block for seconds with <8 data pts.
-  const _EXPENSIVE_ALGOS=new Set(["TruncLCG","PCGLike","ICG","CombinedLCG","RowSeedLCG",
+  const _EXPENSIVE_ALGOS=new Set(["TruncLCG","PCGLike","ICG","CombinedLCG","RowSeedLCG","AdaptivePRNG",
     "Recurrence2","AR3","LCGFit","CubicCong","ALFG","SWB","WichmannHill","BBS","MersenneMod"]);
 
   // ── Single tick: processes ONE row then yields — browser stays responsive ──
@@ -5085,7 +5152,7 @@ function AppInner(){
               <b style={{color:"#c8d0e8"}}>Tournament:</b> bottom 50% custom algos replaced by mutants of top 50%<br/>
               <b style={{color:"#c8d0e8"}}>Phase Space NN:</b> finds nearest historical triplet, returns what followed<br/>
               <b style={{color:"#c8d0e8"}}>Storage:</b> everything auto-saved persistently, never lost<br/>
-              <b style={{color:"#c8d0e8"}}>Pseudo-RNG Algos:</b> Xorshift, LFSR7, Rule30, WichmannHill, BBS, MersenneMod, LagFib, ParkMiller, QuadCong, MiddleSquare — detect hidden cyclic structure<br/>
+              <b style={{color:"#c8d0e8"}}>Pseudo-RNG Algos:</b> Xorshift, LFSR7, Rule30, WichmannHill, BBS, MersenneMod, LagFib, ParkMiller, QuadCong, MiddleSquare, AdaptivePRNG — detect hidden cyclic structure<br/>
               <b style={{color:"#c8d0e8"}}>PatternMemBank:</b> k-NN on (last 3 values) context window — finds nearest historical match<br/>
               <b style={{color:"#c8d0e8"}}>ModSearch:</b> brute-forces best (v mod k) + offset pattern<br/>
               <b style={{color:"#c8d0e8"}}>XorChain:</b> multi-step XOR across lag positions<br/>
@@ -5105,7 +5172,7 @@ function AppInner(){
               <b style={{color:"#c8d0e8"}}>Auto-Prune:</b> after every Learn session the single worst-scoring generated algo is removed (scored by neural EMA + BT)<br/>
               <b style={{color:"#c8d0e8"}}>User algos:</b> never auto-pruned — only generated algos are pruned<br/>
               <b style={{color:"#c8d0e8"}}>Activity Log:</b> last 5 auto-gen/prune events shown in Algos tab<br/>
-              <b style={{color:"#c8d0e8"}}>PRNG Algos:</b> all 10 pseudo-random algos now brute-force fit best parameters to YOUR data — Xorshift shifts, LCG multipliers, LFSR taps, Rule variants, semi-prime moduli all tuned per series
+              <b style={{color:"#c8d0e8"}}>PRNG Algos:</b> 11 pseudo-random algos fit or blend best parameters to YOUR data — including AdaptivePRNG model voting across LCG/Xorshift/Lag feedback
             </div>
           </Card>
         </div>}
