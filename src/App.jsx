@@ -1947,7 +1947,7 @@ function getTemporalChain(targetCol,data){
   if(prev&&ok(prev[targetCol])&&ok(prev[aR])&&ok(last[aR]))res.LagDelta=[M.mod(last[aR]+(prev[targetCol]-prev[aR]))];
   if(COLS.every(c=>ok(last[c]))){
     res.RowSum=[M.mod(COLS.reduce((sum,c)=>sum+last[c],0))];
-    res.RowHash=[M.mod(COLS.reduce((hash,c,i)=>hash+last[c]*HASH_WEIGHTS[i%HASH_WEIGHTS.length],0)%100)];
+    res.RowHash=[M.mod(COLS.reduce((hash,c,i)=>hash+last[c]*HASH_WEIGHTS[i],0)%100)];
   }
   for(let i=0;i<COLS.length;i++){
     for(let j=i+1;j<COLS.length;j++){
