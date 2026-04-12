@@ -3040,15 +3040,20 @@ function detectRedundant(customs,rows){
 }
 
 function pruneWeakAlgos(customs,weights,rows,btCache){
+  const MIN_PROTECT_AVG_BT=0.24;
+  const MIN_PROTECT_AVG_WF=0.32;
+  const MIN_PROTECT_AVG_NS=0.20;
+  const MIN_PROTECT_SCORE_MARGIN=0.22;
+  const ADAPTIVE_THRESHOLD_MARGIN=0.18;
   if(!customs||customs.length===0)return{pruned:customs,removed:[]};
   const generated=customs.filter(ca=>ca.generated);
   const userDefined=customs.filter(ca=>!ca.generated);
   if(generated.length<2)return{pruned:customs,removed:[]};
   if(rows.length<4)return{pruned:customs,removed:[]};
   const redundant=detectRedundant(generated,rows);
-  const scored=generated.map((ca,idx)=>{
+  const scored=generated.map(ca=>{
     const stats=scoreAlgo(ca,weights,rows,btCache);
-    return{ca,score:stats.score,stats,origIdx:idx};
+    return{ca,score:stats.score,stats};
   });
   scored.sort((a,b)=>a.score-b.score); // ascending: worst first
 
@@ -3059,9 +3064,8 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   const overCap=Math.max(0,generated.length-MAX_GENERATED_ALGOS);
   // Dynamic threshold: scales with data — more rows = higher bar
   const baseThreshold=rows.length>=25?0.15:rows.length>=15?0.08:rows.length>=10?0.00:-0.50;
-  const scoreVals=scored.map(s=>s.score).sort((a,b)=>a-b);
-  const q25=scoreVals.length?scoreVals[Math.max(0,Math.floor((scoreVals.length-1)*0.25))]:baseThreshold;
-  const threshold=Math.min(baseThreshold,q25-0.18);
+  const q25=scored.length?scored[Math.max(0,Math.floor((scored.length-1)*0.25))].score:baseThreshold;
+  const threshold=Math.min(baseThreshold,q25-ADAPTIVE_THRESHOLD_MARGIN);
   const benchThreshold=threshold+0.12;
 
   const removed=[];
@@ -3071,7 +3075,11 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
 
   scored.forEach(({ca,score,stats})=>{
     const hasEvidence=stats.btCnt>=2||stats.nsCount>=2;
-    const strongSignals=stats.avgBt>=0.24||stats.avgWf>=0.32||stats.avgNs>=0.2||score>=benchThreshold+0.22;
+    const strongSignals=
+      stats.avgBt>=MIN_PROTECT_AVG_BT||
+      stats.avgWf>=MIN_PROTECT_AVG_WF||
+      stats.avgNs>=MIN_PROTECT_AVG_NS||
+      score>=benchThreshold+MIN_PROTECT_SCORE_MARGIN;
     const isProtected=eliteProtected.has(ca.name)&&hasEvidence&&strongSignals;
 
     // Always remove redundant
