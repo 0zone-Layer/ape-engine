@@ -48,7 +48,7 @@ function getGlobalSeries(col,datasets){
   return result;
 }
 const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#60a5fa",F:"#f472b6",G:"#22d3ee"};
-const HASH_WEIGHTS=[3,5,7,11,13,17,19,23,29,31,37,41,43,47];
+const HASH_WEIGHTS=[3,5,7,11,13,17,19];
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
 const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}}]));
@@ -3503,7 +3503,7 @@ function AppInner(){
     const lines=bulk.trim().split("\n").filter(l=>l.trim());let added=0,errs=0;
     const next=[...rows];
     lines.forEach(line=>{
-      const pts=line.split(",").map(p=>p.trim());if(pts.length<COLS.length+1){errs++;return;}
+      const pts=line.split(",").map(p=>p.trim());if(pts.length<COLS.length+1||pts.length>COLS.length+2){errs++;return;}
       const row=parseInt(pts[0]);if(isNaN(row)||row<1||row>9999){errs++;return;}
       const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{if(!p||p.toUpperCase()==="XX")return null;const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;});
       if(colVals.some(v=>v===undefined)){errs++;return;}
@@ -3566,7 +3566,7 @@ function AppInner(){
       const incomingRows=[];
       lines.forEach(line=>{
         const pts=line.split(",").map(p=>p.trim());
-        if(pts.length<COLS.length+1){errs++;return;}
+        if(pts.length<COLS.length+1||pts.length>COLS.length+2){errs++;return;}
         const row=parseInt(pts[0]);
         if(isNaN(row)||row<1||row>9999){errs++;return;}
         const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
@@ -3945,7 +3945,7 @@ function AppInner(){
       // Skip header
       if(idx===0&&/[a-zA-Z]{2,}/.test(line.split(",")[0]))return;
       const pts=line.split(",").map(p=>p.trim());
-      if(pts.length<COLS.length+1){skipped++;return;}
+      if(pts.length<COLS.length+1||pts.length>COLS.length+2){skipped++;return;}
       const rowNum=parseInt(pts[0]);
       if(isNaN(rowNum)||rowNum<1||rowNum>99999){skipped++;return;}
       const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
