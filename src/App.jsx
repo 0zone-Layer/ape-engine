@@ -21,6 +21,11 @@ const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
 const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity"];
+const MIN_CROSS_SIGNAL_WEIGHT=0.35;
+const HEAVY_PRED_THRESHOLD_MS=18;
+const MAX_HEAVY_STREAK=8;
+const LIGHTWEIGHT_TRIGGER_STREAK=2;
+const LIGHTWEIGHT_HISTORY_THRESHOLD=350;
 
 // ── GLOBAL SERIES: merges ALL datasets sorted by date then row ──────────────
 // This is the key to cross-period learning: algos are backtested on ALL historical
@@ -1284,6 +1289,9 @@ const A={
     return topVals.length?topVals:[M.mod(Math.round(M.mean(decVals)))];
   },
 };
+const ALGO_NAMES=Object.keys(A);
+const ALGO_COUNT_CONST=ALGO_NAMES.length;
+ALGO_COUNT=ALGO_COUNT_CONST;
 console.log("Algo count:",ALGO_COUNT);
 
 // ── ALGO FAMILY MAP ───────────────────────────────
@@ -1922,7 +1930,7 @@ function getTemporalChain(targetCol,data){
   });
 
   // best correlated column (keep legacy)
-  let bestCorr=0,bestCol=null;
+  let bestCorr=null,bestCol=null;
   COLS.filter(c=>c!==targetCol).forEach(c=>{
     const sx=getSeries(targetCol,data),sy=getSeries(c,data),n=Math.min(sx.length,sy.length);
     if(n<4)return;
@@ -1930,9 +1938,9 @@ function getTemporalChain(targetCol,data){
     let num=0,dx=0,dy=0;
     for(let i=0;i<n;i++){num+=(sx[sx.length-n+i]-ax)*(sy[sy.length-n+i]-ay);dx+=(sx[sx.length-n+i]-ax)**2;dy+=(sy[sy.length-n+i]-ay)**2;}
     const corr=Math.sqrt(dx*dy)?num/Math.sqrt(dx*dy):0;
-    if(Math.abs(corr)>Math.abs(bestCorr)){bestCorr=corr;bestCol=c;}
+    if(bestCorr==null||Math.abs(corr)>Math.abs(bestCorr)){bestCorr=corr;bestCol=c;}
   });
-  if(bestCol&&Math.abs(bestCorr)>=0.18&&ok(last[bestCol]))res["Corr_"+bestCol]=[M.mod(last[bestCol])];
+  if(bestCol&&bestCorr!=null&&Math.abs(bestCorr)>=0.18&&ok(last[bestCol]))res["Corr_"+bestCol]=[M.mod(last[bestCol])];
 
   // 8. ── CROSS-COL COMPLEMENT PAIR DETECTOR ──────────────────────────────
   // Empirical: A+B≈100 in 17.2% of all rows (strongest pair), CD≈100 in 14.8%.
@@ -2174,7 +2182,8 @@ function rankAlgoForRegime(name,regime){
 }
 function selectAlgoNames(names,regime,budget){
   const ranked=[...names].sort((a,b)=>rankAlgoForRegime(b,regime)-rankAlgoForRegime(a,regime));
-  return ranked.slice(0,Math.max(8,Math.min(budget||ranked.length,ranked.length)));
+  const cap=Math.min(Math.max(8,budget||ranked.length),ranked.length);
+  return ranked.slice(0,cap);
 }
 
 // ── TEMPORAL_BOOST: module-level constant (not recreated per call) ──
@@ -2224,7 +2233,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const algoCache={};
   const perf={btMs:0,builtinMs:0,crossMs:0,dateMs:0,customMs:0,totalMs:0};
   const lightweight=!!W._lightweight;
-  const allowedAlgos=Object.keys(A).filter(n=>algoAllowed(n,regime));
+  const allowedAlgos=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
   const autoBudget=lightweight?12:series.length>240?16:series.length>140?22:series.length>80?30:44;
   const algoBudget=Math.max(8,Math.min(W._algoBudget||autoBudget,allowedAlgos.length));
   const evalNames=selectAlgoNames(allowedAlgos,regime,algoBudget);
@@ -2289,7 +2298,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     const signalQ=name.startsWith("Tx_")?0.9:name.startsWith("Corr_")?0.85:name.startsWith("Gap_")?0.8:0.75;
     if(lightweight&&signalQ<0.8)return;
     const w=tBoost*Math.max(0.05,lw)*signalQ;
-    if(w<0.35)return;
+    if(w<MIN_CROSS_SIGNAL_WEIGHT)return;
     preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
     const isTemp=!!(TEMPORAL_BOOST[name]||name.startsWith("Tx_")||name.startsWith("XL_"));
     details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:isTemp?"temporal":"cross"};
@@ -2301,7 +2310,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   if(targetDate){
     const dateSigs=getDateSignals(col,data,targetDate);
     Object.entries(dateSigs).forEach(([name,preds])=>{
-      if(!preds||!preds.length)return;
+      if(!preds||!preds.length||!ok(preds[0]))return;
       const lw=gw[name]!=null?gw[name]:1;
       const baseW=DATE_SIGNAL_WEIGHTS[name]||1.0;
       const w=baseW*Math.max(0.05,lw);
@@ -2600,7 +2609,12 @@ function updateAlgoLeaderboard(lb,col,pred){
   const next={...lb,[col]:{...(lb[col]||{})}};
   if(!pred||!pred.details)return next;
   const winners=Object.entries(pred.details).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,8);
-  Object.keys(next[col]).forEach(name=>{next[col][name]=+(next[col][name]*0.995).toFixed(4);if(next[col][name]<0.0005)delete next[col][name];});
+  const decay=0.995;
+  const minKeep=0.0005;
+  Object.keys(next[col]).forEach(name=>{
+    next[col][name]=+(next[col][name]*decay).toFixed(4);
+    if(next[col][name]<minKeep)delete next[col][name];
+  });
   winners.forEach(([name,info],i)=>{
     const gain=(info?.w||0)/(i+1);
     next[col][name]=+(((next[col][name]||0)*0.9)+gain*0.1).toFixed(4);
@@ -3966,7 +3980,7 @@ function AppInner(){
         cachedMeta:null,    // buildMetaModel result — rebuilt every 25 rows
         metaModelAge:0,
         logLines:[],        // milestone lines accumulated during run
-        perf:{rows:0,predMs:0,btMs:0,updMs:0,insertMs:0,tickMs:0,startedAt:Date.now()},
+        perf:{rows:0,predMs:0,btMs:0,updMs:0,insertMs:0,tickMs:0,startedAt:PERF_NOW()},
         lightweight:false,
         heavyStreak:0,
         leaderboard:{A:{},B:{},C:{},D:{}}
@@ -4043,9 +4057,9 @@ function AppInner(){
       });
       const predMs=PERF_NOW()-predT0;
       tr.perf.predMs+=predMs;
-      if(predMs>18)tr.heavyStreak=Math.min(8,(tr.heavyStreak||0)+1);
+      if(predMs>HEAVY_PRED_THRESHOLD_MS)tr.heavyStreak=Math.min(MAX_HEAVY_STREAK,(tr.heavyStreak||0)+1);
       else tr.heavyStreak=Math.max(0,(tr.heavyStreak||0)-1);
-      tr.lightweight=tr.heavyStreak>=2||tr.historyRows.length>350;
+      tr.lightweight=tr.heavyStreak>=LIGHTWEIGHT_TRIGGER_STREAK||tr.historyRows.length>LIGHTWEIGHT_HISTORY_THRESHOLD;
 
       // ── Compare & weight update ───────────────────────────────────────
       const dateCtxPd=csvRow.date?parseDate(csvRow.date):null;
@@ -4171,8 +4185,11 @@ function AppInner(){
       const btSer=(globalSer.length>localSer.length?globalSer:localSer).slice(-120);
       if(btSer.length<4)return;
       const regime=getRegime(localSer);
-      const allowedNames=Object.keys(A).filter(n=>algoAllowed(n,regime));
-      const budget=tr.lightweight?10:hlen>280?16:hlen>160?22:32;
+      const allowedNames=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
+      let budget=32;
+      if(tr.lightweight)budget=10;
+      else if(hlen>280)budget=16;
+      else if(hlen>160)budget=22;
       const evalNames=selectAlgoNames(allowedNames,regime,Math.min(budget,allowedNames.length));
       evalNames.forEach(name=>{
         try{
@@ -4216,8 +4233,8 @@ function AppInner(){
 
     const exactPct=tr.totalKnown>0?Math.round(tr.exactTotal/tr.totalKnown*100):0;
     const nearPct=tr.totalKnown>0?Math.round((tr.exactTotal+tr.nearTotal)/tr.totalKnown*100):0;
-    const runtimeSec=Math.max(0.1,(Date.now()-tr.perf.startedAt)/1000);
-    const rowsPerSec=+(tr.total/runtimeSec).toFixed(2);
+    const runtimeSec=Math.max(0.1,(PERF_NOW()-tr.perf.startedAt)/1000);
+    const rowsPerSec=+((tr.perf.rows||tr.total)/runtimeSec).toFixed(2);
     const avgPredMs=tr.perf.rows?+(tr.perf.predMs/tr.perf.rows).toFixed(2):0;
     const avgTickMs=tr.perf.rows?+(tr.perf.tickMs/tr.perf.rows).toFixed(2):0;
     const finalLog=[
