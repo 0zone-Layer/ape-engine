@@ -3044,8 +3044,10 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   const MIN_PROTECT_AVG_WF=0.32;
   const MIN_PROTECT_AVG_NS=0.20;
   const MIN_PROTECT_SCORE_MARGIN=0.22;
+  const ELITE_PROTECTION_RATIO=0.30;
   const ADAPTIVE_THRESHOLD_MARGIN=0.18;
   const MIN_EVIDENCE_COUNT=2;
+  const MAX_OVER_CAP_REMOVAL_BUFFER=3;
   if(!customs||customs.length===0)return{pruned:customs,removed:[]};
   const generated=customs.filter(ca=>ca.generated);
   const userDefined=customs.filter(ca=>!ca.generated);
@@ -3060,7 +3062,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
 
   // Pre-build index map — O(1) lookup, fixes O(n²) bug
   const scoreRank=new Map(scored.map((x,i)=>[x.ca.name,i]));
-  const eliteProtectionCandidates=new Set(scored.slice(-Math.max(2,Math.ceil(generated.length*0.3))).map(x=>x.ca.name));
+  const eliteProtectionCandidates=new Set(scored.slice(-Math.max(2,Math.ceil(generated.length*ELITE_PROTECTION_RATIO))).map(x=>x.ca.name));
 
   const overCap=Math.max(0,generated.length-MAX_GENERATED_ALGOS);
   // Dynamic threshold: scales with data — more rows = higher bar
@@ -3075,13 +3077,14 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   let overCapRemoved=0;
 
   scored.forEach(({ca,score,stats})=>{
-    const hasEvidence=stats.btCnt>=MIN_EVIDENCE_COUNT||stats.nsCount>=MIN_EVIDENCE_COUNT;
+    const hasSufficientEvidence=stats.btCnt>=MIN_EVIDENCE_COUNT||stats.nsCount>=MIN_EVIDENCE_COUNT;
     const strongSignals=
       stats.avgBt>=MIN_PROTECT_AVG_BT||
       stats.avgWf>=MIN_PROTECT_AVG_WF||
       stats.avgNs>=MIN_PROTECT_AVG_NS||
       score>=benchThreshold+MIN_PROTECT_SCORE_MARGIN;
-    const isProtected=eliteProtectionCandidates.has(ca.name)&&hasEvidence&&strongSignals;
+    const isProtected=eliteProtectionCandidates.has(ca.name)&&hasSufficientEvidence&&strongSignals;
+    const canPruneProtectedForCap=generated.length-overCapRemoved>MAX_GENERATED_ALGOS;
 
     // Always remove redundant
     if(redundant.has(ca.name)){
@@ -3090,18 +3093,18 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
     }
     // Remove over-cap (lowest ranked first) — use pre-built rank map
     const rank=scoreRank.get(ca.name)??999;
-    if(overCap>0&&rank<overCap&&removed.length<overCap+3&&(!isProtected||generated.length-overCapRemoved>MAX_GENERATED_ALGOS)){
+    if(overCap>0&&rank<overCap&&removed.length<overCap+MAX_OVER_CAP_REMOVAL_BUFFER&&(!isProtected||canPruneProtectedForCap)){
       removed.push({name:ca.name,reason:"over_cap"});
       overCapRemoved++;
       return;
     }
     // Remove hard failures (max 4 per cycle to avoid mass deletion)
-    if(hasEvidence&&!isProtected&&score<threshold&&removed.length<4){
+    if(hasSufficientEvidence&&!isProtected&&score<threshold&&removed.length<4){
       removed.push({name:ca.name,reason:"score:"+score.toFixed(2)});
       return;
     }
     // Bench borderline algos
-    if(hasEvidence&&!isProtected&&score<benchThreshold&&!ca.benched){
+    if(hasSufficientEvidence&&!isProtected&&score<benchThreshold&&!ca.benched){
       benched.push({...ca,enabled:false,benched:true,benchedAt:Date.now()});
       return;
     }
