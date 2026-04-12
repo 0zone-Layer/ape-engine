@@ -2154,8 +2154,26 @@ function computeRowDifficulty(accLog){
   return difficulty;
 }
 
-const CONF_SCORE={LOW:0.25,MED:0.55,HIGH:0.85};
-function signalBucket(type,name){
+const WF_MIN_TRAIN_SIZE=6;
+const WF_MIN_TEST_SIZE=3;
+const REGIME_SHIFT_STALE_THRESHOLD_MIN=0.35;
+const REGIME_SHIFT_STALE_THRESHOLD_MAX=0.7;
+const REGIME_BOOST_FACTOR_CAP=0.6;
+const REGIME_BOOST_MULTIPLIER=0.7;
+const REGIME_SHIFT_STD_WEIGHT=0.6;
+const REGIME_SHIFT_DRIFT_WEIGHT=0.4;
+const REGIME_SHIFT_DRIFT_MIN=5;
+const REGIME_SHIFT_DRIFT_SCALE=30;
+const BLEND_FALLBACK_ACCURACY_RATE=0.28;
+const BLEND_MULT_MIN=0.55;
+const BLEND_MULT_MAX=1.9;
+const BLEND_MULT_BASE=0.7;
+const BLEND_MULT_GLOBAL_FACTOR=0.6;
+const BLEND_MULT_REGIME_FACTOR=0.8;
+const MIN_BLEND_GLOBAL_SAMPLES=3;
+const MIN_BLEND_REGIME_SAMPLES=2;
+const RELIABILITY_CURVE_BINS=5;
+function getSignalCategory(type,name){
   if(type==="date"||type==="patternbank")return"date";
   if(type==="temporal"||type==="rowhistory"||type==="colgap"||type==="cross")return"cross-col";
   if(type==="builtin"||type==="custom")return"sequence";
@@ -2169,7 +2187,7 @@ function buildPredictionExplain(details,topVal){
   const sig=[];
   Object.entries(details).forEach(([name,info])=>{
     if(!ok(info?.pred)||M.mod(Math.round(info.pred))!==topVal)return;
-    const b=signalBucket(info.type,name);
+    const b=getSignalCategory(info.type,name);
     const w=info.w||0;
     bucketW[b]+=w;
     sig.push({name,type:info.type||"?",bucket:b,w,pred:M.mod(Math.round(info.pred))});
@@ -2185,7 +2203,7 @@ function detectRegimeShift(series){
   const recentMean=M.mean(recent),baseMean=M.mean(base);
   const drift=M.cd(M.mod(Math.round(recentMean)),M.mod(Math.round(baseMean)));
   const stdRatio=recentStd/baseStd;
-  const score=Math.max(0,Math.min(1,+((Math.max(0,stdRatio-1)*0.6)+(Math.max(0,drift-5)/30)*0.4).toFixed(3)));
+  const score=Math.max(0,Math.min(1,+((Math.max(0,stdRatio-1)*REGIME_SHIFT_STD_WEIGHT)+(Math.max(0,drift-REGIME_SHIFT_DRIFT_MIN)/REGIME_SHIFT_DRIFT_SCALE)*REGIME_SHIFT_DRIFT_WEIGHT).toFixed(3)));
   const level=score>0.72?"high":score>0.45?"medium":"stable";
   return{score,level,recentStd:+recentStd.toFixed(2),baseStd:+baseStd.toFixed(2),recentDrift:+drift.toFixed(2)};
 }
@@ -2217,11 +2235,11 @@ function buildBlendModel(accLog){
   const model={};
   Object.entries(stats).forEach(([col,obj])=>{
     const g={};
-    Object.entries(obj.global).forEach(([name,s])=>{if(s.total>=3)g[name]=+(s.hit/s.total).toFixed(3);});
+    Object.entries(obj.global).forEach(([name,s])=>{if(s.total>=MIN_BLEND_GLOBAL_SAMPLES)g[name]=+(s.hit/s.total).toFixed(3);});
     const pr={};
     Object.entries(obj.perRegime).forEach(([regime,map])=>{
       const cur={};
-      Object.entries(map).forEach(([name,s])=>{if(s.total>=2)cur[name]=+(s.hit/s.total).toFixed(3);});
+      Object.entries(map).forEach(([name,s])=>{if(s.total>=MIN_BLEND_REGIME_SAMPLES)cur[name]=+(s.hit/s.total).toFixed(3);});
       if(Object.keys(cur).length)pr[regime]=cur;
     });
     model[col]={global:g,perRegime:pr};
@@ -2232,7 +2250,7 @@ function buildReliabilityData(accLog,calibration){
   const byCol={};
   COLS.forEach(col=>{
     const bins={HIGH:{right:0,total:0},MED:{right:0,total:0},LOW:{right:0,total:0}};
-    const curveBins=Array.from({length:5},(_,i)=>({i,min:i*0.2,max:(i+1)*0.2,right:0,total:0}));
+    const curveBins=Array.from({length:RELIABILITY_CURVE_BINS},(_,i)=>({i,min:i/RELIABILITY_CURVE_BINS,max:(i+1)/RELIABILITY_CURVE_BINS,right:0,total:0}));
     (accLog||[]).forEach(e=>{
       const actual=e.actuals&&e.actuals[col];
       const pred=e.preds&&e.preds[col];
@@ -2242,7 +2260,7 @@ function buildReliabilityData(accLog,calibration){
       if(conf&&bins[conf]){bins[conf].total++;if(M.mod(Math.round(pred))===actual)bins[conf].right++;}
       if(meta&&ok(meta.top1pct)){
         const confScore=Math.max(0,Math.min(1,meta.top1pct/100));
-        const idx=Math.min(4,Math.max(0,Math.floor(confScore*5)));
+        const idx=Math.min(RELIABILITY_CURVE_BINS-1,Math.max(0,Math.floor(confScore*RELIABILITY_CURVE_BINS)));
         curveBins[idx].total++;
         if(M.mod(Math.round(pred))===actual)curveBins[idx].right++;
       }
@@ -2270,7 +2288,7 @@ function walkForwardExplorer(series,algoNames){
   for(let s=0;s<splitCount;s++){
     const testStart=series.length-splitSize*(splitCount-s);
     const testEnd=Math.min(series.length,testStart+splitSize);
-    if(testStart<6||testEnd-testStart<3)continue;
+    if(testStart<WF_MIN_TRAIN_SIZE||testEnd-testStart<WF_MIN_TEST_SIZE)continue;
     let splitHit=0,splitTotal=0;
     for(let i=testStart;i<testEnd;i++){
       const hist=series.slice(0,i),actual=series[i];
@@ -2393,15 +2411,15 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const blendRegime=W._blend&&W._blend.perRegime&&W._blend.perRegime[regime]?W._blend.perRegime[regime]:{};
   const shift=W._regimeShift||{score:0,level:"stable"};
   const shiftScore=shift.score||0;
-  const staleMix=Math.max(0,Math.min(0.7,shiftScore-0.35));
-  const regimeBoost=1+Math.min(0.6,shiftScore*0.7);
+  const staleMix=Math.max(0,Math.min(REGIME_SHIFT_STALE_THRESHOLD_MAX,shiftScore-REGIME_SHIFT_STALE_THRESHOLD_MIN));
+  const regimeBoost=1+Math.min(REGIME_BOOST_FACTOR_CAP,shiftScore*REGIME_BOOST_MULTIPLIER);
   const blendMultFor=name=>{
     const bg=blendGlobal[name];
     const br=blendRegime[name];
     if(bg==null&&br==null)return 1;
-    const g=bg!=null?bg:0.28;
+    const g=bg!=null?bg:BLEND_FALLBACK_ACCURACY_RATE;
     const r=br!=null?br:g;
-    return Math.max(0.55,Math.min(1.9,0.7+g*0.6+r*0.8));
+    return Math.max(BLEND_MULT_MIN,Math.min(BLEND_MULT_MAX,BLEND_MULT_BASE+g*BLEND_MULT_GLOBAL_FACTOR+r*BLEND_MULT_REGIME_FACTOR));
   };
   const votes={},_contribSets={},details={};
   const cast=(name,val,w)=>{
@@ -4826,9 +4844,9 @@ function AppInner(){
                     {i===0&&<div style={{fontSize:9,color:"#2d3158",marginLeft:36,marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:155}}>{p.algos.slice(0,5).join(" · ")}</div>}
                   </div>)}
                   <button onClick={()=>setExpCol(expCol===col?null:col)} style={{marginTop:10,width:"100%",background:"transparent",border:"1px solid #1a1e35",color:"#2d3158",borderRadius:6,padding:"4px 0",fontSize:9,cursor:"pointer",fontFamily:"inherit"}}>{expCol===col?"▲ Hide":"▼ All algo votes"}</button>
-                  {expCol===col&&<div style={{marginTop:8,maxHeight:260,overflowY:"auto"}}>
+                  {expCol===col&&<div aria-label={"Algorithm vote details for column "+col} style={{marginTop:8,maxHeight:260,overflowY:"auto"}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto auto",gap:2,fontSize:9,color:"#2d3158",borderBottom:"1px solid #1a1e35",paddingBottom:3,marginBottom:3}}>
-                      <span>Algo</span><span>Pred</span><span>BT%</span><span>Gw</span><span>Rw</span><span>Blend</span>
+                      <span>Algo</span><span>Pred</span><span>BT%</span><span>GlobalW</span><span>RowW</span><span>Blend</span>
                     </div>
                     {Object.entries(pred.details).sort((a,b)=>b[1].w-a[1].w).map(([name,info])=>{
                       const inTop=pred.top5.some(t=>t.value===info.pred&&t.algos.includes(name));
