@@ -20,12 +20,16 @@ const COLS=["A","B","C","D","E","F","G"];
 const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
-const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity"];
+const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
 const MIN_CROSS_SIGNAL_WEIGHT=0.35;
 const HEAVY_PRED_THRESHOLD_MS=18;
 const MAX_HEAVY_STREAK=8;
 const LIGHTWEIGHT_TRIGGER_STREAK=2;
 const LIGHTWEIGHT_HISTORY_THRESHOLD=350;
+const MAX_ANALYSIS_ROWS=260;
+const MAX_BT_SERIES=180;
+const MAX_PREDICT_DETAIL_SIGNALS=96;
+const MAX_PREDICT_DETAIL_SIGNALS_LW=48;
 
 // ── GLOBAL SERIES: merges ALL datasets sorted by date then row ──────────────
 // This is the key to cross-period learning: algos are backtested on ALL historical
@@ -94,6 +98,24 @@ const A={
   CollatzStep:    s=>{const v=s[s.length-1];return[M.mod(v%2===0?v/2:3*v+1)];},
   Mean3:          s=>[M.mod(Math.round(M.mean(s.slice(-3))))],
   Mean5:          s=>[M.mod(Math.round(M.mean(s.slice(-5))))],
+  RobustTrend:    s=>{
+    if(s.length<5)return[s[s.length-1]];
+    const w=s.slice(-12);
+    const sw=[...w].sort((a,b)=>a-b);
+    const q1=sw[Math.floor((sw.length-1)*0.25)]??sw[0];
+    const q3=sw[Math.floor((sw.length-1)*0.75)]??sw[sw.length-1];
+    const iqr=Math.max(1,q3-q1);
+    const med=M.median(w);
+    const inliers=w.filter(v=>Math.abs(v-med)<=Math.max(10,iqr*1.5));
+    const base=inliers.length?Math.round(M.mean(inliers.slice(-4))):Math.round(med);
+    let drift=0;
+    if(inliers.length>=4){
+      const n=inliers.length;
+      const raw=(inliers[n-1]-inliers[n-4])/3;
+      drift=Math.max(-18,Math.min(18,Math.round(raw)));
+    }
+    return[M.mod(base+drift)];
+  },
   WtdMean:        s=>{const sl=s.slice(-6),tot=sl.reduce((a,_,i)=>a+Math.pow(2,i),0)||1;return[M.mod(Math.round(sl.reduce((a,v,i)=>a+v*Math.pow(2,i),0)/tot))];},
   Median5:        s=>{const sl=[...s.slice(-5)].sort((a,b)=>a-b),m=Math.floor(sl.length/2);return[M.mod(Math.round(sl.length%2?sl[m]:(sl[m-1]+sl[m])/2))];},
   HarmMean:       s=>{const sl=s.slice(-5).filter(v=>v>0);if(!sl.length)return[s[s.length-1]];return[M.mod(Math.round(sl.length/sl.reduce((a,v)=>a+1/v,0)))];},
@@ -1761,12 +1783,29 @@ function getColGapSignals(col,data){
 // A=06:00(360min), B=18:00(1080min), C=21:00(1260min), D=23:50(1430min)
 // Gap to next row's A (next day 06:00 = 1800min from current A)
 // Recency weights for predicting next-A: D is freshest (370min ago), C(540), B(720), A(1440)
-const T_MINS={A:360,B:1080,C:1260,D:1430};
-const T_TO_NEXT_A={A:1440,B:720,C:540,D:370}; // minutes until next row's A
+const DEFAULT_COL_GAP_MINS=180;
+const T_MINS_BASE={A:360,B:1080,C:1260,D:1430};
+const D_ANCHOR_IDX=Math.max(0,COLS.indexOf("D"));
+const T_MINS=Object.fromEntries(COLS.map((col,idx)=>{
+  const v=T_MINS_BASE[col];
+  if(Number.isFinite(v))return[col,v];
+  return[col,T_MINS_BASE.D+(idx-D_ANCHOR_IDX)*DEFAULT_COL_GAP_MINS];
+}));
+const nextAMins=(T_MINS.A??T_MINS[COLS[0]]??360)+1440;
+const T_TO_NEXT_A=Object.fromEntries(COLS.map(col=>[col,Math.max(1,nextAMins-(T_MINS[col]??360))])); // minutes until next row's A
 // Normalized recency weight (smaller gap = higher weight, exponential)
-function tWeight(col){return Math.exp(-T_TO_NEXT_A[col]/800);}
+function tWeight(col){
+  const mins=T_TO_NEXT_A[col];
+  return Math.exp(-(Number.isFinite(mins)?mins:900)/800);
+}
 // Gap between two columns in same row (minutes)
-function tGap(c1,c2){return Math.abs(T_MINS[c2]-T_MINS[c1]);}
+function tGap(c1,c2){
+  const t1=T_MINS[c1],t2=T_MINS[c2];
+  if(Number.isFinite(t1)&&Number.isFinite(t2))return Math.abs(t2-t1);
+  const i1=COLS.indexOf(c1),i2=COLS.indexOf(c2);
+  if(i1<0||i2<0)return 300;
+  return Math.max(1,Math.abs(i2-i1)*DEFAULT_COL_GAP_MINS);
+}
 
 // ── INTRA-ROW TRANSFORM MINER ──────────────────
 // For a pair (src,tgt), test ~40 transforms and find which fits best historically.
@@ -2234,14 +2273,16 @@ const TEMPORAL_BOOST={
 // patternBank: S.patternBank — long-term distilled patterns
 function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const tStart=PERF_NOW();
-  const series=getSeries(col,data);
+  const analysisData=data.length>MAX_ANALYSIS_ROWS?data.slice(-MAX_ANALYSIS_ROWS):data;
+  const series=getSeries(col,analysisData);
   if(series.length<3)return null;
 
   // ── GLOBAL SERIES: spans ALL datasets for superior algo calibration ──
   // When 2026 data is sparse (10 rows), global series adds 150 rows from 2025.
   // btScore on globalSeries gives far better algo ranking than 10 rows alone.
   const globalSeries=allDatasets?getGlobalSeries(col,allDatasets):series;
-  const btSeries=globalSeries.length>series.length?globalSeries:series;
+  const btSource=globalSeries.length>series.length?globalSeries:series;
+  const btSeries=btSource.length>MAX_BT_SERIES?btSource.slice(-MAX_BT_SERIES):btSource;
 
   const gw=W.global||{},rw=W.perRow||{},rnw=W.perRange||{};
   const ns=W.neuralScores||{};
@@ -2317,7 +2358,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 
   // cross-col (temporal-aware)
   const crossT0=PERF_NOW();
-  const cross=getCross(col,data);
+  const cross=getCross(col,analysisData);
   Object.entries(cross).forEach(([name,preds])=>{
     if(!preds||!preds.length||!ok(preds[0]))return;
     const lw=gw[name]!=null?gw[name]:1;
@@ -2335,7 +2376,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   // ── DATE SIGNALS ────────────────────────────────
   const dateT0=PERF_NOW();
   if(targetDate){
-    const dateSigs=getDateSignals(col,data,targetDate);
+    const dateSigs=getDateSignals(col,analysisData,targetDate);
     Object.entries(dateSigs).forEach(([name,preds])=>{
       if(!preds||!preds.length||!ok(preds[0]))return;
       const lw=gw[name]!=null?gw[name]:1;
@@ -2406,7 +2447,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 
   // ── COL GAP STABILITY ─────────────────────────────────────────────────
   {
-    const gapSigs=getColGapSignals(col,data);
+    const gapSigs=getColGapSignals(col,analysisData);
     Object.entries(gapSigs).forEach(([name,preds])=>{
       const lw=gw[name]!=null?gw[name]:1;
       const baseW=name.startsWith("Gap_")?2.0:1.6;
@@ -2461,6 +2502,15 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     }catch(e){}
   });
   perf.customMs+=PERF_NOW()-customT0;
+
+  // Guardrail: cap detail payload so 7-column + large runs don't balloon memory/CPU.
+  const detailCap=lightweight?MAX_PREDICT_DETAIL_SIGNALS_LW:MAX_PREDICT_DETAIL_SIGNALS;
+  const detailEntries=Object.entries(details);
+  if(detailEntries.length>detailCap){
+    detailEntries.sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0));
+    const keep=new Set(detailEntries.slice(0,detailCap).map(([name])=>name));
+    Object.keys(details).forEach(name=>{if(!keep.has(name))delete details[name];});
+  }
 
   // Adaptive: redistribute tiny votes (< 1% of max) to reduce noise
   const maxVote=Math.max(...Object.values(votes));
@@ -2575,7 +2625,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 
   const total=Object.values(votes).reduce((a,b)=>a+b,0)||1;
   const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,5)
-    .map(([v,vt])=>({value:parseInt(v),votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:_contribSets[v]?[..._contribSets[v]]:[]}));
+    .map(([v,vt])=>({value:parseInt(v),votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:_contribSets[v]?[..._contribSets[v]].slice(0,24):[]}));
 
   const ac=Object.keys(details).length;
   const consensus=top5[0]?Math.round(top5[0].algos.length/ac*100):0;
