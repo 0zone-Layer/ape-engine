@@ -3378,6 +3378,9 @@ function AppInner(){
     _TC.bumpVer();
     _TC.clear();
   },[S.datasets,S.active]);
+  useEffect(()=>{
+    setPredDate(S.predDate||"");
+  },[S.predDate]);
 
   useEffect(()=>{
     loadS().then(saved=>{
@@ -3671,7 +3674,7 @@ function AppInner(){
     // Compute target date from the latest dated row in dataset.
     // Keep manual override only when it is beyond the latest dataset date.
     const latestDatedInfo=rows.reduce((mx,r)=>{
-      const ts=dateTs(r?.date);
+      const ts=dateTs(r.date);
       if(ts===null)return mx;
       return(!mx||ts>mx.ts)?{date:r.date,ts}:mx;
     },null);
@@ -3731,7 +3734,6 @@ function AppInner(){
       }
     }
     upd(prev=>({...prev,preds:result,predRow:target,predDate:tDate}));
-    setPredDate(tDate);
     setCheckRes(null);setActs({A:"",B:"",C:"",D:""});setTab("predict");
     setTimeout(()=>st("Predictions ready"+(tDate?" · "+tDate:"")+" ✓"),300);
   }
