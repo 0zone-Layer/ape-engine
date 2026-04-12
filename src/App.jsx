@@ -1352,17 +1352,21 @@ function parseDate(dateStr){
   };
 }
 
+function formatDateISO(dt){
+  return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+}
 function nextDateISO(dateStr){
   if(!dateStr)return"";
   const dt=new Date(dateStr+"T12:00:00");
-  if(isNaN(dt))return"";
+  if(Number.isNaN(dt.getTime()))return"";
   dt.setDate(dt.getDate()+1);
-  return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+  return formatDateISO(dt);
 }
 function dateTs(dateStr){
   if(!dateStr)return null;
   const dt=new Date(dateStr+"T12:00:00");
-  return isNaN(dt)?null:dt.getTime();
+  const ts=dt.getTime();
+  return Number.isNaN(ts)?null:ts;
 }
 
 // ── HELPER: get rows that have a date and a value for `col` ──
@@ -3668,13 +3672,13 @@ function AppInner(){
     // Keep manual override only when it is beyond the latest dataset date.
     const latestDatedInfo=rows.reduce((mx,r)=>{
       const ts=dateTs(r?.date);
-      if(ts==null)return mx;
+      if(ts===null)return mx;
       return(!mx||ts>mx.ts)?{date:r.date,ts}:mx;
     },null);
     const latestDated=latestDatedInfo?.date||"";
     const autoDate=latestDated?nextDateISO(latestDated):"";
     const manualTs=dateTs(predDate);
-    const tDate=(manualTs!=null&&(!latestDatedInfo||manualTs>latestDatedInfo.ts))?predDate:autoDate;
+    const tDate=(manualTs!==null&&(!latestDatedInfo||manualTs>latestDatedInfo.ts))?predDate:autoDate;
     const result={};
     const _sharedMeta=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     const _slimAccLog=(S.accLog||[]).slice(-10);
