@@ -16,7 +16,7 @@ const M={
   median:a=>{const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;},
 };
 const pad2=n=>String(M.mod(n)).padStart(2,"0");
-const COLS=["A","B","C","D"];
+const COLS=["A","B","C","D","E","F","G"];
 const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
@@ -47,7 +47,11 @@ function getGlobalSeries(col,datasets){
   _TC.gs[ck]=result;
   return result;
 }
-const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171"};
+const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#60a5fa",F:"#f472b6",G:"#22d3ee"};
+const HASH_WEIGHTS=[3,5,7,11,13,17,19];
+const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
+const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
+const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}}]));
 // Cached algo count — avoids Object.keys(A) in every render
 let ALGO_COUNT=0; // filled after A{} definition
 
@@ -1683,16 +1687,16 @@ function getSameRowHistory(col,data,predRow,allDatasets){
 }
 
 // ── ROW SUM TARGET ────────────────────────────
-// All 4 cols come from the same hidden source per row.
-// If A+B+C+D orbits a stable sum, use it to constrain
+// All columns come from the same hidden source per row.
+// If the row sum orbits a stable range, use it to constrain
 // predictions for any unknown column.
 // e.g. if sum ≈ 180 and A=40,B=50,C=45, then D ≈ 45
 function getRowSumSignal(col,data,knownPreds){
   const res={};
-  // Collect rows where all 4 values are known
+  // Collect rows where all column values are known
   const complete=data.filter(r=>COLS.every(c=>ok(r[c])));
   if(complete.length<4)return res;
-  const sums=complete.map(r=>r.A+r.B+r.C+r.D);
+  const sums=complete.map(r=>COLS.reduce((s,c)=>s+r[c],0));
   const avgSum=M.mean(sums);
   const stdSum=M.std(sums);
   // Only use this signal if sum is reasonably stable
@@ -1826,7 +1830,7 @@ function mineTransform(srcCol,tgtCol,data){
 }
 
 // ── SHARED ROW PROPERTY DETECTOR ───────────────
-// Checks if all 4 cols in a row share a property (same digit root, same mod class, etc.)
+// Checks if all cols in a row share a property (same digit root, same mod class, etc.)
 // Returns an array of consistent predictor functions for the target col.
 function getSharedRowProps(targetCol,data){
   const ck=targetCol+"_"+data.length+"_"+_TC._ver;
@@ -1843,7 +1847,7 @@ function getSharedRowProps(targetCol,data){
     for(let delta=0;delta<=50;delta++){for(const v of[M.mod(avg+delta),M.mod(avg-delta)]){if(M.dr(v)===knownDr)return[v];}}
     return null;
   }});
-  const adjPairs=[["A","B"],["B","C"],["C","D"]];
+  const adjPairs=COLS.slice(0,-1).map((c,i)=>[c,COLS[i+1]]);
   adjPairs.forEach(([c1,c2])=>{
     if(c1===targetCol||c2===targetCol){
       let dsSame=0;
@@ -1933,7 +1937,7 @@ function getTemporalChain(targetCol,data){
   }
 
   // 7. Legacy cross-col (keep backward compat)
-  const ci=COLS.indexOf(targetCol),aR=COLS[(ci+1)%4],aL=COLS[(ci+3)%4];
+  const ci=COLS.indexOf(targetCol),aR=COLS[(ci+1)%COLS.length],aL=COLS[(ci+COLS.length-1)%COLS.length];
   if(ok(last[aL]))res.RevAdj=[M.rev(last[aL])];
   if(ok(last[aR])){res.DsAdj=[M.mod(ser?.[ser.length-1]+M.ds(last[aR]))];res.AdjRevSum=[M.mod(M.rev(last[aR])+(ser?.[ser.length-1]||0))];}
   if(ok(last[aR])&&ok(last[aL])){
@@ -1942,12 +1946,15 @@ function getTemporalChain(targetCol,data){
   }
   if(prev&&ok(prev[targetCol])&&ok(prev[aR])&&ok(last[aR]))res.LagDelta=[M.mod(last[aR]+(prev[targetCol]-prev[aR]))];
   if(COLS.every(c=>ok(last[c]))){
-    res.RowSum=[M.mod(last.A+last.B+last.C+last.D)];
-    res.RowHash=[M.mod((last.A*3+last.B*7+last.C*11+last.D*13)%100)];
+    res.RowSum=[M.mod(COLS.reduce((sum,c)=>sum+last[c],0))];
+    res.RowHash=[M.mod(COLS.reduce((hash,c,i)=>hash+last[c]*HASH_WEIGHTS[i],0)%100)];
   }
-  [["A","B"],["C","D"],["B","D"],["A","C"],["A","D"],["B","C"]].forEach(([c1,c2])=>{
-    if(ok(last[c1])&&ok(last[c2]))res[c1+c2+"Sum"]=[M.mod(last[c1]+last[c2])];
-  });
+  for(let i=0;i<COLS.length;i++){
+    for(let j=i+1;j<COLS.length;j++){
+      const c1=COLS[i],c2=COLS[j];
+      if(ok(last[c1])&&ok(last[c2]))res[c1+c2+"Sum"]=[M.mod(last[c1]+last[c2])];
+    }
+  }
 
   // best correlated column (keep legacy)
   let bestCorr=null,bestCol=null;
@@ -2149,7 +2156,7 @@ function computeRowDifficulty(accLog){
   });
   const difficulty={};
   Object.entries(rowStats).forEach(([r,s])=>{
-    if(s.total>=2)difficulty[r]=Math.round(s.exact/(s.total*4)*100);
+    if(s.total>=2)difficulty[r]=Math.round(s.exact/(s.total*COLS.length)*100);
   });
   return difficulty;
 }
@@ -3026,14 +3033,13 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
 // ── EXPORT HELPERS ─────────────────────────────
 // Bug 9 fix: CSV now includes Date column so re-import preserves all date metadata
 function doExportCSV(data,preds,predRow){
-  const rows=data.map(r=>pad2(r.row)+","+(r.A!=null?r.A:"XX")+","+(r.B!=null?r.B:"XX")+","+(r.C!=null?r.C:"XX")+","+(r.D!=null?r.D:"XX")+","+(r.date||"")).join("\n");
+  const rows=data.map(r=>pad2(r.row)+","+COLS.map(c=>r[c]!=null?r[c]:"XX").join(",")+","+(r.date||"")).join("\n");
   let pLine="";
   if(preds&&predRow){
-    const pa=preds.A?preds.A.top5[0]?.value:null,pb=preds.B?preds.B.top5[0]?.value:null;
-    const pc=preds.C?preds.C.top5[0]?.value:null,pd=preds.D?preds.D.top5[0]?.value:null;
-    pLine="\n"+pad2(predRow)+","+(ok(pa)?pad2(pa):"?")+","+(ok(pb)?pad2(pb):"?")+","+(ok(pc)?pad2(pc):"?")+","+(ok(pd)?pad2(pd):"?")+",(PRED)";
+    const predVals=COLS.map(c=>preds[c]?preds[c].top5[0]?.value:null);
+    pLine="\n"+pad2(predRow)+","+predVals.map(v=>ok(v)?pad2(v):"?").join(",")+",(PRED)";
   }
-  const blob=new Blob(["Row,A,B,C,D,Date\n"+rows+pLine],{type:"text/csv"});
+  const blob=new Blob(["Row,"+COLS.join(",")+",Date\n"+rows+pLine],{type:"text/csv"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v13-"+Date.now()+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 function doExportJSON(state){
@@ -3285,10 +3291,10 @@ function fresh(){
   return{
     datasets:{def:{name:"Dataset 1",rows:[]}},
     active:"def",
-    weights:{A:{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}},B:{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}},C:{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}},D:{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}}},
-    algoLeaderboard:{A:{},B:{},C:{},D:{}},
-    calibration:{A:{},B:{},C:{},D:{}},
-    patternBank:{A:{},B:{},C:{},D:{}},
+    weights:mkColWeightDefaults(),
+    algoLeaderboard:mkColMapDefaults(),
+    calibration:mkColMapDefaults(),
+    patternBank:mkColMapDefaults(),
     customs:[],accLog:[],preds:null,predRow:null,predDate:null,genN:0,tourN:0,lastAutoGenRows:0,pruneLog:[]
   };
 }
@@ -3320,8 +3326,8 @@ function AppInner(){
   const[loaded,setLoaded]=useState(false);
   const[tab,setTab]=useState("data");
   const[rowIn,setRowIn]=useState("");
-  const[vals,setVals]=useState({A:"",B:"",C:"",D:""});
-  const[acts,setActs]=useState({A:"",B:"",C:"",D:""});
+  const[vals,setVals]=useState(mkColTextDefaults());
+  const[acts,setActs]=useState(mkColTextDefaults());
   const[bulk,setBulk]=useState("");
   const[showBulk,setShowBulk]=useState(false);
   const[expCol,setExpCol]=useState(null);
@@ -3390,12 +3396,12 @@ function AppInner(){
       if(saved){
         if(saved.dataset&&!saved.datasets){saved.datasets={def:{name:"Dataset 1",rows:saved.dataset}};saved.active="def";delete saved.dataset;}
         if(!saved.active)saved.active="def";
-        if(!saved.weights||!saved.weights.A||!saved.weights.A.global)saved.weights={A:{global:{},perRow:{},perRange:{},neuralScores:{}},B:{global:{},perRow:{},perRange:{},neuralScores:{}},C:{global:{},perRow:{},perRange:{},neuralScores:{}},D:{global:{},perRow:{},perRange:{},neuralScores:{}}};
+        if(!saved.weights||!saved.weights[COLS[0]]||!saved.weights[COLS[0]].global)saved.weights=mkColWeightDefaults();
         // Migrate all weight tables (uses same logic as import)
         saved.weights=migrateWeights(saved.weights);
-        if(!saved.calibration)saved.calibration={A:{},B:{},C:{},D:{}};
-        if(!saved.patternBank)saved.patternBank={A:{},B:{},C:{},D:{}};
-        if(!saved.algoLeaderboard)saved.algoLeaderboard={A:{},B:{},C:{},D:{}};
+        if(!saved.calibration)saved.calibration=mkColMapDefaults();
+        if(!saved.patternBank)saved.patternBank=mkColMapDefaults();
+        if(!saved.algoLeaderboard)saved.algoLeaderboard=mkColMapDefaults();
         if(!saved.customs)saved.customs=[];
         if(!saved.genN)saved.genN=0;
         if(!saved.tourN)saved.tourN=0;
@@ -3488,7 +3494,7 @@ function AppInner(){
       setRowIn(String(maxR+1));
       return cur;
     });
-    setVals({A:"",B:"",C:"",D:""});
+    setVals(mkColTextDefaults());
     st("Day "+pad2(r)+" saved ✓");
     syslog("📥 Day "+r+(dateIn?" ("+dateIn+")":"")+" saved","data");
   }
@@ -3497,14 +3503,14 @@ function AppInner(){
     const lines=bulk.trim().split("\n").filter(l=>l.trim());let added=0,errs=0;
     const next=[...rows];
     lines.forEach(line=>{
-      const pts=line.split(",").map(p=>p.trim());if(pts.length<5){errs++;return;}
+      const pts=line.split(",").map(p=>p.trim());if(pts.length<COLS.length+1||pts.length>COLS.length+2){errs++;return;}
       const row=parseInt(pts[0]);if(isNaN(row)||row<1||row>9999){errs++;return;}
-      const abcd=pts.slice(1,5).map(p=>{if(!p||p.toUpperCase()==="XX")return null;const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;});
-      if(abcd.some(v=>v===undefined)){errs++;return;}
-      // 6th column optional: YYYY-MM-DD date
-      const rowDate=pts[5]&&parseDate(pts[5])?pts[5]:undefined;
+      const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{if(!p||p.toUpperCase()==="XX")return null;const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;});
+      if(colVals.some(v=>v===undefined)){errs++;return;}
+      const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:undefined;
       const idx=next.findIndex(x=>x.row===row);
-      const newEntry={row,A:abcd[0],B:abcd[1],C:abcd[2],D:abcd[3]};
+      const newEntry={row};
+      COLS.forEach((col,i)=>{newEntry[col]=colVals[i];});
       if(rowDate)newEntry.date=rowDate;
       if(idx>=0)next[idx]=newEntry;else next.push(newEntry);
       added++;
@@ -3541,7 +3547,7 @@ function AppInner(){
         if(parsed.dataset&&!parsed.datasets){parsed.datasets={def:{name:"Imported",rows:parsed.dataset}};parsed.active="def";}
         parsed.weights=migrateWeights(parsed.weights||{});
         if(!parsed.customs)parsed.customs=[];
-        if(!parsed.patternBank)parsed.patternBank={A:{},B:{},C:{},D:{}};
+        if(!parsed.patternBank)parsed.patternBank=mkColMapDefaults();
         setS(parsed);saveS(parsed);
         st("Imported successfully");
       }catch(err){st("Import failed: "+err.message,"err");}
@@ -3555,21 +3561,23 @@ function AppInner(){
     const reader=new FileReader();
     reader.onload=ev=>{
       const text=ev.target.result;
-      const lines=text.trim().split(/\r?\n/).filter(l=>l.trim()&&!l.toLowerCase().startsWith("row,a"));
+      const lines=text.trim().split(/\r?\n/).filter(l=>l.trim()&&!l.toLowerCase().startsWith("row,"));
       let added=0,updated=0,autoLearned=0,errs=0;
       const incomingRows=[];
       lines.forEach(line=>{
         const pts=line.split(",").map(p=>p.trim());
-        if(pts.length<5){errs++;return;}
+        if(pts.length<COLS.length+1||pts.length>COLS.length+2){errs++;return;}
         const row=parseInt(pts[0]);
         if(isNaN(row)||row<1||row>9999){errs++;return;}
-        const abcd=pts.slice(1,5).map(p=>{
+        const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
           if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
           const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;
         });
-        if(abcd.some(v=>v===undefined)){errs++;return;}
-        const rowDate=pts[5]&&parseDate(pts[5])?pts[5]:undefined;
-        incomingRows.push({row,A:abcd[0],B:abcd[1],C:abcd[2],D:abcd[3],date:rowDate});
+        if(colVals.some(v=>v===undefined)){errs++;return;}
+        const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:undefined;
+        const parsedRow={row,date:rowDate};
+        COLS.forEach((col,i)=>{parsedRow[col]=colVals[i];});
+        incomingRows.push(parsedRow);
       });
       if(!incomingRows.length){st("No valid rows in CSV","warn");e.target.value="";return;}
 
@@ -3577,7 +3585,7 @@ function AppInner(){
         const dsKey=prev.active;
         const existingRows=[...(prev.datasets[dsKey]?.rows||[])];
         let nw={...prev.weights};
-        let nc={...prev.calibration||{A:{},B:{},C:{},D:{}}};
+        let nc={...(prev.calibration||mkColMapDefaults())};
         let newCustoms=[...(prev.customs||[])];
         const newAccLog=[...(prev.accLog||[])];
 
@@ -3656,8 +3664,8 @@ function AppInner(){
         const parsed=JSON.parse(ev.target.result);
         const data=parseImportedWeights(parsed);
         if(!data){setWeightsMsg("❌ Invalid weights file");return;}
-        if(!data.weights||!data.weights.A||!data.weights.A.global){
-          data.weights={A:{global:{},perRow:{},perRange:{}},B:{global:{},perRow:{},perRange:{}},C:{global:{},perRow:{},perRange:{}},D:{global:{},perRow:{},perRange:{}}};
+        if(!data.weights||!data.weights[COLS[0]]||!data.weights[COLS[0]].global){
+          data.weights=mkColWeightDefaults();
         }
         upd(prev=>({...prev,weights:data.weights,customs:data.customs||prev.customs,accLog:data.accLog||prev.accLog}));
         const sessCount=data.accLog?data.accLog.length:0;
@@ -3695,7 +3703,7 @@ function AppInner(){
     // Joint column hint
     const knownPreds={};
     COLS.forEach(col=>{if(result[col])knownPreds[col]=result[col].top5[0]?.value;});
-    // ── ROW SUM TARGET: inject after all 4 cols predicted ──
+    // ── ROW SUM TARGET: inject after all cols predicted ──
     // NOTE: jointColHint intentionally removed from runPredict — it propagated
     // prediction errors (if col A prediction is wrong, it corrupts col B hint).
     // RowSumTarget is kept because it uses historical sum distribution, not predictions.
@@ -3712,15 +3720,15 @@ function AppInner(){
       });
     });
     // ── MULTI-STEP SUM CONSENSUS ───────────────────
-    // If predicted A+B+C+D deviates >15% from historical sum mean, nudge all toward target
+    // If predicted row sum deviates >15% from historical sum mean, nudge all toward target
     const complete=rows.filter(r=>COLS.every(c=>ok(r[c])));
     if(complete.length>=4){
-      const histSums=complete.map(r=>r.A+r.B+r.C+r.D);
+      const histSums=complete.map(r=>COLS.reduce((s,c)=>s+r[c],0));
       const sumMean=M.mean(histSums),sumStd=M.std(histSums);
       const predSum=COLS.reduce((s,c)=>s+(result[c]?.top5[0]?.value||0),0);
       const deviation=predSum-sumMean;
       if(Math.abs(deviation)>sumStd*1.5&&sumStd>0){
-        const correction=Math.round(deviation/4*0.4); // distribute 40% correction across 4 cols
+        const correction=Math.round(deviation/COLS.length*0.4); // distribute 40% correction across all cols
         COLS.forEach(col=>{
           if(!result[col]?.top5[0])return;
           const nudged=M.mod(result[col].top5[0].value-correction);
@@ -3737,7 +3745,7 @@ function AppInner(){
       }
     }
     upd(prev=>({...prev,preds:result,predRow:target,predDate:tDate}));
-    setCheckRes(null);setActs({A:"",B:"",C:"",D:""});setTab("predict");
+    setCheckRes(null);setActs(mkColTextDefaults());setTab("predict");
     setTimeout(()=>st("Predictions ready"+(tDate?" · "+tDate:"")+" ✓"),300);
   }
 
@@ -3817,7 +3825,7 @@ function AppInner(){
     setCheckRes(results);
     upd(prev=>{
       const nw={...prev.weights};
-      const nc={...prev.calibration||{A:{},B:{},C:{},D:{}}};
+      const nc={...(prev.calibration||mkColMapDefaults())};
       // Bug 2 fix: compute dateCtx BEFORE the loop that uses it
       const _datePd=prev.predDate?parseDate(prev.predDate):null;
       const dateCtx=_datePd?{dow:_datePd.dow,lunar:_datePd.lunarPhase,month:_datePd.m,season:_datePd.season}:null;
@@ -3928,7 +3936,7 @@ function AppInner(){
   // ════════════════════════════════════════════════════════════════════════
 
   function parseAutoTrainCSV(text){
-    // Accepts: Row,A,B,C,D,Date  OR  Row,A,B,C,D  (date optional)
+    // Accepts: Row,<COLS...>,Date  OR  Row,<COLS...>  (date optional)
     // First line may be a header — auto-detected and skipped
     const lines=text.trim().split(/\r?\n/).filter(l=>l.trim());
     const rows=[];
@@ -3937,19 +3945,21 @@ function AppInner(){
       // Skip header
       if(idx===0&&/[a-zA-Z]{2,}/.test(line.split(",")[0]))return;
       const pts=line.split(",").map(p=>p.trim());
-      if(pts.length<5){skipped++;return;}
+      if(pts.length<COLS.length+1||pts.length>COLS.length+2){skipped++;return;}
       const rowNum=parseInt(pts[0]);
       if(isNaN(rowNum)||rowNum<1||rowNum>99999){skipped++;return;}
-      const abcd=pts.slice(1,5).map(p=>{
+      const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
         if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
         const n=parseInt(p);
         return(isNaN(n)||n<0||n>99)?undefined:n;
       });
-      if(abcd.some(v=>v===undefined)){skipped++;return;}
+      if(colVals.some(v=>v===undefined)){skipped++;return;}
       // At least one column must be known
-      if(abcd.every(v=>v===null)){skipped++;return;}
-      const rowDate=pts[5]&&parseDate(pts[5])?pts[5]:null;
-      rows.push({row:rowNum,A:abcd[0],B:abcd[1],C:abcd[2],D:abcd[3],date:rowDate});
+      if(colVals.every(v=>v===null)){skipped++;return;}
+      const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:null;
+      const parsedRow={row:rowNum,date:rowDate};
+      COLS.forEach((col,i)=>{parsedRow[col]=colVals[i];});
+      rows.push(parsedRow);
     });
     return{rows,skipped};
   }
@@ -3993,10 +4003,10 @@ function AppInner(){
         csvRows,index:0,total:csvRows.length,dsKey,
         historyRows:[...(prev.datasets[dsKey]?.rows||[])],
         weights:JSON.parse(JSON.stringify(prev.weights)),
-        calibration:JSON.parse(JSON.stringify(prev.calibration||{A:{},B:{},C:{},D:{}})),
+        calibration:JSON.parse(JSON.stringify(prev.calibration||mkColMapDefaults())),
         customs:JSON.parse(JSON.stringify(prev.customs||[])),
         accLog:[...(prev.accLog||[])],
-        patternBank:JSON.parse(JSON.stringify(prev.patternBank||{A:{},B:{},C:{},D:{}})),
+        patternBank:JSON.parse(JSON.stringify(prev.patternBank||mkColMapDefaults())),
         allDs:{...prev.datasets}, // kept in sync as rows are added
         exactTotal:0,nearTotal:0,totalKnown:0,
         btCache:{},         // {col__name:{bt,wfBoost}} — rebuilt on schedule
@@ -4007,7 +4017,7 @@ function AppInner(){
         perf:{rows:0,predMs:0,btMs:0,updMs:0,insertMs:0,tickMs:0,startedAt:PERF_NOW()},
         lightweight:false,
         heavyStreak:0,
-        leaderboard:{A:{},B:{},C:{},D:{}}
+        leaderboard:mkColMapDefaults()
       };
       setTimeout(autoTrainTick,0);
       return prev; // no state change yet
@@ -4314,7 +4324,7 @@ function AppInner(){
       const mdCount=COLS.reduce((s,c)=>s+Object.keys(newPB[c]?.mdProfiles||{}).length,0);
       const dyCount=COLS.reduce((s,c)=>s+Object.keys(newPB[c]?.dayProfiles||{}).length,0);
       const moCount=COLS.reduce((s,c)=>s+Object.keys(newPB[c]?.monthlyProfiles||{}).length,0);
-      syslog("🧠 Pattern bank rebuilt: "+moCount+" monthly + "+dyCount+" day-profiles + "+mdCount+" MD-exact profiles across 4 cols","info");
+      syslog("🧠 Pattern bank rebuilt: "+moCount+" monthly + "+dyCount+" day-profiles + "+mdCount+" MD-exact profiles across "+COLS.length+" cols","info");
       st("Pattern bank rebuilt ✓ ("+mdCount+" patterns)");
       return{...prev,patternBank:newPB};
     });
@@ -4346,13 +4356,13 @@ function AppInner(){
     upd(prev=>({...prev,datasets:{...(prev.datasets||{}),[id]:{name,rows:[]}},active:id}));
     setDsName("");
   }
-  function resetAll(){if(!confirm("Clear ALL data?"))return;const s=fresh();setS(s);saveS(s);setCheckRes(null);setActs({A:"",B:"",C:"",D:""});setWfRes(null);setCorrM(null);st("Reset","warn");}
+  function resetAll(){if(!confirm("Clear ALL data?"))return;const s=fresh();setS(s);saveS(s);setCheckRes(null);setActs(mkColTextDefaults());setWfRes(null);setCorrM(null);st("Reset","warn");}
 
   const accLog=S.accLog||[];
   // useMemo: avoid recomputing on every keystroke/input change
   const {totalExact,overallPct}=useMemo(()=>{
     const te=accLog.reduce((s,e)=>s+(e.exactCount||0),0);
-    return{totalExact:te,overallPct:accLog.length?Math.round(te/(accLog.length*4)*100):0};
+    return{totalExact:te,overallPct:accLog.length?Math.round(te/(accLog.length*COLS.length)*100):0};
   },[accLog]);
   function handleActChange(col,val){
     const v=val.toUpperCase();
@@ -4451,9 +4461,9 @@ function AppInner(){
                   </div>
                   <div style={{marginTop:8,fontSize:9,color:"#2d3158",fontFamily:"monospace",background:"rgba(0,0,0,.3)",borderRadius:5,padding:"5px 8px",display:"inline-block",lineHeight:1.8}}>
                     <span style={{color:"#fbbf24"}}>CSV Format:</span><br/>
-                    Row,A,B,C,D,Date<br/>
-                    <span style={{color:"#4a4e6a"}}>1,42,87,13,65,2025-01-01</span><br/>
-                    <span style={{color:"#4a4e6a"}}>2,91,10,55,30,2025-01-02</span><br/>
+                    {"Row,"+COLS.join(",")+",Date"}<br/>
+                    <span style={{color:"#4a4e6a"}}>{"1,"+COLS.map((_,i)=>pad2((42+i*13)%100)).join(",")+",2025-01-01"}</span><br/>
+                    <span style={{color:"#4a4e6a"}}>{"2,"+COLS.map((_,i)=>pad2((91+i*19)%100)).join(",")+",2025-01-02"}</span><br/>
                     <span style={{color:"#34d399"}}>• Date column optional but strongly recommended</span><br/>
                     <span style={{color:"#34d399"}}>• Use XX for unknown columns</span><br/>
                     <span style={{color:"#34d399"}}>• Row = day number (any integer, no cycling)</span>
@@ -4572,7 +4582,7 @@ function AppInner(){
               <div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end"}}>
                 <div style={{textAlign:"center"}}>
                   <div style={{fontSize:9,color:"#4a4e6a"}}>ALGOS</div>
-                  <div style={{fontSize:20,fontWeight:700}}>{S.preds.A?S.preds.A.algoCount:0}</div>
+                  <div style={{fontSize:20,fontWeight:700}}>{S.preds[COLS[0]]?S.preds[COLS[0]].algoCount:0}</div>
                 </div>
                 <button onClick={()=>{
                   const lines=["APE v13 — Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36)];
@@ -4681,7 +4691,7 @@ function AppInner(){
               <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
                 <PB onClick={checkAndLearn}>✅ Check and Learn</PB>
                 <GB onClick={predictMissingCols}>🔮 Predict Missing Cols</GB>
-                <GB onClick={()=>{setActs({A:"",B:"",C:"",D:""});setMissingPreds({});}}>✕ Clear All</GB>
+                <GB onClick={()=>{setActs(mkColTextDefaults());setMissingPreds({});}}>✕ Clear All</GB>
               </div>
               {Object.keys(missingPreds).length>0&&<div style={{background:"rgba(167,139,250,.06)",border:"1px solid rgba(167,139,250,.2)",borderRadius:8,padding:12,marginBottom:12}}>
                 <div style={{fontSize:9,color:"#a78bfa",letterSpacing:3,textTransform:"uppercase",marginBottom:10}}>Predictions for Missing Columns</div>
