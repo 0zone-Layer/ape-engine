@@ -30,6 +30,7 @@ const MAX_ANALYSIS_ROWS=260;
 const MAX_BT_SERIES=180;
 const MAX_PREDICT_DETAIL_SIGNALS=96;
 const MAX_PREDICT_DETAIL_SIGNALS_LW=48;
+const MAX_TOP_CONTRIBUTING_ALGOS=24;
 
 // ── GLOBAL SERIES: merges ALL datasets sorted by date then row ──────────────
 // This is the key to cross-period learning: algos are backtested on ALL historical
@@ -1783,16 +1784,17 @@ function getColGapSignals(col,data){
 // A=06:00(360min), B=18:00(1080min), C=21:00(1260min), D=23:50(1430min)
 // Gap to next row's A (next day 06:00 = 1800min from current A)
 // Recency weights for predicting next-A: D is freshest (370min ago), C(540), B(720), A(1440)
-const DEFAULT_COL_GAP_MINS=180;
+const DEFAULT_COLUMN_GAP_MINUTES=180;
+const DEFAULT_COLUMN_GAP_FALLBACK_MINUTES=300;
 const T_MINS_BASE={A:360,B:1080,C:1260,D:1430};
-const D_ANCHOR_IDX=Math.max(0,COLS.indexOf("D"));
+const D_ANCHOR_INDEX=Math.max(0,COLS.indexOf("D"));
 const T_MINS=Object.fromEntries(COLS.map((col,idx)=>{
   const v=T_MINS_BASE[col];
   if(Number.isFinite(v))return[col,v];
-  return[col,T_MINS_BASE.D+(idx-D_ANCHOR_IDX)*DEFAULT_COL_GAP_MINS];
+  return[col,(T_MINS_BASE.D??1430)+(idx-D_ANCHOR_INDEX)*DEFAULT_COLUMN_GAP_MINUTES];
 }));
-const nextAMins=(T_MINS.A??T_MINS[COLS[0]]??360)+1440;
-const T_TO_NEXT_A=Object.fromEntries(COLS.map(col=>[col,Math.max(1,nextAMins-(T_MINS[col]??360))])); // minutes until next row's A
+const nextRowStartMinutes=(T_MINS.A??T_MINS[COLS[0]]??360)+1440;
+const T_TO_NEXT_A=Object.fromEntries(COLS.map(col=>[col,Math.max(1,nextRowStartMinutes-(T_MINS[col]??360))])); // minutes until next row's A
 // Normalized recency weight (smaller gap = higher weight, exponential)
 function tWeight(col){
   const mins=T_TO_NEXT_A[col];
@@ -1803,8 +1805,8 @@ function tGap(c1,c2){
   const t1=T_MINS[c1],t2=T_MINS[c2];
   if(Number.isFinite(t1)&&Number.isFinite(t2))return Math.abs(t2-t1);
   const i1=COLS.indexOf(c1),i2=COLS.indexOf(c2);
-  if(i1<0||i2<0)return 300;
-  return Math.max(1,Math.abs(i2-i1)*DEFAULT_COL_GAP_MINS);
+  if(i1<0||i2<0)return DEFAULT_COLUMN_GAP_FALLBACK_MINUTES;
+  return Math.max(1,Math.abs(i2-i1)*DEFAULT_COLUMN_GAP_MINUTES);
 }
 
 // ── INTRA-ROW TRANSFORM MINER ──────────────────
@@ -2625,7 +2627,17 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 
   const total=Object.values(votes).reduce((a,b)=>a+b,0)||1;
   const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,5)
-    .map(([v,vt])=>({value:parseInt(v),votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:_contribSets[v]?[..._contribSets[v]].slice(0,24):[]}));
+    .map(([v,vt])=>{
+      const contributors=_contribSets[v]?[..._contribSets[v]]:[];
+      return{
+        value:parseInt(v),
+        votes:+vt.toFixed(2),
+        pct:Math.round(vt/total*100),
+        algos:contributors.slice(0,MAX_TOP_CONTRIBUTING_ALGOS),
+        // true when contributor list was capped for payload/perf safety
+        truncated:contributors.length>MAX_TOP_CONTRIBUTING_ALGOS
+      };
+    });
 
   const ac=Object.keys(details).length;
   const consensus=top5[0]?Math.round(top5[0].algos.length/ac*100):0;
