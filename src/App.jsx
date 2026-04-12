@@ -2983,10 +2983,10 @@ function shouldAutoPrune(customs,rows){
 
 // scoreAlgo: optional btCache avoids redundant btScore recomputation during auto-train prune
 function scoreAlgo(ca,weights,rows,btCache){
-  if(!ca.generated)return Infinity;
-  if(ca.benched)return -0.1;
+  if(!ca.generated)return{score:Infinity,avgNs:0,avgStreak:0,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
+  if(ca.benched)return{score:-0.1,avgNs:0,avgStreak:0,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
   const fn=makeCustomFn(ca.code);
-  if(!fn)return -999;
+  if(!fn)return{score:-999,avgNs:-1,avgStreak:-1,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
   let totalNs=0,totalStreak=0,nsCount=0,totalBt=0,totalWf=0,btCnt=0;
   COLS.forEach(col=>{
     const ns=weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
@@ -3009,7 +3009,10 @@ function scoreAlgo(ca,weights,rows,btCache){
   const avgStreak=nsCount?totalStreak/nsCount:0;
   const avgBt=btCnt?totalBt/btCnt:0.05;
   const avgWf=btCnt?totalWf/btCnt:0.05;
-  return avgNs*0.40+avgStreak*0.20+avgBt*2.0+avgWf*1.2;
+  return{
+    score:avgNs*0.40+avgStreak*0.20+avgBt*2.0+avgWf*1.2,
+    avgNs,avgStreak,avgBt,avgWf,nsCount,btCnt
+  };
 }
 
 // Fix 10: redundancy detection — find algos that always predict same value
@@ -3037,28 +3040,54 @@ function detectRedundant(customs,rows){
 }
 
 function pruneWeakAlgos(customs,weights,rows,btCache){
+  const MIN_PROTECT_AVG_BT=0.24;      // btScore is usually in ~[0,0.4], 0.24 marks clearly above-average fit
+  const MIN_PROTECT_AVG_WF=0.32;      // walk-forward hit-rate floor for preserving algorithms under drift
+  const MIN_PROTECT_AVG_NS=0.20;      // neural EMA score threshold for sustained recent quality
+  const MIN_PROTECT_SCORE_MARGIN=0.22;// protect when total composite score is safely above bench cut
+  const ELITE_PROTECTION_RATIO=0.30;  // keep best 30% as protection candidates before pruning
+  const ADAPTIVE_THRESHOLD_MARGIN=0.18;// q25 margin keeps threshold from rising too aggressively on large datasets
+  const MIN_EVIDENCE_COUNT=2;         // require at least two observations before harsh prune/bench actions
+  const MAX_OVER_CAP_REMOVAL_BUFFER=3;// allows small extra removals when heavy redundancy appears
   if(!customs||customs.length===0)return{pruned:customs,removed:[]};
   const generated=customs.filter(ca=>ca.generated);
   const userDefined=customs.filter(ca=>!ca.generated);
   if(generated.length<2)return{pruned:customs,removed:[]};
   if(rows.length<4)return{pruned:customs,removed:[]};
   const redundant=detectRedundant(generated,rows);
-  const scored=generated.map((ca,idx)=>({ca,score:scoreAlgo(ca,weights,rows,btCache),origIdx:idx}));
+  const scored=generated.map(ca=>{
+    const stats=scoreAlgo(ca,weights,rows,btCache);
+    return{ca,score:stats.score,stats};
+  });
   scored.sort((a,b)=>a.score-b.score); // ascending: worst first
 
   // Pre-build index map — O(1) lookup, fixes O(n²) bug
   const scoreRank=new Map(scored.map((x,i)=>[x.ca.name,i]));
+  const eliteCount=Math.max(2,Math.ceil(generated.length*ELITE_PROTECTION_RATIO));
+  const eliteProtectionCandidates=new Set(scored.slice(-eliteCount).map(x=>x.ca.name));
 
   const overCap=Math.max(0,generated.length-MAX_GENERATED_ALGOS);
   // Dynamic threshold: scales with data — more rows = higher bar
-  const threshold=rows.length>=25?0.15:rows.length>=15?0.08:rows.length>=10?0.00:-0.50;
+  const baseThreshold=rows.length>=25?0.15:rows.length>=15?0.08:rows.length>=10?0.00:-0.50;
+  const q25=scored.length?scored[Math.max(0,Math.floor((scored.length-1)*0.25))].score:baseThreshold;
+  const threshold=Math.min(baseThreshold,q25-ADAPTIVE_THRESHOLD_MARGIN);
   const benchThreshold=threshold+0.12;
 
   const removed=[];
   const benched=[];
   const kept=[];
+  let overCapRemoved=0;
 
-  scored.forEach(({ca,score})=>{
+  scored.forEach(({ca,score,stats})=>{
+    const hasSufficientEvidence=stats.btCnt>=MIN_EVIDENCE_COUNT||stats.nsCount>=MIN_EVIDENCE_COUNT;
+    // OR logic is intentional: a single strong and reliable signal is enough to avoid premature pruning.
+    const strongSignals=
+      stats.avgBt>=MIN_PROTECT_AVG_BT||
+      stats.avgWf>=MIN_PROTECT_AVG_WF||
+      stats.avgNs>=MIN_PROTECT_AVG_NS||
+      score>=benchThreshold+MIN_PROTECT_SCORE_MARGIN;
+    const isProtected=eliteProtectionCandidates.has(ca.name)&&hasSufficientEvidence&&strongSignals;
+    const needsMoreCapacityReduction=generated.length-overCapRemoved>MAX_GENERATED_ALGOS;
+
     // Always remove redundant
     if(redundant.has(ca.name)){
       removed.push({name:ca.name,reason:"redundant"});
@@ -3066,17 +3095,18 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
     }
     // Remove over-cap (lowest ranked first) — use pre-built rank map
     const rank=scoreRank.get(ca.name)??999;
-    if(overCap>0&&rank<overCap&&removed.length<overCap+3){
+    if(overCap>0&&rank<overCap&&removed.length<overCap+MAX_OVER_CAP_REMOVAL_BUFFER&&(!isProtected||needsMoreCapacityReduction)){
       removed.push({name:ca.name,reason:"over_cap"});
+      overCapRemoved++;
       return;
     }
     // Remove hard failures (max 4 per cycle to avoid mass deletion)
-    if(score<threshold&&removed.length<4){
+    if(hasSufficientEvidence&&!isProtected&&score<threshold&&removed.length<4){
       removed.push({name:ca.name,reason:"score:"+score.toFixed(2)});
       return;
     }
     // Bench borderline algos
-    if(score<benchThreshold&&!ca.benched){
+    if(hasSufficientEvidence&&!isProtected&&score<benchThreshold&&!ca.benched){
       benched.push({...ca,enabled:false,benched:true,benchedAt:Date.now()});
       return;
     }
