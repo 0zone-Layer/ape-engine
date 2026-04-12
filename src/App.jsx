@@ -2983,10 +2983,10 @@ function shouldAutoPrune(customs,rows){
 
 // scoreAlgo: optional btCache avoids redundant btScore recomputation during auto-train prune
 function scoreAlgo(ca,weights,rows,btCache){
-  if(!ca.generated)return Infinity;
-  if(ca.benched)return -0.1;
+  if(!ca.generated)return{score:Infinity,avgNs:0,avgStreak:0,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
+  if(ca.benched)return{score:-0.1,avgNs:0,avgStreak:0,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
   const fn=makeCustomFn(ca.code);
-  if(!fn)return -999;
+  if(!fn)return{score:-999,avgNs:-1,avgStreak:-1,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
   let totalNs=0,totalStreak=0,nsCount=0,totalBt=0,totalWf=0,btCnt=0;
   COLS.forEach(col=>{
     const ns=weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
@@ -3009,7 +3009,10 @@ function scoreAlgo(ca,weights,rows,btCache){
   const avgStreak=nsCount?totalStreak/nsCount:0;
   const avgBt=btCnt?totalBt/btCnt:0.05;
   const avgWf=btCnt?totalWf/btCnt:0.05;
-  return avgNs*0.40+avgStreak*0.20+avgBt*2.0+avgWf*1.2;
+  return{
+    score:avgNs*0.40+avgStreak*0.20+avgBt*2.0+avgWf*1.2,
+    avgNs,avgStreak,avgBt,avgWf,nsCount,btCnt
+  };
 }
 
 // Fix 10: redundancy detection — find algos that always predict same value
@@ -3043,22 +3046,34 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   if(generated.length<2)return{pruned:customs,removed:[]};
   if(rows.length<4)return{pruned:customs,removed:[]};
   const redundant=detectRedundant(generated,rows);
-  const scored=generated.map((ca,idx)=>({ca,score:scoreAlgo(ca,weights,rows,btCache),origIdx:idx}));
+  const scored=generated.map((ca,idx)=>{
+    const stats=scoreAlgo(ca,weights,rows,btCache);
+    return{ca,score:stats.score,stats,origIdx:idx};
+  });
   scored.sort((a,b)=>a.score-b.score); // ascending: worst first
 
   // Pre-build index map — O(1) lookup, fixes O(n²) bug
   const scoreRank=new Map(scored.map((x,i)=>[x.ca.name,i]));
+  const eliteProtected=new Set(scored.slice(-Math.max(2,Math.ceil(generated.length*0.3))).map(x=>x.ca.name));
 
   const overCap=Math.max(0,generated.length-MAX_GENERATED_ALGOS);
   // Dynamic threshold: scales with data — more rows = higher bar
-  const threshold=rows.length>=25?0.15:rows.length>=15?0.08:rows.length>=10?0.00:-0.50;
+  const baseThreshold=rows.length>=25?0.15:rows.length>=15?0.08:rows.length>=10?0.00:-0.50;
+  const scoreVals=scored.map(s=>s.score).sort((a,b)=>a-b);
+  const q25=scoreVals.length?scoreVals[Math.max(0,Math.floor((scoreVals.length-1)*0.25))]:baseThreshold;
+  const threshold=Math.min(baseThreshold,q25-0.18);
   const benchThreshold=threshold+0.12;
 
   const removed=[];
   const benched=[];
   const kept=[];
+  let overCapRemoved=0;
 
-  scored.forEach(({ca,score})=>{
+  scored.forEach(({ca,score,stats})=>{
+    const hasEvidence=stats.btCnt>=2||stats.nsCount>=2;
+    const strongSignals=stats.avgBt>=0.24||stats.avgWf>=0.32||stats.avgNs>=0.2||score>=benchThreshold+0.22;
+    const isProtected=eliteProtected.has(ca.name)&&hasEvidence&&strongSignals;
+
     // Always remove redundant
     if(redundant.has(ca.name)){
       removed.push({name:ca.name,reason:"redundant"});
@@ -3066,17 +3081,18 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
     }
     // Remove over-cap (lowest ranked first) — use pre-built rank map
     const rank=scoreRank.get(ca.name)??999;
-    if(overCap>0&&rank<overCap&&removed.length<overCap+3){
+    if(overCap>0&&rank<overCap&&removed.length<overCap+3&&(!isProtected||generated.length-overCapRemoved>MAX_GENERATED_ALGOS)){
       removed.push({name:ca.name,reason:"over_cap"});
+      overCapRemoved++;
       return;
     }
     // Remove hard failures (max 4 per cycle to avoid mass deletion)
-    if(score<threshold&&removed.length<4){
+    if(hasEvidence&&!isProtected&&score<threshold&&removed.length<4){
       removed.push({name:ca.name,reason:"score:"+score.toFixed(2)});
       return;
     }
     // Bench borderline algos
-    if(score<benchThreshold&&!ca.benched){
+    if(hasEvidence&&!isProtected&&score<benchThreshold&&!ca.benched){
       benched.push({...ca,enabled:false,benched:true,benchedAt:Date.now()});
       return;
     }
