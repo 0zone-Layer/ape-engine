@@ -3045,6 +3045,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   const MIN_PROTECT_AVG_NS=0.20;
   const MIN_PROTECT_SCORE_MARGIN=0.22;
   const ADAPTIVE_THRESHOLD_MARGIN=0.18;
+  const MIN_EVIDENCE_COUNT=2;
   if(!customs||customs.length===0)return{pruned:customs,removed:[]};
   const generated=customs.filter(ca=>ca.generated);
   const userDefined=customs.filter(ca=>!ca.generated);
@@ -3059,7 +3060,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
 
   // Pre-build index map — O(1) lookup, fixes O(n²) bug
   const scoreRank=new Map(scored.map((x,i)=>[x.ca.name,i]));
-  const eliteProtected=new Set(scored.slice(-Math.max(2,Math.ceil(generated.length*0.3))).map(x=>x.ca.name));
+  const eliteProtectionCandidates=new Set(scored.slice(-Math.max(2,Math.ceil(generated.length*0.3))).map(x=>x.ca.name));
 
   const overCap=Math.max(0,generated.length-MAX_GENERATED_ALGOS);
   // Dynamic threshold: scales with data — more rows = higher bar
@@ -3074,13 +3075,13 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   let overCapRemoved=0;
 
   scored.forEach(({ca,score,stats})=>{
-    const hasEvidence=stats.btCnt>=2||stats.nsCount>=2;
+    const hasEvidence=stats.btCnt>=MIN_EVIDENCE_COUNT||stats.nsCount>=MIN_EVIDENCE_COUNT;
     const strongSignals=
       stats.avgBt>=MIN_PROTECT_AVG_BT||
       stats.avgWf>=MIN_PROTECT_AVG_WF||
       stats.avgNs>=MIN_PROTECT_AVG_NS||
       score>=benchThreshold+MIN_PROTECT_SCORE_MARGIN;
-    const isProtected=eliteProtected.has(ca.name)&&hasEvidence&&strongSignals;
+    const isProtected=eliteProtectionCandidates.has(ca.name)&&hasEvidence&&strongSignals;
 
     // Always remove redundant
     if(redundant.has(ca.name)){
