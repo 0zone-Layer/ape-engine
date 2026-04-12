@@ -561,14 +561,22 @@ const A={
   // AdaptivePRNG: blends multiple pseudo-random detectors and votes by fit quality
   AdaptivePRNG:   s=>{
     if(s.length<6)return[s[s.length-1]];
-    const hist=s.slice(-Math.min(50,s.length));
+    const MAX_HISTORY_WINDOW=50;
+    const hist=s.slice(-Math.min(MAX_HISTORY_WINDOW,s.length));
     const n=hist.length,last=hist[n-1];
     const models=[];
+    const LCG_MULTIPLIERS=[1,3,5,7,9,11,13,17,19,23,29,31,37,41,47,53,61,71,79,83,89,97];
+    const LCG_INCREMENTS=[0,1,3,5,7,11,13,17,19,23,29,31,37,41,47,53,59,67,71,73,79,83,89,97];
+    const XORSHIFT_LEFT_SHIFTS=[2,3,4,5];
+    const XORSHIFT_RIGHT_SHIFTS=[3,4,5,6];
+    const XORSHIFT_FINAL_SHIFTS=[1,2,3,4];
+    const MAX_LAG_DISTANCE=10; // Caps search to keep fit adaptive without overfitting old history.
+    const MIN_MODEL_WEIGHT=0.05; // Prevents best model from fully silencing weaker but useful alternatives.
 
     // 1) LCG fit: x[n+1]=(a*x[n]+c) mod 100
     let bestLCG={sc:-1,p:last};
-    for(const a of[1,3,5,7,9,11,13,17,19,23,29,31,37,41,47,53,61,71,79,83,89,97])
-      for(const c of[0,1,3,5,7,11,13,17,19,23,29,31,37,41,47,53,59,67,71,73,79,83,89,97]){
+    for(const a of LCG_MULTIPLIERS)
+      for(const c of LCG_INCREMENTS){
         let sc=0;
         for(let i=1;i<n;i++){
           const p=M.mod(a*hist[i-1]+c);
@@ -581,7 +589,7 @@ const A={
 
     // 2) Xorshift-7 fit
     let bestXS={sc:-1,p:last};
-    for(const a of[2,3,4,5])for(const b of[3,4,5,6])for(const c of[1,2,3,4]){
+    for(const a of XORSHIFT_LEFT_SHIFTS)for(const b of XORSHIFT_RIGHT_SHIFTS)for(const c of XORSHIFT_FINAL_SHIFTS){
       let sc=0;
       for(let i=1;i<n;i++){
         let x=hist[i-1]&0x7F;
@@ -600,7 +608,7 @@ const A={
 
     // 3) Lagged feedback (xor/add/sub)
     let bestLag={sc:-1,p:last};
-    for(let j=2;j<=Math.min(10,n-1);j++)for(let k=1;k<j;k++)for(const op of["xor","add","sub"]){
+    for(let j=2;j<=Math.min(MAX_LAG_DISTANCE,n-1);j++)for(let k=1;k<j;k++)for(const op of["xor","add","sub"]){
       let sc=0;
       for(let i=j;i<n;i++){
         const a=hist[i-k],b=hist[i-j];
@@ -618,7 +626,7 @@ const A={
     const votes={};
     models.forEach(m=>{
       if(m&&ok(m.p)){
-        const w=Math.max(0.05,m.sc/Math.max(1,n-1));
+        const w=Math.max(MIN_MODEL_WEIGHT,m.sc/Math.max(1,n-1));
         votes[m.p]=(votes[m.p]||0)+w;
       }
     });
