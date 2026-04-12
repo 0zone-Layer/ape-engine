@@ -1359,6 +1359,11 @@ function nextDateISO(dateStr){
   dt.setDate(dt.getDate()+1);
   return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
 }
+function dateTs(dateStr){
+  if(!dateStr)return null;
+  const dt=new Date(dateStr+"T12:00:00");
+  return isNaN(dt)?null:dt.getTime();
+}
 
 // ── HELPER: get rows that have a date and a value for `col` ──
 function datedRows(col,data){
@@ -3661,12 +3666,15 @@ function AppInner(){
     const target=maxRow+1; // sequential global day — no monthly cycling
     // Compute target date from the latest dated row in dataset.
     // Keep manual override only when it is beyond the latest dataset date.
-    const latestDated=rows.reduce((mx,r)=>{
-      if(!r?.date||!parseDate(r.date))return mx;
-      return!mx||r.date>mx?r.date:mx;
-    },"");
+    const latestDatedInfo=rows.reduce((mx,r)=>{
+      const ts=dateTs(r?.date);
+      if(ts==null)return mx;
+      return(!mx||ts>mx.ts)?{date:r.date,ts}:mx;
+    },null);
+    const latestDated=latestDatedInfo?.date||"";
     const autoDate=latestDated?nextDateISO(latestDated):"";
-    const tDate=(predDate&&(!latestDated||predDate>latestDated))?predDate:autoDate;
+    const manualTs=dateTs(predDate);
+    const tDate=(manualTs!=null&&(!latestDatedInfo||manualTs>latestDatedInfo.ts))?predDate:autoDate;
     const result={};
     const _sharedMeta=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     const _slimAccLog=(S.accLog||[]).slice(-10);
@@ -3719,7 +3727,7 @@ function AppInner(){
       }
     }
     upd(prev=>({...prev,preds:result,predRow:target,predDate:tDate}));
-    setPredDate(tDate||"");
+    setPredDate(tDate);
     setCheckRes(null);setActs({A:"",B:"",C:"",D:""});setTab("predict");
     setTimeout(()=>st("Predictions ready"+(tDate?" · "+tDate:"")+" ✓"),300);
   }
