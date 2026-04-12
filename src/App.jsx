@@ -1352,6 +1352,26 @@ function parseDate(dateStr){
   };
 }
 
+/** Formats a Date as YYYY-MM-DD. */
+function formatDateISO(dt){
+  return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+}
+/** Returns next day as YYYY-MM-DD; empty string if input is invalid. */
+function nextDateISO(dateStr){
+  if(!dateStr)return"";
+  const dt=new Date(dateStr+"T12:00:00");
+  if(Number.isNaN(dt.getTime()))return"";
+  dt.setDate(dt.getDate()+1);
+  return formatDateISO(dt);
+}
+/** Returns epoch timestamp for YYYY-MM-DD, or null if invalid. */
+function dateTs(dateStr){
+  if(!dateStr)return null;
+  const dt=new Date(dateStr+"T12:00:00");
+  const ts=dt.getTime();
+  return Number.isNaN(ts)?null:ts;
+}
+
 // ── HELPER: get rows that have a date and a value for `col` ──
 function datedRows(col,data){
   return data.filter(r=>ok(r[col])&&r.date&&parseDate(r.date));
@@ -3361,6 +3381,9 @@ function AppInner(){
     _TC.bumpVer();
     _TC.clear();
   },[S.datasets,S.active]);
+  useEffect(()=>{
+    setPredDate(S.predDate||"");
+  },[S.predDate]);
 
   useEffect(()=>{
     loadS().then(saved=>{
@@ -3651,16 +3674,17 @@ function AppInner(){
     st("Computing…","busy");
     const maxRow=Math.max(...rows.map(r=>r.row));
     const target=maxRow+1; // sequential global day — no monthly cycling
-    // Compute target date: use predDate if set, else auto-advance from last dated row
-    let tDate=predDate||"";
-    if(!tDate){
-      const lastDated=[...rows].reverse().find(r=>r.date);
-      if(lastDated&&lastDated.date){
-        const nd=new Date(lastDated.date+"T12:00:00");
-        nd.setDate(nd.getDate()+1);
-        tDate=nd.getFullYear()+"-"+String(nd.getMonth()+1).padStart(2,"0")+"-"+String(nd.getDate()).padStart(2,"0");
-      }
-    }
+    // Compute target date from the latest dated row in dataset.
+    // Keep manual override only when it is beyond the latest dataset date.
+    const latestDatedInfo=rows.reduce((latestSoFar,r)=>{
+      const ts=dateTs(r.date);
+      if(ts===null)return latestSoFar;
+      return(!latestSoFar||ts>latestSoFar.ts)?{date:r.date,ts}:latestSoFar;
+    },null);
+    const latestDated=latestDatedInfo?.date||"";
+    const autoDate=latestDated?nextDateISO(latestDated):"";
+    const manualTs=dateTs(predDate);
+    const tDate=(manualTs!==null&&(!latestDatedInfo||manualTs>latestDatedInfo.ts))?predDate:autoDate;
     const result={};
     const _sharedMeta=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     const _slimAccLog=(S.accLog||[]).slice(-10);
