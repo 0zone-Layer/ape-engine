@@ -71,6 +71,7 @@ function getGlobalSeries(col,datasets){
   return result;
 }
 const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",F:"#f472b6",G:"#22d3ee"};
+// Keep legacy per-column hash identity after E removal (F/G retain original weights).
 const HASH_WEIGHTS={A:3,B:5,C:7,D:11,F:17,G:19};
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
