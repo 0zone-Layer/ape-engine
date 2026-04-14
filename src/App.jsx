@@ -3847,8 +3847,10 @@ function AppInner(){
     let hasKnown=false;
     COLS.forEach(col=>{
       const raw=acts[col].trim();
-      if(raw&&raw.toUpperCase()!=="XX"&&!isNaN(parseInt(raw))&&parseInt(raw)>=0&&parseInt(raw)<=99){
-        known[col]=parseInt(raw);
+      const n=parseInt(raw);
+      const autoPredictedValue=missingPreds[col]?.top5?.[0]?.value??null;
+      if(raw&&raw.toUpperCase()!=="XX"&&!isNaN(n)&&n>=0&&n<=99&&(autoPredictedValue===null||n!==autoPredictedValue)){
+        known[col]=n;
         hasKnown=true;
       }
     });
@@ -4460,6 +4462,12 @@ function AppInner(){
     const v=val.toUpperCase();
     const cleaned=v==="X"||v==="XX"?"XX":v.replace(/\D/g,"").slice(0,2);
     setActs(p=>({...p,[col]:cleaned}));
+    setMissingPreds(prev=>{
+      if(!prev[col])return prev;
+      const next={...prev};
+      delete next[col];
+      return next;
+    });
   }
   const stClr=msg.c==="ok"?"#34d399":msg.c==="err"?"#f87171":msg.c==="warn"?"#fbbf24":msg.c==="busy"?"#a78bfa":"#4a4e6a";
   const dsKeys=Object.keys(S.datasets||{});
