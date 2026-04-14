@@ -16,8 +16,8 @@ const M={
   median:a=>{const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;},
 };
 const pad2=n=>String(M.mod(n)).padStart(2,"0");
-const COLS=["A","B","C","D","E","F","G"];
-const COL_NAMES={A:"Desawar",B:"Delhi Bazar",C:"Shri Ganesh",D:"Faridabad",E:"Shri Krishna",F:"Ghaziabad",G:"Gali"};
+const COLS=["A","B","C","D","F","G"];
+const COL_NAMES={A:"Desawar",B:"Delhi Bazar",C:"Shri Ganesh",D:"Faridabad",F:"Ghaziabad",G:"Gali"};
 function buildPredictionCopyLines(preds,cols){
   const lines=[];
   (cols||COLS).forEach(col=>{
@@ -70,8 +70,9 @@ function getGlobalSeries(col,datasets){
   _TC.gs[ck]=result;
   return result;
 }
-const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#60a5fa",F:"#f472b6",G:"#22d3ee"};
-const HASH_WEIGHTS=[3,5,7,11,13,17,19];
+const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",F:"#f472b6",G:"#22d3ee"};
+// Keep legacy per-column hash identity after E removal (F/G retain original weights).
+const HASH_WEIGHTS={A:3,B:5,C:7,D:11,F:17,G:19};
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
 const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}}]));
@@ -2006,7 +2007,7 @@ function getTemporalChain(targetCol,data){
   if(prev&&ok(prev[targetCol])&&ok(prev[aR])&&ok(last[aR]))res.LagDelta=[M.mod(last[aR]+(prev[targetCol]-prev[aR]))];
   if(COLS.every(c=>ok(last[c]))){
     res.RowSum=[M.mod(COLS.reduce((sum,c)=>sum+last[c],0))];
-    res.RowHash=[M.mod(COLS.reduce((hash,c,i)=>hash+last[c]*HASH_WEIGHTS[i],0)%100)];
+    res.RowHash=[M.mod(COLS.reduce((hash,c)=>hash+last[c]*(HASH_WEIGHTS[c]||1),0)%100)];
   }
   for(let i=0;i<COLS.length;i++){
     for(let j=i+1;j<COLS.length;j++){
@@ -4642,14 +4643,14 @@ function AppInner(){
               </button>
             </div>
             {showBulk&&<div style={{marginTop:8,background:"#0c0e1a",border:"1px solid #1a1e35",borderRadius:8,padding:12}}>
-              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,02,10,92,XX\n02,91,10,30,68"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
+              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"Row,"+COLS.join(",")+"\n01,"+COLS.map((_,i)=>pad2((2+i*13)%100)).join(",")} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
               <div style={{display:"flex",gap:6,marginTop:8}}><PB onClick={doBulk}>Import</PB><GB onClick={()=>setShowBulk(false)}>Cancel</GB></div>
             </div>}
           </div>
           {rows.length>0?<Card>
             <div style={{overflowX:"auto",maxHeight:320,overflowY:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date","A","B","C","D",""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date",...COLS,""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
                 <tbody>{rows.map((r,i)=>{const dp=r.date?parseDate(r.date):null;const DAYS=["Su","Mo","Tu","We","Th","Fr","Sa"];return<tr key={r.row} style={{background:i%2?"rgba(255,255,255,.01)":"transparent",borderBottom:"1px solid rgba(255,255,255,.02)"}}>
                   <td style={{padding:"5px 10px",color:"#252840",textAlign:"center"}}>{i+1}</td>
                   <td style={{padding:"5px 10px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(r.row)}</td>
