@@ -3848,8 +3848,8 @@ function AppInner(){
     COLS.forEach(col=>{
       const raw=acts[col].trim();
       const n=parseInt(raw);
-      const autoPred=missingPreds[col]?.top5?.[0]?.value??null;
-      if(raw&&raw.toUpperCase()!=="XX"&&!isNaN(n)&&n>=0&&n<=99&&(autoPred===null||n!==autoPred)){
+      const autoPredictedValue=missingPreds[col]?.top5?.[0]?.value??null;
+      if(raw&&raw.toUpperCase()!=="XX"&&!isNaN(n)&&n>=0&&n<=99&&(autoPredictedValue===null||n!==autoPredictedValue)){
         known[col]=n;
         hasKnown=true;
       }
