@@ -4643,7 +4643,7 @@ function AppInner(){
               </button>
             </div>
             {showBulk&&<div style={{marginTop:8,background:"#0c0e1a",border:"1px solid #1a1e35",borderRadius:8,padding:12}}>
-              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"Row,A,B,C,D,F,G\n01,02,10,92,XX,45,67"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
+              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"Row,"+COLS.join(",")+"\n01,"+COLS.map((_,i)=>pad2((2+i*13)%100)).join(",")} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
               <div style={{display:"flex",gap:6,marginTop:8}}><PB onClick={doBulk}>Import</PB><GB onClick={()=>setShowBulk(false)}>Cancel</GB></div>
             </div>}
           </div>
