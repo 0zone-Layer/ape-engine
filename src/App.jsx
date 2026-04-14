@@ -18,6 +18,23 @@ const M={
 const pad2=n=>String(M.mod(n)).padStart(2,"0");
 const COLS=["A","B","C","D","E","F","G"];
 const COL_NAMES={A:"Desawar",B:"Delhi Bazar",C:"Shri Ganesh",D:"Faridabad",E:"Shri Krishna",F:"Ghaziabad",G:"Gali"};
+function buildPredictionCopyLines(preds,cols){
+  const lines=[];
+  (cols||COLS).forEach(col=>{
+    const t=preds&&preds[col]?preds[col].top5:[];
+    if(!t||!t.length)return;
+    const first=t[0]?pad2(t[0].value):"--";
+    const second=t[1]?pad2(t[1].value):"--";
+    const third=t[2]?pad2(t[2].value):"--";
+    const fourth=t[3]?pad2(t[3].value):"--";
+    const fifth=t[4]?pad2(t[4].value):"--";
+    lines.push(
+      COL_NAMES[col]+": "+first+" / "+second,
+      third+"-"+fourth+"-"+fifth
+    );
+  });
+  return lines;
+}
 const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
@@ -3434,6 +3451,8 @@ function AppInner(){
   const[corrM,setCorrM]=useState(null);
   const[dsName,setDsName]=useState("");
   const[copyMsg,setCopyMsg]=useState("");
+  const[predictCopyMsg,setPredictCopyMsg]=useState("");
+  const[missingCopyMsg,setMissingCopyMsg]=useState("");
   const[autoTrainStatus,setAutoTrainStatus]=useState(null); // {running,progress,total,done,log,result}
   const autoTrainRef=React.useRef(false); // cancellation flag
   const[weightsMsg,setWeightsMsg]=useState("");
@@ -4686,23 +4705,10 @@ function AppInner(){
                   <div style={{fontSize:20,fontWeight:700}}>{S.preds[COLS[0]]?S.preds[COLS[0]].algoCount:0}</div>
                 </div>
                 <button onClick={()=>{
-                  const lines=["Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36)];
-                  COLS.forEach(col=>{
-                    const t=S.preds[col]?S.preds[col].top5:[];
-                    if(!t.length)return;
-                    const first=t[0]?pad2(t[0].value):"--";
-                    const second=t[1]?pad2(t[1].value):"--";
-                    const third=t[2]?pad2(t[2].value):"--";
-                    const fourth=t[3]?pad2(t[3].value):"--";
-                    const fifth=t[4]?pad2(t[4].value):"--";
-                    lines.push(
-                      COL_NAMES[col]+" - "+first+" / "+second,
-                      "Third: "+third+" · Fourth: "+fourth+" · Fifth: "+fifth
-                    );
-                  });
+                  const lines=["Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36),...buildPredictionCopyLines(S.preds,COLS)];
                   navigator.clipboard&&navigator.clipboard.writeText(lines.join("\n")).catch(()=>{});
-                  setCopyMsg("Copied!");setTimeout(()=>setCopyMsg(""),2000);
-                }} style={{background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.3)",color:"#a78bfa",padding:"5px 10px",borderRadius:6,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>{copyMsg||"📋 Copy"}</button>
+                  setPredictCopyMsg("Copied!");setTimeout(()=>setPredictCopyMsg(""),2000);
+                }} style={{background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.3)",color:"#a78bfa",padding:"5px 10px",borderRadius:6,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>{predictCopyMsg||"📋 Copy"}</button>
               </div>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(216px,1fr))",gap:12,marginBottom:14}}>
@@ -4806,7 +4812,14 @@ function AppInner(){
                 <GB onClick={()=>{setActs(mkColTextDefaults());setMissingPreds({});}}>✕ Clear All</GB>
               </div>
               {Object.keys(missingPreds).length>0&&<div style={{background:"rgba(167,139,250,.06)",border:"1px solid rgba(167,139,250,.2)",borderRadius:8,padding:12,marginBottom:12}}>
-                <div style={{fontSize:9,color:"#a78bfa",letterSpacing:3,textTransform:"uppercase",marginBottom:10}}>Predictions for Missing Columns</div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:10}}>
+                  <div style={{fontSize:9,color:"#a78bfa",letterSpacing:3,textTransform:"uppercase"}}>Predictions for Missing Columns</div>
+                  <button onClick={()=>{
+                    const lines=["Missing Col Predictions — "+new Date().toLocaleString(),"─".repeat(36),...buildPredictionCopyLines(missingPreds,Object.keys(missingPreds))];
+                    navigator.clipboard&&navigator.clipboard.writeText(lines.join("\n")).catch(()=>{});
+                    setMissingCopyMsg("Copied!");setTimeout(()=>setMissingCopyMsg(""),2000);
+                  }} style={{background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.3)",color:"#a78bfa",padding:"4px 9px",borderRadius:6,cursor:"pointer",fontSize:9,fontFamily:"inherit"}}>{missingCopyMsg||"📋 Copy"}</button>
+                </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}}>
                   {Object.entries(missingPreds).map(([col,pred])=>{
                     const maxV=pred.top5[0]?pred.top5[0].votes:1;
