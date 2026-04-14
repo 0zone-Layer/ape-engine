@@ -71,7 +71,7 @@ function getGlobalSeries(col,datasets){
   return result;
 }
 const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",F:"#f472b6",G:"#22d3ee"};
-const HASH_WEIGHTS=[3,5,7,11,17,19];
+const HASH_WEIGHTS={A:3,B:5,C:7,D:11,F:17,G:19};
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
 const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{}}]));
@@ -2006,7 +2006,7 @@ function getTemporalChain(targetCol,data){
   if(prev&&ok(prev[targetCol])&&ok(prev[aR])&&ok(last[aR]))res.LagDelta=[M.mod(last[aR]+(prev[targetCol]-prev[aR]))];
   if(COLS.every(c=>ok(last[c]))){
     res.RowSum=[M.mod(COLS.reduce((sum,c)=>sum+last[c],0))];
-    res.RowHash=[M.mod(COLS.reduce((hash,c,i)=>hash+last[c]*HASH_WEIGHTS[i],0)%100)];
+    res.RowHash=[M.mod(COLS.reduce((hash,c)=>hash+last[c]*(HASH_WEIGHTS[c]||1),0)%100)];
   }
   for(let i=0;i<COLS.length;i++){
     for(let j=i+1;j<COLS.length;j++){
