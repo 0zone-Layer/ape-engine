@@ -108,6 +108,13 @@ const PRUNE_BOTTOM_RATIO=0.40;
 const PRUNE_RELAXED_BOTTOM_RATIO=0.20;
 const MIN_GENERATED_POOL_SIZE=8;
 const MUTATE_TOP_RATIO=0.20;
+const PERF_WEIGHT_BASE=0.55;
+const PERF_WEIGHT_ACC_COEF=0.70;
+const PERF_WEIGHT_ERR_COEF=0.45;
+const PERF_WEIGHT_MIN=0.45;
+const PERF_WEIGHT_MAX=1.95;
+const LOW_POOL_TOP_SCORE_THRESHOLD=0.45;
+const LOW_POOL_MEAN_SCORE_THRESHOLD=0.22;
 const SCORE_WEIGHT_NS=0.34;
 const SCORE_WEIGHT_STREAK=0.16;
 const SCORE_WEIGHT_BT=1.8;
@@ -154,7 +161,8 @@ function getAlgoPerfWeight(perf){
   const acc=clamp(perf.rollingAccuracy,0,1);
   const err=clamp(1-(perf.recentError||0)/25,0,1);
   const ev=clamp((perf.evalCount||0)/PERF_ROLLING_WINDOW,0.3,1);
-  return clamp(0.55+acc*0.70+err*0.45,0.45,1.95)*ev;
+  // Weighted blend: prioritize rolling hit-rate, then recency error, then evidence maturity.
+  return clamp(PERF_WEIGHT_BASE+acc*PERF_WEIGHT_ACC_COEF+err*PERF_WEIGHT_ERR_COEF,PERF_WEIGHT_MIN,PERF_WEIGHT_MAX)*ev;
 }
 
 function buildPredictionBenchmark(preds){
@@ -3254,11 +3262,12 @@ function filterGeneratedAlgos(candidates,data){
 // ── MUTATION: clone top performers with minimal structural changes ──────
 function mutateCode(code){
   const seedExpr="s[s.length-1]";
-  const lagTerm=code.includes(seedExpr)?code.replace(seedExpr,"s[Math.max(0,s.length-2)]"):code;
-  const shiftTerm=code.includes(seedExpr)?code.replace(seedExpr,"(("+seedExpr+")^(("+seedExpr+")>>1))"):code;
+  const lagTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"s[Math.max(0,s.length-2)]"):code;
+  // Intentionally uses bitwise XOR/shift to inject lightweight nonlinear behavior.
+  const shiftTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"(("+seedExpr+")^(("+seedExpr+")>>1))"):code;
   const mul=2+Math.floor(Math.random()*2);
-  const mulTerm=code.includes(seedExpr)?code.replace(seedExpr,"("+seedExpr+"*"+mul+")"):code;
-  const candidates=shuffleArray([lagTerm,shiftTerm,mulTerm]).filter((v,i,a)=>v!==code&&a.indexOf(v)===i);
+  const mulTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"("+seedExpr+"*"+mul+")"):code;
+  const candidates=shuffleArray([...new Set([lagTerm,shiftTerm,mulTerm])]).filter(v=>v!==code);
   for(const candidate of candidates){
     if(makeCustomFn(candidate))return candidate;
   }
@@ -3464,7 +3473,8 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   // Prune only bottom segment and only after minimum evaluation window.
   const bottomStart=Math.floor(generatedCount*(1-PRUNE_BOTTOM_RATIO));
   const bottom=scored.slice(bottomStart);
-  const globallyLow=scored[0].score<0.45&&M.mean(scored.map(x=>x.score))<0.22;
+  // If whole pool quality is weak, relax pruning to avoid collapse.
+  const globallyLow=scored[0].score<LOW_POOL_TOP_SCORE_THRESHOLD&&M.mean(scored.map(x=>x.score))<LOW_POOL_MEAN_SCORE_THRESHOLD;
   const pruneRatio=globallyLow?PRUNE_RELAXED_BOTTOM_RATIO:PRUNE_BOTTOM_RATIO;
   const maxPrunes=Math.max(0,Math.floor(generatedCount*pruneRatio));
   let prunedNow=0;
@@ -3482,8 +3492,9 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
     .map(ca=>({...ca,class:ca.class||classifyAlgo(ca.name,ca.code),enabled:true,benched:false}));
   // If all candidates are weak, relax pruning and keep more.
   if(keptGenerated.length<minKeep){
+    const keptNames=new Set(keptGenerated.map(k=>k.name));
     const rescue=[...scored].reverse().filter(x=>!removedSet.has(x.ca.name)).slice(0,minKeep-keptGenerated.length);
-    rescue.forEach(x=>{if(!keptGenerated.find(k=>k.name===x.ca.name))keptGenerated.push({...x.ca,class:x.ca.class||classifyAlgo(x.ca.name,x.ca.code),enabled:true,benched:false});});
+    rescue.forEach(x=>{if(!keptNames.has(x.ca.name)){keptGenerated.push({...x.ca,class:x.ca.class||classifyAlgo(x.ca.name,x.ca.code),enabled:true,benched:false});keptNames.add(x.ca.name);}});
   }
   const pruned=[...userDefined,...keptGenerated];
   return{pruned,removed};
