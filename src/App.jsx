@@ -67,9 +67,10 @@ const SOURCE_STABILITY_MIN=0.35;
 const SOURCE_STABILITY_MAX=1.0;
 const CONSENSUS_MIN_AGREEMENT_RATIO=0.35;
 const CONSENSUS_MAX_BOOST=0.25;
-const NEURAL_ALPHA_VOLATILE=0.26;
-const NEURAL_ALPHA_FLAT=0.10;
-const NEURAL_ALPHA_DEFAULT=0.16;
+const NEURAL_ALPHA_VOLATILE=0.34;
+const NEURAL_ALPHA_FLAT=0.14;
+const NEURAL_ALPHA_DEFAULT=0.22;
+const PRUNE_MIN_NEAR1_RATE=0.001;
 
 const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 
@@ -788,6 +789,29 @@ const A={
 
   // Mirror: reflect value around midpoint 50 (50→50, 30→70, 20→80)
   MirrorAt50:     s=>[M.mod(100-s[s.length-1])],
+
+  // MirrorNumber: learns the best mirror transform from recent history
+  MirrorNumber:   s=>{
+    if(s.length<4)return[M.mod(100-s[s.length-1])];
+    const n=s.length;
+    const tx=[
+      {name:"comp",fn:v=>M.mod(100-v)},
+      {name:"rev",fn:v=>M.rev(v)},
+      {name:"revComp",fn:v=>M.rev(M.mod(100-v))},
+      {name:"digitMirror",fn:v=>M.mod((9-M.d1(v))*10+(9-M.d2(v)))},
+    ];
+    let best={sc:-1,fn:tx[0].fn};
+    tx.forEach(t=>{
+      let sc=0;
+      for(let i=1;i<n;i++){
+        const p=t.fn(s[i-1]);
+        if(p===s[i])sc+=1.0;
+        else if(M.cd(p,s[i])<=1)sc+=0.7;
+      }
+      if(sc>best.sc)best={sc,fn:t.fn};
+    });
+    return[best.fn(s[n-1])];
+  },
 
   // StepDown1: last value minus 1 (detects -1 per row patterns)
   StepDown1:      s=>[M.mod(s[s.length-1]-1)],
@@ -2310,10 +2334,10 @@ function getRegime(series){
 }
 // Regime-gated algo pool: FULL exclusion not just multipliers
 const REGIME_POOLS={
-  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget"]),
-  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod"]),
-  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG"]),
-  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5"]),
+  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","MirrorNumber"]),
+  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod","MirrorNumber","MirrorAt50","ComplementPairs","ReverseSeq"]),
+  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG","BestStep","ArithSeqDetect"]),
+  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5","MirrorNumber","MirrorAt50","ComplementPairs"]),
   normal:null
 };
 function algoAllowed(name,regime){
@@ -2781,21 +2805,21 @@ function updateNeuralScores(pred,actual,prevScores,regime){
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
     const ex=p===actual;
+    const near1=!ex&&M.cd(p,actual)<=1;
     const nr=!ex&&M.nearR(p,actual,regime);
     const close=!ex&&!nr&&M.cd(p,actual)<=5;
-    // Tiered reward lowered from (3,1,0.2,-0.6) to reduce short-streak overreaction while preserving rank separation.
-    const baseReward=ex?2.2:nr?0.8:close?0.15:-0.45;
+    const baseReward=ex?2.6:near1?1.35:nr?0.85:close?0.2:-0.55;
     // Streak tracking per algo
     const streakKey="_s_"+name;
     const curStreak=next[streakKey]||0;
-    const newStreak=ex?(curStreak>=0?curStreak+1:1):nr?Math.max(0,curStreak):(curStreak<=0?curStreak-1:-1);
-    next[streakKey]=Math.max(-5,Math.min(8,newStreak));
+    const newStreak=(ex||near1)?(curStreak>=0?curStreak+1:1):nr?Math.max(0,curStreak):(curStreak<=0?curStreak-1:-1);
+    next[streakKey]=Math.max(-6,Math.min(10,newStreak));
     // Streak multiplier: conservative cap for stability
-    const streakMult=newStreak>=4?1.45:newStreak>=2?1.2:newStreak<=-3?0.8:1.0;
+    const streakMult=newStreak>=5?1.55:newStreak>=3?1.25:newStreak<=-3?0.78:1.0;
     const reward=baseReward*streakMult;
     const prev=next[name]!=null?next[name]:0;
     // bound neural EMA so one short streak cannot permanently dominate downstream weighting.
-    next[name]=+clamp((1-alpha)*prev+alpha*reward,-3.5,4.5).toFixed(3);
+    next[name]=+clamp((1-alpha)*prev+alpha*reward,-4.5,5.2).toFixed(3);
   });
   return next;
 }
@@ -3003,35 +3027,101 @@ function generateAlgos(data,existing){
       if(ccb.sc>=3){const nm="CompChain_"+col+"_a"+ccb.a+"c"+ccb.c;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(100-"+ccb.a+"*s[s.length-1]+"+ccb.c+")]",desc:"Auto complement-chain col "+col,enabled:true,generated:true,createdAt:Date.now()});}
     }
+
+    // ── 11. mirror transform selector (pattern detector) ──
+    if(n>=6){
+      const mirrorFns=[
+        {key:"comp",expr:"M.mod(100-s[s.length-1])"},
+        {key:"rev",expr:"M.rev(s[s.length-1])"},
+        {key:"revComp",expr:"M.rev(M.mod(100-s[s.length-1]))"},
+        {key:"digitMirror",expr:"M.mod((9-M.d1(s[s.length-1]))*10+(9-M.d2(s[s.length-1])))"},
+      ];
+      let mb={sc:-1,key:"comp",expr:mirrorFns[0].expr};
+      mirrorFns.forEach(f=>{
+        let sc=0;
+        for(let i=1;i<n;i++){
+          const prev=[...s.slice(0,i),s[i-1]];
+          let p=s[i-1];
+          try{p=Function("s","M","return "+f.expr)(prev,M);}catch(e){}
+          if(M.mod(p)===s[i])sc+=1;
+          else if(M.cd(M.mod(p),s[i])<=1)sc+=0.7;
+        }
+        if(sc>mb.sc)mb={sc,key:f.key,expr:f.expr};
+      });
+      if(mb.sc>=3){
+        const nm="Mirror_"+col+"_"+mb.key;
+        if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>["+mb.expr+"]",desc:"Auto mirror "+mb.key+" col "+col,enabled:true,generated:true,createdAt:Date.now()});
+      }
+    }
+
+    // ── 12. pseudo-random detector (xorshift-lite / lcg-lite) ──
+    if(n>=7){
+      const variants=[
+        {name:"xs13",code:"(s,M)=>{let x=s[s.length-1]||1;x^=(x<<1)&0x7F;x^=(x>>3)&0x7F;x^=(x<<2)&0x7F;return[M.mod(Math.abs(x))];}"},
+        {name:"xs17",code:"(s,M)=>{let x=s[s.length-1]||1;x^=(x<<1)&0x7F;x^=(x>>7)&0x7F;x^=(x<<3)&0x7F;return[M.mod(Math.abs(x))];}"},
+        {name:"lcg",code:"(s,M)=>[M.mod((37*s[s.length-1]+17)%97)]"},
+        {name:"lcg2",code:"(s,M)=>[M.mod((73*s[s.length-1]+29)%89)]"},
+      ];
+      let pb={sc:-1,name:"xs13",code:variants[0].code};
+      variants.forEach(v=>{
+        const fn=makeCustomFn(v.code);
+        if(!fn)return;
+        let sc=0;
+        for(let i=3;i<n;i++){
+          const preds=fn(s.slice(0,i),M)||[];
+          const hit=preds.some(p=>M.cd(M.mod(p),s[i])<=1);
+          if(hit)sc++;
+        }
+        if(sc>pb.sc)pb={sc,name:v.name,code:v.code};
+      });
+      if(pb.sc>=3){
+        const nm="PRNG_"+col+"_"+pb.name;
+        if(!existing.has(nm))out.push({name:nm,code:pb.code,desc:"Auto PRNG detector "+pb.name+" col "+col,enabled:true,generated:true,createdAt:Date.now()});
+      }
+    }
   });
-  return out.slice(0,32); // slightly larger batch per run
+  return out.slice(0,44); // wider search space per generation cycle
 }
 // Bug 11 fix: hard cap enforced at generate time + prune time
 const MAX_GENERATED_ALGOS=60;
 
 // ── TOURNAMENT (Fix 5: real mutation) ─────────────
 function mutateCode(code){
-  // Replace numeric constants with slightly perturbed versions
+  // Replace numeric constants with stronger perturbations + pattern-aware swaps
   let mutated=code;
-  const numRe=/(\d+\.?\d*)/g;
+  const numRe=/\b(\d+\.?\d*)\b/g;
   const nums=[];
   let m;
   while((m=numRe.exec(code))!==null){
     const v=parseFloat(m[1]);
     // Only mutate small constants (coefficients), not indices/lengths
-    if(v>0&&v<200&&v!==0&&String(v).length<=5)nums.push({idx:m.index,len:m[0].length,v});
+    if(v>0&&v<300&&v!==0&&String(v).length<=6)nums.push({idx:m.index,len:m[0].length,v});
   }
   if(!nums.length)return code;
-  // Pick 1-3 random constants to mutate
-  const toMutate=nums.sort(()=>Math.random()-0.5).slice(0,Math.min(3,nums.length));
+  // Pick 3-8 constants to mutate for higher diversity
+  const toMutate=nums.sort(()=>Math.random()-0.5).slice(0,Math.min(8,Math.max(3,Math.floor(nums.length*0.35))));
   // Apply from end to start to preserve indices
   toMutate.sort((a,b)=>b.idx-a.idx);
   toMutate.forEach(({idx,len,v})=>{
-    // Perturb by ±5-25% with some rounding
-    const delta=v*(0.05+Math.random()*0.20)*(Math.random()<0.5?1:-1);
+    // Perturb by ±15-65% with some rounding
+    const delta=v*(0.15+Math.random()*0.50)*(Math.random()<0.5?1:-1);
     const newV=Math.round((v+delta)*100)/100;
     if(newV>0)mutated=mutated.slice(0,idx)+String(newV)+mutated.slice(idx+len);
   });
+  // Pattern-aware structural mutations
+  const swaps=[
+    ["s[s.length-1]","M.rev(s[s.length-1])"],
+    ["s[s.length-1]","M.mod(100-s[s.length-1])"],
+    ["Math.round","Math.floor"],
+    ["+","-"],
+    ["-","+"],
+  ];
+  const mutSteps=2+Math.floor(Math.random()*4);
+  for(let i=0;i<mutSteps;i++){
+    const [from,to]=swaps[Math.floor(Math.random()*swaps.length)];
+    const idx=mutated.indexOf(from);
+    if(idx>=0&&Math.random()<0.65)mutated=mutated.slice(0,idx)+to+mutated.slice(idx+from.length);
+  }
   return mutated;
 }
 function runTournament(customs,data,weights){
@@ -3087,12 +3177,28 @@ function shouldAutoPrune(customs,rows){
 }
 
 // scoreAlgo: optional btCache avoids redundant btScore recomputation during auto-train prune
+function calcNear1Rate(fn,s){
+  if(!fn||!s||s.length<6)return 0;
+  const start=Math.max(3,s.length-42);
+  let hits=0,total=0;
+  for(let i=start;i<s.length;i++){
+    const hist=s.slice(0,i);
+    if(hist.length<3)continue;
+    let preds=[];
+    try{preds=fn(hist)||[];}catch(e){preds=[];}
+    const actual=s[i];
+    const hit=preds.some(p=>ok(p)&&M.cd(M.mod(Math.round(p)),actual)<=1);
+    if(hit)hits++;
+    total++;
+  }
+  return total?hits/total:0;
+}
 function scoreAlgo(ca,weights,rows,btCache){
-  if(!ca.generated)return{score:Infinity,avgNs:0,avgStreak:0,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
-  if(ca.benched)return{score:-0.1,avgNs:0,avgStreak:0,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
+  if(!ca.generated)return{score:Infinity,avgNs:0,avgStreak:0,avgBt:0,avgWf:0,avgNear1:1,nsCount:0,btCnt:0};
+  if(ca.benched)return{score:-0.1,avgNs:0,avgStreak:0,avgBt:0,avgWf:0,avgNear1:0,nsCount:0,btCnt:0};
   const fn=makeCustomFn(ca.code);
-  if(!fn)return{score:-999,avgNs:-1,avgStreak:-1,avgBt:0,avgWf:0,nsCount:0,btCnt:0};
-  let totalNs=0,totalStreak=0,nsCount=0,totalBt=0,totalWf=0,btCnt=0;
+  if(!fn)return{score:-999,avgNs:-1,avgStreak:-1,avgBt:0,avgWf:0,avgNear1:0,nsCount:0,btCnt:0};
+  let totalNs=0,totalStreak=0,nsCount=0,totalBt=0,totalWf=0,totalNear1=0,btCnt=0;
   COLS.forEach(col=>{
     const ns=weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
     if(ns[ca.name]!=null){totalNs+=ns[ca.name];nsCount++;}
@@ -3107,6 +3213,7 @@ function scoreAlgo(ca,weights,rows,btCache){
         totalBt+=btScore(fn,s);
         if(s.length>=8){const wf=walkFwd(fn,s);if(wf&&wf.total>=2)totalWf+=(wf.exact+wf.near*0.4)/wf.total;}
       }
+      totalNear1+=calcNear1Rate(fn,s);
       btCnt++;
     }
   });
@@ -3114,9 +3221,10 @@ function scoreAlgo(ca,weights,rows,btCache){
   const avgStreak=nsCount?totalStreak/nsCount:0;
   const avgBt=btCnt?totalBt/btCnt:0.05;
   const avgWf=btCnt?totalWf/btCnt:0.05;
+  const avgNear1=btCnt?totalNear1/btCnt:0;
   return{
-    score:avgNs*0.40+avgStreak*0.20+avgBt*2.0+avgWf*1.2,
-    avgNs,avgStreak,avgBt,avgWf,nsCount,btCnt
+    score:avgNs*0.34+avgStreak*0.16+avgBt*1.8+avgWf*1.1+avgNear1*2.4,
+    avgNs,avgStreak,avgBt,avgWf,avgNear1,nsCount,btCnt
   };
 }
 
@@ -3184,6 +3292,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
 
   scored.forEach(({ca,score,stats})=>{
     const hasSufficientEvidence=stats.btCnt>=MIN_EVIDENCE_COUNT||stats.nsCount>=MIN_EVIDENCE_COUNT;
+    const failsNear1=hasSufficientEvidence&&stats.avgNear1<PRUNE_MIN_NEAR1_RATE;
     // OR logic is intentional: a single strong and reliable signal is enough to avoid premature pruning.
     const strongSignals=
       stats.avgBt>=MIN_PROTECT_AVG_BT||
@@ -3196,6 +3305,11 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
     // Always remove redundant
     if(redundant.has(ca.name)){
       removed.push({name:ca.name,reason:"redundant"});
+      return;
+    }
+    // Hard prune if algorithm never gets exact/±1 proximity under sufficient evidence
+    if(failsNear1){
+      removed.push({name:ca.name,reason:"no_near_pm1"});
       return;
     }
     // Remove over-cap (lowest ranked first) — use pre-built rank map
