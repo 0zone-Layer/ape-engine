@@ -49,6 +49,48 @@ const MAX_BT_SERIES=180;
 const MAX_PREDICT_DETAIL_SIGNALS=96;
 const MAX_PREDICT_DETAIL_SIGNALS_LW=48;
 const MAX_TOP_CONTRIBUTING_ALGOS=24;
+const OPTIMIZATION_TARGETS={minTop1Pct:18,minConsensusPct:14,minHarmonyStreams:2,maxPredictLatencyMs:28};
+const DATE_CONDITIONED_BOOST_MIN=0.72;
+const DATE_CONDITIONED_BOOST_MAX=1.55;
+// index = count of agreeing families (0..5+); gentle progression avoids single-family domination.
+const FAMILY_HARMONY_MULT=[1,1,1.18,1.38,1.58,1.75];
+// index = count of independent evidence streams (0..5+); rewards harmony while avoiding runaway vote inflation.
+const LAYER_HARMONY_MULT=[1,1,1.35,1.78,2.22,2.65];
+const MAX_VOTE_DOMINANCE_MULT=3.6;
+const GAP_MIN_OBSERVATIONS=6;
+const GAP_MAX_STD_THRESHOLD=11;
+const GAP_MIN_STABLE_RATIO=0.45;
+const TRANSFORM_SIGNAL_MIN_SCORE=0.06;
+const DEFAULT_SOURCE_STABILITY=0.55;
+const SOURCE_STABILITY_STD_DIVISOR=18;
+const SOURCE_STABILITY_MIN=0.35;
+const SOURCE_STABILITY_MAX=1.0;
+const CONSENSUS_MIN_AGREEMENT_RATIO=0.35;
+const CONSENSUS_MAX_BOOST=0.25;
+const NEURAL_ALPHA_VOLATILE=0.26;
+const NEURAL_ALPHA_FLAT=0.10;
+const NEURAL_ALPHA_DEFAULT=0.16;
+
+const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+
+function buildPredictionBenchmark(preds){
+  if(!preds)return null;
+  const cols=Object.keys(preds).filter(c=>preds[c]&&preds[c].top5&&preds[c].top5.length);
+  if(!cols.length)return null;
+  const avgTop1Pct=+M.mean(cols.map(c=>preds[c].top5[0]?.pct||0)).toFixed(1);
+  const avgConsensus=+M.mean(cols.map(c=>preds[c].consensus||0)).toFixed(1);
+  const avgPerfMs=+M.mean(cols.map(c=>preds[c].perf?.totalMs||0)).toFixed(1);
+  const avgHarmonyStreams=+M.mean(cols.map(c=>(preds[c].layerSupport||1))).toFixed(1);
+  return{
+    avgTop1Pct,avgConsensus,avgPerfMs,avgHarmonyStreams,
+    meets:{
+      top1:avgTop1Pct>=OPTIMIZATION_TARGETS.minTop1Pct,
+      consensus:avgConsensus>=OPTIMIZATION_TARGETS.minConsensusPct,
+      harmony:avgHarmonyStreams>=OPTIMIZATION_TARGETS.minHarmonyStreams,
+      latency:avgPerfMs<=OPTIMIZATION_TARGETS.maxPredictLatencyMs,
+    }
+  };
+}
 
 // ── GLOBAL SERIES: merges ALL datasets sorted by date then row ──────────────
 // This is the key to cross-period learning: algos are backtested on ALL historical
@@ -1430,6 +1472,10 @@ function getDateSignals(col,data,targetDateStr){
   if(!td)return res; // no date info → skip
   const dr=datedRows(col,data);
   if(dr.length<4)return res;
+  const minBucket2=dr.length>=24?3:2;
+  const minBucket3=dr.length>=36?4:3;
+  const emitMathSignals=dr.length>=8;
+  const emitDayMathSignals=dr.length>=10;
 
   const vals=dr.map(r=>r[col]);
   const dates=dr.map(r=>parseDate(r.date));
@@ -1456,7 +1502,7 @@ function getDateSignals(col,data,targetDateStr){
 
   // ── 1. DAY-OF-WEEK BIAS ────────────────────────
   const dowBucket=byDow[td.dow]||[];
-  if(dowBucket.length>=2){
+  if(dowBucket.length>=minBucket2){
     const dowAvg=M.mod(Math.round(M.mean(dowBucket)));
     res["DOW_Bias"]=[dowAvg];
     // Also check if DOW correlates with being high/low
@@ -1468,7 +1514,7 @@ function getDateSignals(col,data,targetDateStr){
   // ── 2. MONTH PATTERN ──────────────────────────
   // Average value for this month historically
   const moBucket=byMonth[td.m]||[];
-  if(moBucket.length>=2){
+  if(moBucket.length>=minBucket2){
     res["Month_Avg"]=[M.mod(Math.round(M.mean(moBucket)))];
     // Month digit sum as transform on the value
     const mDs=M.ds(td.m);
@@ -1479,23 +1525,25 @@ function getDateSignals(col,data,targetDateStr){
   // ── 3. SEASON SIGNAL ──────────────────────────
   const SEASONS=["Winter","Spring","Summer","Fall"];
   const seaBucket=bySeason[td.season]||[];
-  if(seaBucket.length>=2){
+  if(seaBucket.length>=minBucket2){
     res["Season_"+SEASONS[td.season]]=[M.mod(Math.round(M.mean(seaBucket)))];
   }
 
   // ── 4. LUNAR PHASE SIGNAL ─────────────────────
   const PHASES=["NewMoon","WaxingQ","FullMoon","WaningQ"];
   const lunBucket=byLunar[td.lunarPhase]||[];
-  if(lunBucket.length>=2){
+  if(lunBucket.length>=minBucket2){
     res["Lunar_"+PHASES[td.lunarPhase]]=[M.mod(Math.round(M.mean(lunBucket)))];
   }
 
   // ── 5. DATE DIGIT SUM TRANSFORM ───────────────
   // day + month + year_last2 → mod 100
-  const dateSum=M.mod(td.d+td.m+td.yLast2);
-  res["DateSum_Mod"]=[dateSum];
-  res["DateSum_Rev"]=[M.rev(dateSum)];
-  res["DateSum_Ds"]=[M.mod(M.ds(td.d)+M.ds(td.m)+M.ds(td.yLast2))];
+  if(emitMathSignals){
+    const dateSum=M.mod(td.d+td.m+td.yLast2);
+    res["DateSum_Mod"]=[dateSum];
+    res["DateSum_Rev"]=[M.rev(dateSum)];
+    res["DateSum_Ds"]=[M.mod(M.ds(td.d)+M.ds(td.m)+M.ds(td.yLast2))];
+  }
 
   // ── 6. DATE DIGITAL ROOT ──────────────────────
   const dateDr=td.dateDr;
@@ -1503,59 +1551,63 @@ function getDateSignals(col,data,targetDateStr){
   const dateDrBuckets={};
   dr.forEach((r,i)=>{const d=dates[i];if(d)(dateDrBuckets[d.dateDr]=dateDrBuckets[d.dateDr]||[]).push(r[col]);});
   const drBucket=dateDrBuckets[dateDr]||[];
-  if(drBucket.length>=2)res["DateDR_Match"]=[M.mod(Math.round(M.mean(drBucket)))];
+  if(drBucket.length>=minBucket2)res["DateDR_Match"]=[M.mod(Math.round(M.mean(drBucket)))];
   // DR * 11 as a number hint
-  res["DateDR_x11"]=[M.mod(dateDr*11)];
+  if(emitMathSignals)res["DateDR_x11"]=[M.mod(dateDr*11)];
 
   // ── 7. DAY-OF-MONTH RANGE CLUSTER ─────────────
   // 1-7, 8-14, 15-21, 22-28, 29-31 → find avg for this range cluster
   const dayCluster=Math.floor((td.d-1)/7);
   const dcBucket=byDayCluster[dayCluster]||[];
-  if(dcBucket.length>=2)res["DayRange_Avg"]=[M.mod(Math.round(M.mean(dcBucket)))];
+  if(dcBucket.length>=minBucket2)res["DayRange_Avg"]=[M.mod(Math.round(M.mean(dcBucket)))];
 
   // ── 8. WEEK-OF-MONTH SIGNAL ───────────────────
   const womBucket=byWom[td.wom]||[];
-  if(womBucket.length>=2)res["WOM_Avg"]=[M.mod(Math.round(M.mean(womBucket)))];
+  if(womBucket.length>=minBucket2)res["WOM_Avg"]=[M.mod(Math.round(M.mean(womBucket)))];
 
   // ── 9. DAY PARITY (even/odd) ──────────────────
   const parBucket=byParity[td.dayParity]||[];
-  if(parBucket.length>=3)res["DayParity_Avg"]=[M.mod(Math.round(M.mean(parBucket)))];
+  if(parBucket.length>=minBucket3)res["DayParity_Avg"]=[M.mod(Math.round(M.mean(parBucket)))];
 
   // ── 10. MONTH HALF (1-15 vs 16-31) ───────────
   const halfBucket=byHalf[td.monthHalf]||[];
-  if(halfBucket.length>=3)res["MonthHalf_Avg"]=[M.mod(Math.round(M.mean(halfBucket)))];
+  if(halfBucket.length>=minBucket3)res["MonthHalf_Avg"]=[M.mod(Math.round(M.mean(halfBucket)))];
 
   // ── 11. WEEKEND vs WEEKDAY ────────────────────
   const wkBucket=byWeekend[td.isWeekend?1:0]||[];
-  if(wkBucket.length>=3)res[td.isWeekend?"Weekend_Avg":"Weekday_Avg"]=[M.mod(Math.round(M.mean(wkBucket)))];
+  if(wkBucket.length>=minBucket3)res[td.isWeekend?"Weekend_Avg":"Weekday_Avg"]=[M.mod(Math.round(M.mean(wkBucket)))];
 
   // ── 12. YEAR CYCLE (year mod 7) ───────────────
   // Detects multi-year repeating cycles (e.g., every 7 years same pattern)
   const yCycle=td.y%7;
   const ycBucket=byYCycle[yCycle]||[];
-  if(ycBucket.length>=2)res["YearCycle7"]=[M.mod(Math.round(M.mean(ycBucket)))];
+  if(ycBucket.length>=minBucket2)res["YearCycle7"]=[M.mod(Math.round(M.mean(ycBucket)))];
 
   // ── 13. DATE HASH TRANSFORMS ──────────────────
   // Various numeric combinations of day×month, day+year_last etc.
-  res["DxM_Mod"]=[M.mod(td.d*td.m)];
-  res["DpM_Ds"]=[M.mod(M.ds(td.d*td.m))];
-  res["Day_x3_M"]=[M.mod(td.d*3+td.m*7)];
+  if(emitMathSignals){
+    res["DxM_Mod"]=[M.mod(td.d*td.m)];
+    res["DpM_Ds"]=[M.mod(M.ds(td.d*td.m))];
+    res["Day_x3_M"]=[M.mod(td.d*3+td.m*7)];
+  }
   const monthEndRows=dr.filter((_,i)=>dates[i]&&dates[i].isMonthEnd).map(r=>r[col]);
-  res["YearEnd_Flag"]=td.isMonthEnd&&monthEndRows.length>=2?[M.mod(Math.round(M.mean(monthEndRows)))]:[vals[vals.length-1]||0];
+  if(td.isMonthEnd&&monthEndRows.length>=minBucket2)res["YearEnd_Flag"]=[M.mod(Math.round(M.mean(monthEndRows)))];
 
   // ── 14. DAY NUMBER DIRECT TRANSFORM ───────────
   // The row number itself (which = day of month) as algorithm input
-  const dayVal=td.d;
-  res["Day_Rev"]=[M.rev(dayVal)];
-  res["Day_Ds"]=[M.mod(dayVal+M.ds(dayVal))];
-  res["Day_Comp"]=[M.mod(100-dayVal)];
-  res["Day_x3Mod"]=[M.mod(dayVal*3)];
-  res["Day_x7Mod"]=[M.mod(dayVal*7)];
+  if(emitDayMathSignals){
+    const dayVal=td.d;
+    res["Day_Rev"]=[M.rev(dayVal)];
+    res["Day_Ds"]=[M.mod(dayVal+M.ds(dayVal))];
+    res["Day_Comp"]=[M.mod(100-dayVal)];
+    res["Day_x3Mod"]=[M.mod(dayVal*3)];
+    res["Day_x7Mod"]=[M.mod(dayVal*7)];
+  }
 
   // ── 15. HISTORICAL SAME-DATE LOOKUP ───────────
   // Same day+month in past years (anniversary effect)
   const anniversaryBucket=dr.filter((_,i)=>dates[i].d===td.d&&dates[i].m===td.m&&dates[i].y!==td.y).map(r=>r[col]);
-  if(anniversaryBucket.length>=2)res["Anniversary"]=[M.mod(Math.round(M.mean(anniversaryBucket)))];
+  if(anniversaryBucket.length>=minBucket2)res["Anniversary"]=[M.mod(Math.round(M.mean(anniversaryBucket)))];
 
   // ── 16. CORRELATION: which date feature best predicts this col? ──
   // Score each date feature against historical values, pick best linear fit
@@ -1775,21 +1827,26 @@ function getColGapSignals(col,data){
   if(!last)return(_TC.cg[ck]=res);
   const srcCols=COLS.filter(c=>c!==col&&ok(last[c]));
   if(!srcCols.length)return(_TC.cg[ck]=res);
-  const gapSums={},gapSumSq={},gapCounts={},lastGaps={};
-  srcCols.forEach(src=>{gapSums[src]=0;gapSumSq[src]=0;gapCounts[src]=0;lastGaps[src]=null;});
+  const gapSums={},gapSumSq={},gapCounts={},lastGaps={},gapVals={};
+  srcCols.forEach(src=>{gapSums[src]=0;gapSumSq[src]=0;gapCounts[src]=0;lastGaps[src]=null;gapVals[src]=[];});
   data.forEach(r=>{
     srcCols.forEach(src=>{
       if(!ok(r[src])||!ok(r[col]))return;
       let g=r[col]-r[src];if(g>50)g-=100;if(g<-50)g+=100;
-      gapSums[src]+=g;gapSumSq[src]+=g*g;gapCounts[src]++;lastGaps[src]=g;
+      gapSums[src]+=g;gapSumSq[src]+=g*g;gapCounts[src]++;lastGaps[src]=g;gapVals[src].push(g);
     });
   });
   srcCols.forEach(src=>{
-    const cnt=gapCounts[src];if(cnt<4)return;
-    const gMean=gapSums[src]/cnt;
-    const gVar=gapSumSq[src]/cnt-gMean*gMean;
-    const gStd=gVar>0?Math.sqrt(gVar*(cnt/(cnt-1))):0;
-    if(gStd>12)return;
+    const observationCount=gapCounts[src];if(observationCount<GAP_MIN_OBSERVATIONS)return; // need enough observations for stable gap estimation
+    const gMean=gapSums[src]/observationCount;
+    const gVar=gapSumSq[src]/observationCount-gMean*gMean;
+    const gStd=gVar>0?Math.sqrt(gVar*(observationCount/(observationCount-1))):0;
+    if(gStd>GAP_MAX_STD_THRESHOLD)return; // above this, gap relation is too volatile to trust
+    const vals=gapVals[src];
+    const stableBand=Math.max(4,gStd*1.25);
+    const stableHits=vals.filter(g=>Math.abs(g-gMean)<=stableBand).length;
+    const stableRatio=stableHits/vals.length;
+    if(stableRatio<GAP_MIN_STABLE_RATIO)return;
     res["Gap_"+src+"to"+col]=[M.mod(Math.round(last[src]+gMean))];
     const lg=lastGaps[src];
     if(lg!=null&&Math.abs(lg-gMean)<=gStd)res["LastGap_"+src+"to"+col]=[M.mod(Math.round(last[src]+lg))];
@@ -1934,19 +1991,25 @@ function getTemporalChain(targetCol,data){
   if(!last)return res;
   const otherCols=COLS.filter(c=>c!==targetCol&&ok(last[c]));
   if(!otherCols.length)return res;
+  const temporalSources=[...otherCols].sort((a,b)=>tGap(a,targetCol)-tGap(b,targetCol)).slice(0,Math.min(3,otherCols.length));
+  const srcStability=(col)=>{
+    const s=getSeries(col,data).slice(-12);
+    if(s.length<4)return DEFAULT_SOURCE_STABILITY;
+    return clamp(1/(1+M.std(s)/SOURCE_STABILITY_STD_DIVISOR),SOURCE_STABILITY_MIN,SOURCE_STABILITY_MAX);
+  };
 
   // 1. Gap-decay weighted blend of other cols in last row → predict targetCol
   // Weight = e^(-gapMinutes/600). D→A has gap 370min (highest weight)
   let wSum=0,wVal=0;
-  otherCols.forEach(c=>{
+  temporalSources.forEach(c=>{
     const gap=tGap(c,targetCol)||300;
-    const w=Math.exp(-gap/600);
+    const w=Math.exp(-gap/600)*srcStability(c);
     wSum+=w;wVal+=last[c]*w;
   });
   if(wSum>0)res["TempBlend"]=[M.mod(Math.round(wVal/wSum))];
 
   // 2. Most recent column (smallest time gap to targetCol) as direct signal
-  const nearest=otherCols.sort((a,b)=>tGap(a,targetCol)-tGap(b,targetCol))[0];
+  const nearest=temporalSources[0];
   if(nearest){
     res["NearestCol"]=[last[nearest]];
     res["NearestRev"]=[M.rev(last[nearest])];
@@ -1971,12 +2034,12 @@ function getTemporalChain(targetCol,data){
   }
 
   // 4. Intra-row transform predictions from each source col → targetCol
-  for(const srcCol of COLS.filter(c=>c!==targetCol)){
+  for(const srcCol of temporalSources){
     const hit=mineTransform(srcCol,targetCol,data);
     if(hit&&hit.pred!=null){
       // Weight by temporal closeness AND transform hit rate
       const tScore=Math.exp(-tGap(srcCol,targetCol)/700)*hit.score;
-      if(tScore>0.04)res["Tx_"+hit.n]=[M.mod(Math.round(hit.pred))];
+      if(tScore>TRANSFORM_SIGNAL_MIN_SCORE)res["Tx_"+hit.n]=[M.mod(Math.round(hit.pred))]; // stricter than 0.04: weak tx hits were often one-off artifacts and degraded top-1 stability
     }
   }
 
@@ -2430,14 +2493,29 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const dow=pd.dow,lunar=pd.lunarPhase;
       const perDOW=W.perDOW&&W.perDOW[dow]?W.perDOW[dow]:{};
       const perLunar=W.perLunar&&W.perLunar[lunar]?W.perLunar[lunar]:{};
+      const dateBoostByValue={};
       Object.keys(details).forEach(name=>{
         const dw=perDOW[name]!=null?perDOW[name]:1;
         const lw2=perLunar[name]!=null?perLunar[name]:1;
         const boost=Math.max(0.1,dw)*Math.max(0.1,lw2);
         if(boost!==1&&details[name]){
           const pred2=details[name].pred;
-          if(ok(pred2)){const v=M.mod(Math.round(pred2));if(votes[v])votes[v]*=boost;}
+          if(ok(pred2)){
+            const v=M.mod(Math.round(pred2));
+            if(!votes[v])return;
+            // sqrt damping keeps monotonic boosting but compresses spikes (e.g. 4x→2x), so date priors stay helpful without swamping ensemble votes.
+            const bounded=clamp(Math.sqrt(boost),DATE_CONDITIONED_BOOST_MIN,DATE_CONDITIONED_BOOST_MAX);
+            if(!dateBoostByValue[v])dateBoostByValue[v]={sum:0,count:0};
+            dateBoostByValue[v].sum+=bounded;
+            dateBoostByValue[v].count++;
+          }
         }
+      });
+      Object.entries(dateBoostByValue).forEach(([v,acc])=>{
+        const vi=parseInt(v);
+        if(!votes[vi])return;
+        const avgBoost=acc.count?acc.sum/acc.count:1;
+        votes[vi]*=clamp(avgBoost,DATE_CONDITIONED_BOOST_MIN,DATE_CONDITIONED_BOOST_MAX);
       });
     }
   }
@@ -2545,11 +2623,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     if(!votesByFamily[v])votesByFamily[v]=new Set();
     votesByFamily[v].add(fam);
   });
-  const FAM_MULT=[1,1,1.25,1.55,1.85,2.2];
   Object.keys(votesByFamily).forEach(v=>{
     const vi=parseInt(v);
     const nFam=votesByFamily[v].size;
-    if(nFam>=2&&votes[vi])votes[vi]*=FAM_MULT[Math.min(nFam,5)];
+    if(nFam>=2&&votes[vi])votes[vi]*=FAMILY_HARMONY_MULT[Math.min(nFam,5)];
   });
 
   // ── MULTI-LAYER HARMONY AMPLIFIER ─────────────────────────────────────
@@ -2557,8 +2634,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   // pattern bank, cross-dataset history, cross-col temporal) ALL point to the same value,
   // that convergence is exponentially more reliable than any one stream alone.
   // This is the "all algos working in harmony" mechanism.
+  const signalTypeSupport={}; // value → Set of evidence stream types
   {
-    const signalTypeSupport={}; // value → Set of evidence stream types
     Object.entries(details).forEach(([,info])=>{
       if(!ok(info.pred))return;
       const v=M.mod(Math.round(info.pred));
@@ -2567,12 +2644,11 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     });
     // Multi-layer multipliers — each additional independent stream adds compounding confidence
     // 2 types → 1.5x, 3 → 2.1x, 4 → 2.9x, 5+ → 3.8x
-    const LAYER_MULT=[1,1,1.5,2.1,2.9,3.8];
     Object.entries(signalTypeSupport).forEach(([v,types])=>{
       const vi=parseInt(v);
       if(!votes[vi])return;
       const n=types.size;
-      if(n>=2)votes[vi]*=LAYER_MULT[Math.min(n,5)];
+      if(n>=2)votes[vi]*=LAYER_HARMONY_MULT[Math.min(n,5)];
     });
   }
 
@@ -2585,7 +2661,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const maxAgree=Math.max(1,...Object.values(algoAgreement));
   Object.entries(algoAgreement).forEach(([v,wt])=>{
     const agreeRatio=wt/maxAgree;
-    if(agreeRatio>0.3&&votes[parseInt(v)])votes[parseInt(v)]*=1+agreeRatio*0.4;
+    if(agreeRatio>CONSENSUS_MIN_AGREEMENT_RATIO&&votes[parseInt(v)])votes[parseInt(v)]*=1+clamp(agreeRatio*CONSENSUS_MAX_BOOST,0,CONSENSUS_MAX_BOOST);
   });
 
   // Meta-learner
@@ -2594,12 +2670,15 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     Object.keys(votes).forEach(v=>{
       const vInt=parseInt(v);
       const supporters=Object.entries(details).filter(([,d])=>ok(d.pred)&&M.mod(Math.round(d.pred))===vInt);
+      const mults=[];
       supporters.forEach(([name])=>{
         const rate=metaModel.weights[name];
         if(rate==null)return;
-        const mult=rate>0.55?1.5:rate>0.40?1.25:rate>0.25?1.05:rate<0.08?0.5:0.8;
-        votes[vInt]*=mult;
+        mults.push(rate>0.55?1.35:rate>0.40?1.18:rate>0.25?1.04:rate<0.08?0.6:0.82);
       });
+      if(mults.length){
+        votes[vInt]*=clamp(M.mean(mults),0.78,1.38);
+      }
     });
   }
 
@@ -2637,6 +2716,12 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
         });
       }
     }
+  }
+  {
+    const maxVote=Math.max(1,...Object.values(votes));
+    Object.keys(votes).forEach(v=>{
+      votes[v]=Math.min(votes[v],maxVote*MAX_VOTE_DOMINANCE_MULT);
+    });
   }
 
   // ── ENSEMBLE VARIANCE → CONFIDENCE DOWNGRADE ─────────────────────────
@@ -2679,8 +2764,9 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const dateSigList=Object.entries(details).filter(([,d])=>(d.type==="date"||d.type==="patternbank")&&ok(d.pred)).map(([name,d])=>({name,pred:M.mod(Math.round(d.pred)),w:d.w,match:topVal!=null&&M.mod(Math.round(d.pred))===topVal}));
   const dateAgree=dateSigList.filter(s=>s.match).length;
   const dateTotal=dateSigList.length;
+  const layerSupport=topVal!=null&&signalTypeSupport[topVal]?signalTypeSupport[topVal].size:1;
   perf.totalMs=PERF_NOW()-tStart;
-  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,perf,algoBudget,lightweight};
+  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,layerSupport,perf,algoBudget,lightweight};
 }
 
 // ── NEURAL RUNNING SCORE (per-algo accuracy tracker) ──
@@ -2689,7 +2775,7 @@ function updateNeuralScores(pred,actual,prevScores,regime){
   const next={...prevScores};
   if(!pred)return next;
   // Adaptive learning rate by regime
-  const alpha=regime==="volatile"?0.35:regime==="flat"?0.12:0.20;
+  const alpha=regime==="volatile"?NEURAL_ALPHA_VOLATILE:regime==="flat"?NEURAL_ALPHA_FLAT:NEURAL_ALPHA_DEFAULT;
   // Streak counters stored with _ prefix
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
@@ -2697,18 +2783,19 @@ function updateNeuralScores(pred,actual,prevScores,regime){
     const ex=p===actual;
     const nr=!ex&&M.nearR(p,actual,regime);
     const close=!ex&&!nr&&M.cd(p,actual)<=5;
-    // Tiered reward: exact=+3, near=+1, close=+0.2, miss=-0.6
-    const baseReward=ex?3:nr?1:close?0.2:-0.6;
+    // Tiered reward lowered from (3,1,0.2,-0.6) to reduce short-streak overreaction while preserving rank separation.
+    const baseReward=ex?2.2:nr?0.8:close?0.15:-0.45;
     // Streak tracking per algo
     const streakKey="_s_"+name;
     const curStreak=next[streakKey]||0;
     const newStreak=ex?(curStreak>=0?curStreak+1:1):nr?Math.max(0,curStreak):(curStreak<=0?curStreak-1:-1);
     next[streakKey]=Math.max(-5,Math.min(8,newStreak));
-    // Streak multiplier: up to 1.6x boost for 4+ consecutive hits
-    const streakMult=newStreak>=4?1.6:newStreak>=2?1.3:newStreak<=-3?0.7:1.0;
+    // Streak multiplier: conservative cap for stability
+    const streakMult=newStreak>=4?1.45:newStreak>=2?1.2:newStreak<=-3?0.8:1.0;
     const reward=baseReward*streakMult;
     const prev=next[name]!=null?next[name]:0;
-    next[name]=+((1-alpha)*prev+alpha*reward).toFixed(3);
+    // bound neural EMA so one short streak cannot permanently dominate downstream weighting.
+    next[name]=+clamp((1-alpha)*prev+alpha*reward,-3.5,4.5).toFixed(3);
   });
   return next;
 }
@@ -3892,14 +3979,29 @@ function AppInner(){
 
     // Build meta model once, outside the loop
     const _meta2=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
-    missing.forEach(col=>{
-      const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{}},S.customs,S.predDate||"",S.datasets,S.patternBank);
-      if(pred&&pred.top5[0]){
-        const top=pred.top5[0].value;
-        newActs[col]=String(top).padStart(2,"0");
-        partialPreds[col]=pred;
-      }
-    });
+    const unresolved=[...missing];
+    const computePredictionStrength=pred=>{
+      const conf=pred?.conf==="HIGH"?2.8:pred?.conf==="MED"?1.9:1.1;
+      const pct=(pred?.top5&&pred.top5[0]?pred.top5[0].pct:0)/100;
+      const spreadPenalty=pred?.variance!=null?Math.max(0,1-pred.variance/60):0.6;
+      return conf+pct+spreadPenalty;
+    };
+    while(unresolved.length){
+      let best=null;
+      unresolved.forEach(col=>{
+        const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{}},S.customs,S.predDate||"",S.datasets,S.patternBank);
+        if(!pred||!pred.top5||!pred.top5[0])return;
+        const score=computePredictionStrength(pred);
+        if(!best||score>best.score)best={col,pred,score};
+      });
+      if(!best)break;
+      const top=best.pred.top5[0].value;
+      tempRow[best.col]=top;
+      newActs[best.col]=String(top).padStart(2,"0");
+      partialPreds[best.col]=best.pred;
+      const idx=unresolved.indexOf(best.col);
+      if(idx>=0)unresolved.splice(idx,1);
+    }
 
     setActs(newActs);
     // Store partial predictions so user can see top-5 for each missing col
@@ -4492,6 +4594,7 @@ function AppInner(){
   const stClr=msg.c==="ok"?"#34d399":msg.c==="err"?"#f87171":msg.c==="warn"?"#fbbf24":msg.c==="busy"?"#a78bfa":"#4a4e6a";
   const dsKeys=Object.keys(S.datasets||{});
   const customs=S.customs||[];
+  const predBenchmark=useMemo(()=>buildPredictionBenchmark(S.preds),[S.preds]);
 
   const rowDifficulty=useMemo(()=>computeRowDifficulty(accLog),[accLog]);
   const predRowDiff=S.predRow&&rowDifficulty[S.predRow]!=null?rowDifficulty[S.predRow]:null;
@@ -4704,6 +4807,12 @@ function AppInner(){
                   <div style={{fontSize:9,color:"#4a4e6a"}}>ALGOS</div>
                   <div style={{fontSize:20,fontWeight:700}}>{S.preds[COLS[0]]?S.preds[COLS[0]].algoCount:0}</div>
                 </div>
+                {predBenchmark&&<div style={{display:"grid",gap:2,fontSize:8,color:"#4a4e6a",textAlign:"right",lineHeight:1.4}}>
+                  <span aria-label={predBenchmark.meets.top1?"Top1 metric pass":"Top1 metric warning"} style={{color:predBenchmark.meets.top1?"#34d399":"#fbbf24"}}>{predBenchmark.meets.top1?"✓ PASS":"⚠ WARN"} · Top1 {predBenchmark.avgTop1Pct}% / {OPTIMIZATION_TARGETS.minTop1Pct}%</span>
+                  <span aria-label={predBenchmark.meets.consensus?"Consensus metric pass":"Consensus metric warning"} style={{color:predBenchmark.meets.consensus?"#34d399":"#fbbf24"}}>{predBenchmark.meets.consensus?"✓ PASS":"⚠ WARN"} · Consensus {predBenchmark.avgConsensus}% / {OPTIMIZATION_TARGETS.minConsensusPct}%</span>
+                  <span aria-label={predBenchmark.meets.harmony?"Harmony metric pass":"Harmony metric warning"} style={{color:predBenchmark.meets.harmony?"#34d399":"#fbbf24"}}>{predBenchmark.meets.harmony?"✓ PASS":"⚠ WARN"} · Harmony {predBenchmark.avgHarmonyStreams.toFixed(1)} / {OPTIMIZATION_TARGETS.minHarmonyStreams}</span>
+                  <span aria-label={predBenchmark.meets.latency?"Latency metric pass":"Latency metric slow"} style={{color:predBenchmark.meets.latency?"#34d399":"#f87171"}}>{predBenchmark.meets.latency?"✓ PASS":"✕ SLOW"} · Latency {predBenchmark.avgPerfMs}ms / {OPTIMIZATION_TARGETS.maxPredictLatencyMs}ms</span>
+                </div>}
                 <button onClick={()=>{
                   const lines=["Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36),...buildPredictionCopyLines(S.preds,COLS)];
                   navigator.clipboard&&navigator.clipboard.writeText(lines.join("\n")).catch(()=>{});
