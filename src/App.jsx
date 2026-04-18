@@ -36,6 +36,12 @@ function buildPredictionCopyLines(preds,cols){
   return lines;
 }
 const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
+const isExactOrReversed=(pred,actual)=>{
+  if(!ok(pred)||!ok(actual))return false;
+  const p=M.mod(Math.round(pred));
+  const a=M.mod(Math.round(actual));
+  return p===a||M.rev(p)===a;
+};
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
 const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
@@ -72,6 +78,7 @@ const NEURAL_ALPHA_FLAT=0.14;
 const NEURAL_ALPHA_DEFAULT=0.22;
 const PRUNE_MIN_NEAR1_RATE=0.001;
 const PATTERN_MUTATION_PROBABILITY=0.65;
+const AUTO_EVOLVE_INTERVAL_ROWS=3;
 const SCORE_WEIGHT_NS=0.34;
 const SCORE_WEIGHT_STREAK=0.16;
 const SCORE_WEIGHT_BT=1.8;
@@ -2165,9 +2172,9 @@ function btScore(fn,series){
       const pm=p.length===1?1.0:p.length===2?0.8:p.length===3?0.65:0.5;
       const age=n-1-i;
       const rw=age<4?3.0:age<8?2.0:age<15?1.4:1.0;
-      if(p.some(v=>v===a))score+=(1.0*pm)*rw;
+      if(p.some(v=>isExactOrReversed(v,a)))score+=(1.0*pm)*rw;
       else if(p.some(v=>M.near(v,a,nearTol)))score+=(0.4*pm)*rw;
-      if(p[0]===a)score+=0.35*rw;
+      if(isExactOrReversed(p[0],a))score+=0.35*rw;
       cnt+=rw;
       hist.push(s[i]);
     }catch(e){hist.push(s[i]);}
@@ -2184,9 +2191,9 @@ function walkFwd(fn,series){
   for(let i=0;i<h;i++){
     try{
       const p=fn(hist),a=series[n-h+i];
-      if(p.some(v=>v===a))ex++;
+      if(p.some(v=>isExactOrReversed(v,a)))ex++;
       else if(p.some(v=>M.near(v,a,2)))nr++;
-      if(p[0]===a)top1ex++;
+      if(isExactOrReversed(p[0],a))top1ex++;
       hist.push(a);
     }catch(e){hist.push(series[n-h+i]||0);}
   }
@@ -2231,7 +2238,7 @@ function buildMetaModel(accLog){
       Object.entries(details).forEach(([name,pred])=>{
         if(!ok(pred))return;
         count[name]=(count[name]||0)+1;
-        const ex=M.mod(Math.round(pred))===actual;
+        const ex=isExactOrReversed(pred,actual);
         const nr=!ex&&M.near(M.mod(Math.round(pred)),actual,2);
         const hit=ex?1:nr?0.4:0;
         ema[name]=count[name]===1?0.15*(1-alpha)+alpha*hit:(1-alpha)*(ema[name]||0.15)+alpha*hit;
@@ -2810,7 +2817,7 @@ function updateNeuralScores(pred,actual,prevScores,regime){
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
-    const ex=p===actual;
+    const ex=isExactOrReversed(p,actual);
     const near1=!ex&&M.cd(p,actual)<=1;
     const nr=!ex&&M.nearR(p,actual,regime);
     const close=!ex&&!nr&&M.cd(p,actual)<=5;
@@ -2875,7 +2882,7 @@ function updateW(pred,actual,W,predRow,regime,calibration){
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
-    const ex=p===actual,nr=!ex&&M.near(p,actual,2);
+    const ex=isExactOrReversed(p,actual),nr=!ex&&M.near(p,actual,2);
     const mult=ex?1.4:nr?1.1:0.80;
     const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
     const newMom=0.75*mom+0.25*mult;
@@ -2910,7 +2917,7 @@ function updateDateWeights(pred,actual,W,dateCtx){
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
-    const ex=p===actual,nr=!ex&&M.near(p,actual,2);
+    const ex=isExactOrReversed(p,actual),nr=!ex&&M.near(p,actual,2);
     const mult=ex?1.3:nr?1.1:0.85;
     const d=perDOW[dow][name]!=null?perDOW[dow][name]:1;
     perDOW[dow][name]=Math.min(4,Math.max(0.1,d*mult));
@@ -3200,6 +3207,11 @@ function shouldAutoGenerate(rows,genN,lastAutoGenRows,currentAlgoCount){
 function shouldAutoPrune(customs,rows){
   const gen=(customs||[]).filter(a=>a.generated);
   return gen.length>=8&&rows>=6;
+}
+function shouldAutoEvolve(rows,lastAutoEvolveRows){
+  if(rows<3)return false;
+  const rowsSinceLast=rows-(lastAutoEvolveRows||0);
+  return rowsSinceLast>=AUTO_EVOLVE_INTERVAL_ROWS;
 }
 
 // scoreAlgo: optional btCache avoids redundant btScore recomputation during auto-train prune
@@ -3523,7 +3535,7 @@ function updatePatternBank(prevBank,col,allDatasets,accLog){
       if(!ok(pred))return;
       if(!algoCounts[name]){algoCounts[name]=0;algoHits[name]=0;}
       algoCounts[name]++;
-      if(M.mod(Math.round(pred))===actual)algoHits[name]++;
+      if(isExactOrReversed(pred,actual))algoHits[name]++;
     });
   });
   bank.topAlgos=Object.entries(algoCounts)
@@ -3632,7 +3644,7 @@ function fresh(){
     algoLeaderboard:mkColMapDefaults(),
     calibration:mkColMapDefaults(),
     patternBank:mkColMapDefaults(),
-    customs:[],accLog:[],preds:null,predRow:null,predDate:null,genN:0,tourN:0,lastAutoGenRows:0,pruneLog:[]
+    customs:[],accLog:[],preds:null,predRow:null,predDate:null,genN:0,tourN:0,lastAutoGenRows:0,lastAutoEvolveRows:0,pruneLog:[]
   };
 }
 
@@ -3744,6 +3756,7 @@ function AppInner(){
         if(!saved.customs)saved.customs=[];
         if(!saved.genN)saved.genN=0;
         if(!saved.tourN)saved.tourN=0;
+        if(!saved.lastAutoEvolveRows)saved.lastAutoEvolveRows=0;
         setS(saved);
         const n=saved.datasets&&saved.datasets[saved.active]?saved.datasets[saved.active].rows.length:0;
         st("Restored — "+n+" rows · "+(saved.customs?saved.customs.length:0)+" algos · "+(saved.accLog?saved.accLog.length:0)+" sessions");
@@ -3790,14 +3803,22 @@ function AppInner(){
               if(strongAlgos.length>0)syslog("⚡ Strong pattern detected: "+strongAlgos.map(a=>a.name).join(", ")+" — consider exporting weights!","alert");
             }
           }
-          // ── Auto-prune on every row add ──
-          if(shouldAutoPrune(next.customs,curRows.length)){
-            const {pruned,removed}=pruneWeakAlgos(next.customs||[],next.weights||cur.weights,curRows);
-            if(removed.length>0){
-              setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
-              removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
-              next={...next,customs:pruned};
+          // ── Auto-prune + auto-mutate every 3 rows ──
+          if(shouldAutoEvolve(curRows.length,cur.lastAutoEvolveRows)){
+            let evolved=next.customs||[];
+            if(shouldAutoPrune(evolved,curRows.length)){
+              const {pruned,removed}=pruneWeakAlgos(evolved,next.weights||cur.weights,curRows);
+              evolved=pruned;
+              if(removed.length>0){
+                setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
+                removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
+              }
             }
+            if(evolved.length>=4){
+              evolved=runTournament(evolved,curRows,next.weights||cur.weights);
+              syslog("🧬 Auto-mutation tournament completed ("+curRows.length+" rows)","gen");
+            }
+            next={...next,customs:evolved,lastAutoEvolveRows:curRows.length};
           }
           // ── Re-fit stale Gap/Lin algos ──
           if(curRows.length>=8&&curRows.length%4===0){
@@ -3954,9 +3975,9 @@ function AppInner(){
               uw.global=applyForgetting(uw.global,newAccLog);
               if(dtCtx)uw=updateDateWeights(prev.preds[col],actuals[col],uw,dtCtx);
               nw[col]=uw;
-              if(prev.preds[col])nc[col]=updateCalibration(prev.preds[col].conf,actuals[col]===prev.preds[col].top5[0]?.value,nc[col]||{});
+              if(prev.preds[col])nc[col]=updateCalibration(prev.preds[col].conf,isExactOrReversed(prev.preds[col].top5[0]?.value,actuals[col]),nc[col]||{});
             });
-            const exactCount=newlyKnownCols.filter(c=>prev.preds[c]&&prev.preds[c].top5[0]?.value===actuals[c]).length;
+            const exactCount=newlyKnownCols.filter(c=>prev.preds[c]&&isExactOrReversed(prev.preds[c].top5[0]?.value,actuals[c])).length;
             newAccLog.push({at:new Date().toISOString(),targetRow:inc.row,date:inc.date||null,dateCtx:dtCtx,
               preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?.top5[0]?.value??null])),
               algoDetails:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?Object.fromEntries(Object.entries(prev.preds[c].details).sort((a,b)=>b[1].w-a[1].w).slice(0,20).map(([n,d])=>[n,d.pred])):{}])),
@@ -4174,7 +4195,7 @@ function AppInner(){
       }
       const top1=S.preds[col]&&S.preds[col].top5[0]?S.preds[col].top5[0].value:null;
       const actual=actuals[col];
-      const ex=top1===actual,nr=!ex&&M.near(top1!=null?top1:-1,actual,2);
+      const ex=isExactOrReversed(top1,actual),nr=!ex&&M.near(top1!=null?top1:-1,actual,2);
       results[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
       if(ex)exactCount++;
     });
@@ -4214,7 +4235,7 @@ function AppInner(){
         if(dateCtx)updated=updateDateWeights(prev.preds[col],actuals[col],updated,dateCtx);
         nw[col]=updated;
         const pred=prev.preds[col];
-        if(pred)nc[col]=updateCalibration(pred.conf,actuals[col]===pred.top5[0]?.value,nc[col]||{});
+        if(pred)nc[col]=updateCalibration(pred.conf,isExactOrReversed(pred.top5[0]?.value,actuals[col]),nc[col]||{});
       });
       const knownCount=knownCols.length;
       // Fix 3: store full top5 AND per-algo predictions for meta-learner
@@ -4256,6 +4277,21 @@ function AppInner(){
         const freshAlgos=generateAlgos(newRows,existing2);
         if(freshAlgos.length>0)finalCustoms=[...finalCustoms,...freshAlgos];
       }
+      let nextAutoEvolveRows=prev.lastAutoEvolveRows||0;
+      if(shouldAutoEvolve(newRows.length,prev.lastAutoEvolveRows)){
+        let evolved=finalCustoms;
+        if(shouldAutoPrune(evolved,newRows.length)){
+          const {pruned,removed}=pruneWeakAlgos(evolved,nw,newRows);
+          evolved=pruned;
+          if(removed.length>0){
+            const msgs=removed.map(r=>"Pruned: "+r.name+" ("+r.reason+")");
+            setAutoGenLog(p=>[...p.slice(-(5-Math.min(msgs.length,3))),...msgs.slice(0,3)]);
+          }
+        }
+        if(evolved.length>=4)evolved=runTournament(evolved,newRows,nw);
+        finalCustoms=evolved;
+        nextAutoEvolveRows=newRows.length;
+      }
 
       // ── Rebuild Pattern Bank: update after every learn with full dataset context ──
       // This keeps the cross-period long-term memory current.
@@ -4268,7 +4304,7 @@ function AppInner(){
         }
       });
 
-      return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,accLog:newFullLog,lastAutoGenRows:newRows.length};
+      return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,accLog:newFullLog,lastAutoGenRows:newRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
     });
     st("Learned! "+exactCount+"/4 exact — weights saved ✓");
     const pct=Math.round(exactCount/knownCols.length*100);
@@ -4462,7 +4498,7 @@ function AppInner(){
         const pred=rowPreds[col];
         if(!pred){rowResults[col]={predicted:null,actual,exact:false,near:false,skipped:true};return;}
         const top1=pred.top5[0]?.value;
-        const ex=top1===actual,nr=!ex&&M.near(top1??-1,actual,2);
+        const ex=isExactOrReversed(top1,actual),nr=!ex&&M.near(top1??-1,actual,2);
         rowResults[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
         if(ex)rowExact++;rowKnown++;
         const regime=pred.regime||"normal";
@@ -5215,7 +5251,7 @@ function AppInner(){
           <div style={{background:"rgba(52,211,153,.04)",border:"1px solid rgba(52,211,153,.18)",borderRadius:10,padding:14,marginBottom:14}}>
             <SL style={{color:"#34d399"}}>Auto-Generate and Tournament</SL>
             <p style={{fontSize:11,color:"#4a4e6a",marginBottom:12,lineHeight:1.7}}>
-              APE <b style={{color:"#34d399"}}>auto-generates</b> every <b style={{color:"#34d399"}}>2 new rows</b> and <b style={{color:"#f87171"}}>auto-prunes the worst performer</b> after every Learn session. The algo pool continuously evolves. Manual buttons for forced runs.
+              APE <b style={{color:"#34d399"}}>auto-generates</b> as data grows, and <b style={{color:"#f87171"}}>auto-prunes + auto-mutates</b> every <b style={{color:"#f87171"}}>3 rows</b>. The algo pool continuously evolves. Manual buttons for forced runs.
             </p>
             <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
               <PB onClick={doGenerate} style={{background:"#34d399",color:"#060709"}}>🤖 Generate</PB>
