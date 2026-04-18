@@ -37,6 +37,7 @@ function buildPredictionCopyLines(preds,cols){
 }
 const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
 // Domain rule: a two-digit reversal is also an exact hit (e.g., predicted 82 vs actual 28).
+// This reflects game logic where mirrored jodi outcomes are treated as an exact catch.
 const isExactOrReversed=(pred,actual)=>{
   if(!ok(pred)||!ok(actual))return false;
   const p=M.mod(Math.round(pred));
@@ -3209,10 +3210,26 @@ function shouldAutoPrune(customs,rows){
   const gen=(customs||[]).filter(a=>a.generated);
   return gen.length>=8&&rows>=6;
 }
+// Trigger auto evolution when at least N new rows have been added since last cycle.
+// lastAutoEvolveRowCount stores the row-count snapshot from the previous cycle.
 function shouldAutoEvolve(rows,lastAutoEvolveRowCount){
   if(rows<3)return false;
   const rowsSinceLast=rows-(lastAutoEvolveRowCount||0);
   return rowsSinceLast>=AUTO_EVOLVE_INTERVAL_ROWS;
+}
+function applyEvolutionCycle(customs,weights,rows,onPruned){
+  let pipelineCustoms=customs||[];
+  if(shouldAutoPrune(pipelineCustoms,rows.length)){
+    const {pruned,removed}=pruneWeakAlgos(pipelineCustoms,weights,rows);
+    pipelineCustoms=pruned;
+    if(removed.length>0&&onPruned)onPruned(removed);
+  }
+  let mutated=false;
+  if(pipelineCustoms.length>=4){
+    pipelineCustoms=runTournament(pipelineCustoms,rows,weights);
+    mutated=true;
+  }
+  return{customs:pipelineCustoms,mutated};
 }
 
 // scoreAlgo: optional btCache avoids redundant btScore recomputation during auto-train prune
@@ -3806,20 +3823,12 @@ function AppInner(){
           }
           // ── Auto-prune + auto-mutate every 3 rows ──
           if(shouldAutoEvolve(curRows.length,cur.lastAutoEvolveRows)){
-            let pipelineCustoms=next.customs||[];
-            if(shouldAutoPrune(pipelineCustoms,curRows.length)){
-              const {pruned,removed}=pruneWeakAlgos(pipelineCustoms,next.weights||cur.weights,curRows);
-              pipelineCustoms=pruned;
-              if(removed.length>0){
-                setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
-                removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
-              }
-            }
-            if(pipelineCustoms.length>=4){
-              pipelineCustoms=runTournament(pipelineCustoms,curRows,next.weights||cur.weights);
-              syslog("🧬 Auto-mutation tournament completed ("+curRows.length+" rows)","gen");
-            }
-            next={...next,customs:pipelineCustoms,lastAutoEvolveRows:curRows.length};
+            const cycle=applyEvolutionCycle(next.customs,next.weights||cur.weights,curRows,removed=>{
+              setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
+              removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
+            });
+            if(cycle.mutated)syslog("🧬 Auto-mutation tournament completed ("+curRows.length+" rows)","gen");
+            next={...next,customs:cycle.customs,lastAutoEvolveRows:curRows.length};
           }
           // ── Re-fit stale Gap/Lin algos ──
           if(curRows.length>=8&&curRows.length%4===0){
@@ -4280,17 +4289,11 @@ function AppInner(){
       }
       let nextAutoEvolveRows=prev.lastAutoEvolveRows||0;
       if(shouldAutoEvolve(newRows.length,prev.lastAutoEvolveRows)){
-        let pipelineCustoms=finalCustoms;
-        if(shouldAutoPrune(pipelineCustoms,newRows.length)){
-          const {pruned,removed}=pruneWeakAlgos(pipelineCustoms,nw,newRows);
-          pipelineCustoms=pruned;
-          if(removed.length>0){
-            const msgs=removed.map(r=>"Pruned: "+r.name+" ("+r.reason+")");
-            setAutoGenLog(p=>[...p.slice(-(5-Math.min(msgs.length,3))),...msgs.slice(0,3)]);
-          }
-        }
-        if(pipelineCustoms.length>=4)pipelineCustoms=runTournament(pipelineCustoms,newRows,nw);
-        finalCustoms=pipelineCustoms;
+        const cycle=applyEvolutionCycle(finalCustoms,nw,newRows,removed=>{
+          const msgs=removed.map(r=>"Pruned: "+r.name+" ("+r.reason+")");
+          setAutoGenLog(p=>[...p.slice(-(5-Math.min(msgs.length,3))),...msgs.slice(0,3)]);
+        });
+        finalCustoms=cycle.customs;
         nextAutoEvolveRows=newRows.length;
       }
 
