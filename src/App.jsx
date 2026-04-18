@@ -56,6 +56,13 @@ function getTop5HitContext(pred,actual){
   });
   return{top5Hit,hitAlgos};
 }
+function isExactLikePrediction(pred,actual,hitCtx){
+  if(!pred||!ok(actual))return false;
+  const top1=pred.top5&&pred.top5[0]?pred.top5[0].value:null;
+  if(isExactOrReversed(top1,actual))return true;
+  const ctx=hitCtx||getTop5HitContext(pred,actual);
+  return !!ctx.top5Hit;
+}
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
 const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
@@ -111,8 +118,13 @@ const WEIGHT_MULT_MISS=0.80;
 const MAIN_BOOST_CAP=0.45;
 const MAIN_BOOST_PER_COL=0.12;
 const BAD_STREAK_THRESHOLD=-3;
-const RETAIN_EXACT_HIT_WINDOW_ROWS=6;
+const RETAIN_EXACT_LIKE_HIT_WINDOW_ROWS=6;
+// Minimum quality floor for auto-generated algorithms (bt/walk-forward composite).
+// 0.16 keeps weak/degenerate formulas out while still allowing early-data discovery.
 const AUTO_GENERATED_MIN_SCORE=0.16;
+const AUTO_GENERATED_SCORE_MIN_SERIES=6;
+const AUTO_GENERATED_SCORE_BT_WEIGHT=0.72;
+const AUTO_GENERATED_SCORE_WF_WEIGHT=0.28;
 
 const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 
@@ -2852,7 +2864,7 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
     const exactLike=ex||numberHit;
     const near1=!exactLike&&M.cd(p,actual)<=1;
     const nr=!exactLike&&M.nearR(p,actual,regime);
-    const close=!exactLike&&!nr&&M.cd(p,actual)<=5;
+    const close=!exactLike&&M.cd(p,actual)<=5;
     const baseReward=exactLike?REWARD_EXACT:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
     // Streak tracking per algo
     const streakKey="_s_"+name;
@@ -3146,25 +3158,25 @@ function generatedAlgoTargetCol(name){
   return COLS.includes(col)?col:null;
 }
 function scoreGeneratedAlgoCandidate(ca,data){
-  if(!ca||!ca.code)return-Infinity;
+  if(!ca||!ca.code)return null;
   const fn=makeCustomFn(ca.code);
-  if(!fn)return-Infinity;
+  if(!fn)return null;
   const col=generatedAlgoTargetCol(ca.name);
-  if(!col)return-Infinity;
+  if(!col)return null;
   const s=getSeries(col,data);
-  if(s.length<6)return-Infinity;
+  if(s.length<AUTO_GENERATED_SCORE_MIN_SERIES)return null;
   const bt=btScore(fn,s);
   let wfRate=bt;
   if(s.length>=10){
     const wf=walkFwd(fn,s);
     if(wf&&wf.total>=2)wfRate=(wf.exact+wf.near*0.4)/wf.total;
   }
-  return bt*0.72+wfRate*0.28;
+  return bt*AUTO_GENERATED_SCORE_BT_WEIGHT+wfRate*AUTO_GENERATED_SCORE_WF_WEIGHT;
 }
 function filterGeneratedAlgos(candidates,data){
   if(!Array.isArray(candidates)||candidates.length===0)return[];
   const scored=candidates.map(ca=>({...ca,_genScore:scoreGeneratedAlgoCandidate(ca,data)}))
-    .filter(ca=>Number.isFinite(ca._genScore)&&ca._genScore>=AUTO_GENERATED_MIN_SCORE)
+    .filter(ca=>ca._genScore!=null&&Number.isFinite(ca._genScore)&&ca._genScore>=AUTO_GENERATED_MIN_SCORE)
     .sort((a,b)=>b._genScore-a._genScore);
   const seenCode=new Set();
   const out=[];
@@ -3410,7 +3422,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   const latestRow=rows.length?Math.max(...rows.map(r=>r.row||0)):0;
   const getAlgoSignals=name=>{
     let hasMainTag=false;
-    let protectedByTop5Hit=false;
+    let protectedByRecentHit=false;
     let worstStreak=0;
     COLS.forEach(col=>{
       const gw=weights&&weights[col]&&weights[col].global?weights[col].global:{};
@@ -3419,11 +3431,11 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
       const exactLikeRow=gw["_lastExactLikeRow_"+name];
       const top5Row=gw["_lastTop5HitRow_"+name];
       const hitRow=ok(exactLikeRow)?exactLikeRow:top5Row;
-      if(ok(hitRow)&&latestRow-hitRow<=RETAIN_EXACT_HIT_WINDOW_ROWS)protectedByTop5Hit=true;
+      if(ok(hitRow)&&latestRow-hitRow<=RETAIN_EXACT_LIKE_HIT_WINDOW_ROWS)protectedByRecentHit=true;
       const streak=ns["_s_"+name];
       if(ok(streak))worstStreak=Math.min(worstStreak,streak);
     });
-    return{hasMainTag,protectedByTop5Hit,bad3OrMoreStreak:worstStreak<=BAD_STREAK_THRESHOLD,worstStreak};
+    return{hasMainTag,protectedByRecentHit,bad3OrMoreStreak:worstStreak<=BAD_STREAK_THRESHOLD,worstStreak};
   };
   const redundant=detectRedundant(generated,rows);
   const scored=generated.map(ca=>{
@@ -3467,7 +3479,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
       removed.push({name:ca.name,reason:"redundant"});
       return;
     }
-    if(signals.protectedByTop5Hit){
+    if(signals.protectedByRecentHit){
       kept.push({...ca,main:signals.hasMainTag||ca.main,enabled:true,benched:false});
       return;
     }
@@ -4099,15 +4111,13 @@ function AppInner(){
               if(dtCtx)uw=updateDateWeights(prev.preds[col],actuals[col],uw,dtCtx);
               nw[col]=uw;
               if(prev.preds[col]){
-                const wasExactLike=isExactOrReversed(prev.preds[col].top5[0]?.value,actuals[col])||hitCtx.top5Hit;
+                const wasExactLike=isExactLikePrediction(prev.preds[col],actuals[col],hitCtx);
                 nc[col]=updateCalibration(prev.preds[col].conf,wasExactLike,nc[col]||{});
               }
             });
             const exactCount=newlyKnownCols.filter(c=>{
               if(!prev.preds[c])return false;
-              const top1Exact=isExactOrReversed(prev.preds[c].top5[0]?.value,actuals[c]);
-              const top5Hit=getTop5HitContext(prev.preds[c],actuals[c]).top5Hit;
-              return top1Exact||top5Hit;
+              return isExactLikePrediction(prev.preds[c],actuals[c]);
             }).length;
             newAccLog.push({at:new Date().toISOString(),targetRow:inc.row,date:inc.date||null,dateCtx:dtCtx,
               preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?.top5[0]?.value??null])),
@@ -4337,7 +4347,7 @@ function AppInner(){
       const actual=actuals[col];
       const hitCtx=getTop5HitContext(S.preds[col],actual);
       const exTop1=isExactOrReversed(top1,actual);
-      const exactLike=exTop1||hitCtx.top5Hit;
+      const exactLike=isExactLikePrediction(S.preds[col],actual,hitCtx);
       const nr=!exactLike&&M.near(top1!=null?top1:-1,actual,2);
       const numberHit=!exTop1&&hitCtx.top5Hit;
       results[col]={predicted:top1,actual,exact:exactLike,numberHit,near:nr,skipped:false};
@@ -4383,7 +4393,7 @@ function AppInner(){
         const pred=prev.preds[col];
         if(pred){
           const colHitCtx=getTop5HitContext(pred,actuals[col]);
-          const wasExactLike=isExactOrReversed(pred.top5[0]?.value,actuals[col])||colHitCtx.top5Hit;
+          const wasExactLike=isExactLikePrediction(pred,actuals[col],colHitCtx);
           nc[col]=updateCalibration(pred.conf,wasExactLike,nc[col]||{});
         }
       });
@@ -4645,7 +4655,7 @@ function AppInner(){
         const top1=pred.top5[0]?.value;
         const hitCtx=getTop5HitContext(pred,actual);
         const exTop1=isExactOrReversed(top1,actual);
-        const exactLike=exTop1||hitCtx.top5Hit;
+        const exactLike=isExactLikePrediction(pred,actual,hitCtx);
         const nr=!exactLike&&M.near(top1??-1,actual,2);
         rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,skipped:false};
         if(exactLike)rowExact++;rowKnown++;
