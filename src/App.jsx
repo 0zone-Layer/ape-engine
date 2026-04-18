@@ -98,6 +98,19 @@ const SCORE_WEIGHT_STREAK=0.16;
 const SCORE_WEIGHT_BT=1.8;
 const SCORE_WEIGHT_WF=1.1;
 const SCORE_WEIGHT_NEAR1=1.8;
+const REWARD_EXACT=2.6;
+const REWARD_NUMBER_HIT=1.55;
+const REWARD_NEAR1=1.35;
+const REWARD_NEAR_REGIME=0.85;
+const REWARD_CLOSE=0.2;
+const REWARD_MISS=-0.55;
+const WEIGHT_MULT_EXACT=1.4;
+const WEIGHT_MULT_NUMBER_HIT=1.18;
+const WEIGHT_MULT_NEAR=1.1;
+const WEIGHT_MULT_MISS=0.80;
+const MAIN_BOOST_CAP=0.45;
+const MAIN_BOOST_PER_COL=0.12;
+const BAD_STREAK_THRESHOLD=-3;
 
 const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 
@@ -2837,7 +2850,8 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
     const near1=!ex&&M.cd(p,actual)<=1;
     const nr=!ex&&M.nearR(p,actual,regime);
     const close=!ex&&!nr&&!numberHit&&M.cd(p,actual)<=5;
-    const baseReward=ex?2.6:numberHit?1.55:near1?1.35:nr?0.85:close?0.2:-0.55;
+    // numberHit reward sits between exact and near1: strong non-exact signal from top5 contributor consensus.
+    const baseReward=ex?REWARD_EXACT:numberHit?REWARD_NUMBER_HIT:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
     // Streak tracking per algo
     const streakKey="_s_"+name;
     const curStreak=next[streakKey]||0;
@@ -2900,7 +2914,8 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
     const ex=isExactOrReversed(p,actual),numberHit=hitSet.has(name),nr=!ex&&M.near(p,actual,2);
-    const mult=ex?1.4:numberHit?1.18:nr?1.1:0.80;
+    // numberHit gets a mild boost above near (1.1) but below exact (1.4) so top5 hits help without overpowering exacts.
+    const mult=ex?WEIGHT_MULT_EXACT:numberHit?WEIGHT_MULT_NUMBER_HIT:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
     const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
     const newMom=0.75*mom+0.25*mult;
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
@@ -3197,7 +3212,8 @@ function runTournament(customs,data,weights){
       if(weights&&weights[col]&&weights[col].global&&weights[col].global["_main_"+ca.name])mainBoostHits++;
       wt++;
     });
-    const mainMult=mainBoostHits>0?1+Math.min(0.45,mainBoostHits*0.12):1;
+    // Main-tag bonus: per-column boost with cap to avoid tournament lock-in.
+    const mainMult=mainBoostHits>0?1+Math.min(MAIN_BOOST_CAP,mainBoostHits*MAIN_BOOST_PER_COL):1;
     return{...ca,_sc:wt?(tot/wt)*mainMult:0};
   }).sort((a,b)=>b._sc-a._sc);
   if(scored.length<4)return customs;
@@ -3362,7 +3378,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
       const streak=ns["_s_"+name];
       if(ok(streak))worstStreak=Math.min(worstStreak,streak);
     });
-    return{hasMainTag,protectedByTop5Hit,bad3Streak:worstStreak<=-3,worstStreak};
+    return{hasMainTag,protectedByTop5Hit,bad3OrMoreStreak:worstStreak<=BAD_STREAK_THRESHOLD,worstStreak};
   };
   const redundant=detectRedundant(generated,rows);
   const scored=generated.map(ca=>{
@@ -3407,10 +3423,10 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
       return;
     }
     if(signals.protectedByTop5Hit){
-      kept.push({...ca,main:signals.hasMainTag||ca.main===true,enabled:true,benched:false});
+      kept.push({...ca,main:signals.hasMainTag||ca.main,enabled:true,benched:false});
       return;
     }
-    if(signals.bad3Streak){
+    if(signals.bad3OrMoreStreak){
       removed.push({name:ca.name,reason:"cold_streak_3"});
       return;
     }
@@ -3441,7 +3457,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
       kept.push({...ca,enabled:true,benched:false});
       return;
     }
-    kept.push({...ca,main:signals.hasMainTag||ca.main===true});
+    kept.push({...ca,main:signals.hasMainTag||ca.main});
   });
 
   const pruned=[...userDefined,...kept,...benched];
@@ -4316,7 +4332,7 @@ function AppInner(){
             .map(([n,d])=>[n,d.pred])
         ):{}
       ]));
-        const entry={at:new Date().toISOString(),targetRow:prev.predRow,date:prev.predDate||null,dateCtx,
+      const entry={at:new Date().toISOString(),targetRow:prev.predRow,date:prev.predDate||null,dateCtx,
         preds:predsTop1,algoDetails,actuals,results,exactCount,knownCount};
       // Auto-prune weak generated algos
       const curRows=prev.datasets&&prev.datasets[prev.active]?prev.datasets[prev.active].rows:[];
@@ -4366,7 +4382,7 @@ function AppInner(){
 
       return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,accLog:newFullLog,lastAutoGenRows:newRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
     });
-    st("Learned! "+exactCount+"/"+knownCols.length+" exact · "+numberHitCount+" top5 hit — weights saved ✓");
+    st("Learned! "+exactCount+"/"+knownCols.length+" exact · "+numberHitCount+" top5 hits — weights saved ✓");
     const pct=Math.round(exactCount/knownCols.length*100);
     syslog((exactCount===knownCols.length?"🎯":"📊")+" Learn result: "+exactCount+"/"+knownCols.length+" exact ("+pct+"%) · top5 hits "+numberHitCount,"learn");
     if(exactCount===4)syslog("✨ Perfect prediction! Pattern well-captured — consider exporting weights.","alert");
