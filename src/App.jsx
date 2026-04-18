@@ -160,7 +160,8 @@ function getAlgoPerfWeight(perf){
   if(!perf||!ok(perf.rollingAccuracy))return 1;
   const acc=clamp(perf.rollingAccuracy,0,1);
   const err=clamp(1-(perf.recentError||0)/25,0,1);
-  const ev=clamp((perf.evalCount||0)/PERF_ROLLING_WINDOW,0.3,1);
+  // Keep new strong candidates competitive while still requiring evidence.
+  const ev=clamp((perf.evalCount||0)/PERF_ROLLING_WINDOW,0.55,1);
   // Weighted blend: prioritize rolling hit-rate, then recency error, then evidence maturity.
   return clamp(PERF_WEIGHT_BASE+acc*PERF_WEIGHT_ACC_COEF+err*PERF_WEIGHT_ERR_COEF,PERF_WEIGHT_MIN,PERF_WEIGHT_MAX)*ev;
 }
@@ -3264,7 +3265,8 @@ function mutateCode(code){
   const seedExpr="s[s.length-1]";
   const lagTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"s[Math.max(0,s.length-2)]"):code;
   // Intentionally uses bitwise XOR/shift to inject lightweight nonlinear behavior.
-  const shiftTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"(("+seedExpr+")^(("+seedExpr+")>>1))"):code;
+  const bitBase="(M.mod(Math.round("+seedExpr+"))&127)";
+  const shiftTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"("+bitBase+"^(("+bitBase+")>>1))"):code;
   const mul=2+Math.floor(Math.random()*2);
   const mulTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"("+seedExpr+"*"+mul+")"):code;
   const candidates=shuffleArray([...new Set([lagTerm,shiftTerm,mulTerm])]).filter(v=>v!==code);
@@ -3474,7 +3476,10 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   const bottomStart=Math.floor(generatedCount*(1-PRUNE_BOTTOM_RATIO));
   const bottom=scored.slice(bottomStart);
   // If whole pool quality is weak, relax pruning to avoid collapse.
-  const globallyLow=scored[0].score<LOW_POOL_TOP_SCORE_THRESHOLD&&M.mean(scored.map(x=>x.score))<LOW_POOL_MEAN_SCORE_THRESHOLD;
+  let sumScore=0;
+  scored.forEach(x=>{sumScore+=x.score;});
+  const meanScore=scored.length?sumScore/scored.length:0;
+  const globallyLow=scored[0].score<LOW_POOL_TOP_SCORE_THRESHOLD&&meanScore<LOW_POOL_MEAN_SCORE_THRESHOLD;
   const pruneRatio=globallyLow?PRUNE_RELAXED_BOTTOM_RATIO:PRUNE_BOTTOM_RATIO;
   const maxPrunes=Math.max(0,Math.floor(generatedCount*pruneRatio));
   let prunedNow=0;
@@ -3493,8 +3498,15 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   // If all candidates are weak, relax pruning and keep more.
   if(keptGenerated.length<minKeep){
     const keptNames=new Set(keptGenerated.map(k=>k.name));
-    const rescue=[...scored].reverse().filter(x=>!removedSet.has(x.ca.name)).slice(0,minKeep-keptGenerated.length);
-    rescue.forEach(x=>{if(!keptNames.has(x.ca.name)){keptGenerated.push({...x.ca,class:x.ca.class||classifyAlgo(x.ca.name,x.ca.code),enabled:true,benched:false});keptNames.add(x.ca.name);}});
+    const needed=minKeep-keptGenerated.length;
+    let added=0;
+    for(let i=scored.length-1;i>=0&&added<needed;i--){
+      const x=scored[i];
+      if(removedSet.has(x.ca.name)||keptNames.has(x.ca.name))continue;
+      keptGenerated.push({...x.ca,class:x.ca.class||classifyAlgo(x.ca.name,x.ca.code),enabled:true,benched:false});
+      keptNames.add(x.ca.name);
+      added++;
+    }
   }
   const pruned=[...userDefined,...keptGenerated];
   return{pruned,removed};
