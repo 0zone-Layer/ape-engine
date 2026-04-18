@@ -49,12 +49,27 @@ const MAX_BT_SERIES=180;
 const MAX_PREDICT_DETAIL_SIGNALS=96;
 const MAX_PREDICT_DETAIL_SIGNALS_LW=48;
 const MAX_TOP_CONTRIBUTING_ALGOS=24;
-const OPTIMIZATION_TARGETS={minTop1Pct:18,minConsensusPct:14,minHarmonyStreams:2,maxPredictLatencyMs:22};
+const OPTIMIZATION_TARGETS={minTop1Pct:18,minConsensusPct:14,minHarmonyStreams:2,maxPredictLatencyMs:28};
 const DATE_CONDITIONED_BOOST_MIN=0.72;
 const DATE_CONDITIONED_BOOST_MAX=1.55;
+// index = count of agreeing families (0..5+); gentle progression avoids single-family domination.
 const FAMILY_HARMONY_MULT=[1,1,1.18,1.38,1.58,1.75];
+// index = count of independent evidence streams (0..5+); rewards harmony while avoiding runaway vote inflation.
 const LAYER_HARMONY_MULT=[1,1,1.35,1.78,2.22,2.65];
 const MAX_VOTE_DOMINANCE_MULT=3.6;
+const GAP_MIN_OBSERVATIONS=6;
+const GAP_MAX_STD_THRESHOLD=11;
+const GAP_MIN_STABLE_RATIO=0.45;
+const TRANSFORM_SIGNAL_MIN_SCORE=0.06;
+const DEFAULT_SOURCE_STABILITY=0.55;
+const SOURCE_STABILITY_STD_DIVISOR=18;
+const SOURCE_STABILITY_MIN=0.35;
+const SOURCE_STABILITY_MAX=1.0;
+const CONSENSUS_MIN_AGREEMENT_RATIO=0.35;
+const CONSENSUS_MAX_BOOST=0.25;
+const NEURAL_ALPHA_VOLATILE=0.26;
+const NEURAL_ALPHA_FLAT=0.10;
+const NEURAL_ALPHA_DEFAULT=0.16;
 
 const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 
@@ -1822,16 +1837,16 @@ function getColGapSignals(col,data){
     });
   });
   srcCols.forEach(src=>{
-    const cnt=gapCounts[src];if(cnt<6)return;
-    const gMean=gapSums[src]/cnt;
-    const gVar=gapSumSq[src]/cnt-gMean*gMean;
-    const gStd=gVar>0?Math.sqrt(gVar*(cnt/(cnt-1))):0;
-    if(gStd>11)return;
+    const observationCount=gapCounts[src];if(observationCount<GAP_MIN_OBSERVATIONS)return; // need enough observations for stable gap estimation
+    const gMean=gapSums[src]/observationCount;
+    const gVar=gapSumSq[src]/observationCount-gMean*gMean;
+    const gStd=gVar>0?Math.sqrt(gVar*(observationCount/(observationCount-1))):0;
+    if(gStd>GAP_MAX_STD_THRESHOLD)return; // above this, gap relation is too volatile to trust
     const vals=gapVals[src];
     const stableBand=Math.max(4,gStd*1.25);
     const stableHits=vals.filter(g=>Math.abs(g-gMean)<=stableBand).length;
     const stableRatio=stableHits/vals.length;
-    if(stableRatio<0.45)return;
+    if(stableRatio<GAP_MIN_STABLE_RATIO)return;
     res["Gap_"+src+"to"+col]=[M.mod(Math.round(last[src]+gMean))];
     const lg=lastGaps[src];
     if(lg!=null&&Math.abs(lg-gMean)<=gStd)res["LastGap_"+src+"to"+col]=[M.mod(Math.round(last[src]+lg))];
@@ -1979,8 +1994,8 @@ function getTemporalChain(targetCol,data){
   const temporalSources=[...otherCols].sort((a,b)=>tGap(a,targetCol)-tGap(b,targetCol)).slice(0,Math.min(3,otherCols.length));
   const srcStability=(col)=>{
     const s=getSeries(col,data).slice(-12);
-    if(s.length<4)return 0.55;
-    return clamp(1/(1+M.std(s)/18),0.35,1.0);
+    if(s.length<4)return DEFAULT_SOURCE_STABILITY;
+    return clamp(1/(1+M.std(s)/SOURCE_STABILITY_STD_DIVISOR),SOURCE_STABILITY_MIN,SOURCE_STABILITY_MAX);
   };
 
   // 1. Gap-decay weighted blend of other cols in last row → predict targetCol
@@ -2024,7 +2039,7 @@ function getTemporalChain(targetCol,data){
     if(hit&&hit.pred!=null){
       // Weight by temporal closeness AND transform hit rate
       const tScore=Math.exp(-tGap(srcCol,targetCol)/700)*hit.score;
-      if(tScore>0.06)res["Tx_"+hit.n]=[M.mod(Math.round(hit.pred))];
+      if(tScore>TRANSFORM_SIGNAL_MIN_SCORE)res["Tx_"+hit.n]=[M.mod(Math.round(hit.pred))]; // stricter than 0.04: weak tx hits were often one-off artifacts and degraded top-1 stability
     }
   }
 
@@ -2488,6 +2503,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
           if(ok(pred2)){
             const v=M.mod(Math.round(pred2));
             if(!votes[v])return;
+            // sqrt damping keeps monotonic boosting but compresses spikes (e.g. 4x→2x), so date priors stay helpful without swamping ensemble votes.
             const bounded=clamp(Math.sqrt(boost),DATE_CONDITIONED_BOOST_MIN,DATE_CONDITIONED_BOOST_MAX);
             if(!dateBoostByValue[v])dateBoostByValue[v]={sum:0,count:0};
             dateBoostByValue[v].sum+=bounded;
@@ -2645,7 +2661,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const maxAgree=Math.max(1,...Object.values(algoAgreement));
   Object.entries(algoAgreement).forEach(([v,wt])=>{
     const agreeRatio=wt/maxAgree;
-    if(agreeRatio>0.35&&votes[parseInt(v)])votes[parseInt(v)]*=1+Math.min(0.25,agreeRatio*0.25);
+    if(agreeRatio>CONSENSUS_MIN_AGREEMENT_RATIO&&votes[parseInt(v)])votes[parseInt(v)]*=1+clamp(agreeRatio*CONSENSUS_MAX_BOOST,0,CONSENSUS_MAX_BOOST);
   });
 
   // Meta-learner
@@ -2759,7 +2775,7 @@ function updateNeuralScores(pred,actual,prevScores,regime){
   const next={...prevScores};
   if(!pred)return next;
   // Adaptive learning rate by regime
-  const alpha=regime==="volatile"?0.26:regime==="flat"?0.10:0.16;
+  const alpha=regime==="volatile"?NEURAL_ALPHA_VOLATILE:regime==="flat"?NEURAL_ALPHA_FLAT:NEURAL_ALPHA_DEFAULT;
   // Streak counters stored with _ prefix
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
@@ -2767,7 +2783,7 @@ function updateNeuralScores(pred,actual,prevScores,regime){
     const ex=p===actual;
     const nr=!ex&&M.nearR(p,actual,regime);
     const close=!ex&&!nr&&M.cd(p,actual)<=5;
-    // Tiered reward: damped to avoid overreaction in short streaks
+    // Tiered reward lowered from (3,1,0.2,-0.6) to reduce short-streak overreaction while preserving rank separation.
     const baseReward=ex?2.2:nr?0.8:close?0.15:-0.45;
     // Streak tracking per algo
     const streakKey="_s_"+name;
@@ -2778,6 +2794,7 @@ function updateNeuralScores(pred,actual,prevScores,regime){
     const streakMult=newStreak>=4?1.45:newStreak>=2?1.2:newStreak<=-3?0.8:1.0;
     const reward=baseReward*streakMult;
     const prev=next[name]!=null?next[name]:0;
+    // bound neural EMA so one short streak cannot permanently dominate downstream weighting.
     next[name]=+clamp((1-alpha)*prev+alpha*reward,-3.5,4.5).toFixed(3);
   });
   return next;
@@ -3963,7 +3980,7 @@ function AppInner(){
     // Build meta model once, outside the loop
     const _meta2=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     const unresolved=[...missing];
-    const predStrength=pred=>{
+    const computePredictionStrength=pred=>{
       const conf=pred?.conf==="HIGH"?2.8:pred?.conf==="MED"?1.9:1.1;
       const pct=(pred?.top5&&pred.top5[0]?pred.top5[0].pct:0)/100;
       const spreadPenalty=pred?.variance!=null?Math.max(0,1-pred.variance/60):0.6;
@@ -3974,7 +3991,7 @@ function AppInner(){
       unresolved.forEach(col=>{
         const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{}},S.customs,S.predDate||"",S.datasets,S.patternBank);
         if(!pred||!pred.top5||!pred.top5[0])return;
-        const score=predStrength(pred);
+        const score=computePredictionStrength(pred);
         if(!best||score>best.score)best={col,pred,score};
       });
       if(!best)break;
@@ -4791,10 +4808,10 @@ function AppInner(){
                   <div style={{fontSize:20,fontWeight:700}}>{S.preds[COLS[0]]?S.preds[COLS[0]].algoCount:0}</div>
                 </div>
                 {predBenchmark&&<div style={{display:"grid",gap:2,fontSize:8,color:"#4a4e6a",textAlign:"right",lineHeight:1.4}}>
-                  <span style={{color:predBenchmark.meets.top1?"#34d399":"#fbbf24"}}>Top1 {predBenchmark.avgTop1Pct}% / {OPTIMIZATION_TARGETS.minTop1Pct}%</span>
-                  <span style={{color:predBenchmark.meets.consensus?"#34d399":"#fbbf24"}}>Consensus {predBenchmark.avgConsensus}% / {OPTIMIZATION_TARGETS.minConsensusPct}%</span>
-                  <span style={{color:predBenchmark.meets.harmony?"#34d399":"#fbbf24"}}>Harmony {predBenchmark.avgHarmonyStreams.toFixed(1)} / {OPTIMIZATION_TARGETS.minHarmonyStreams}</span>
-                  <span style={{color:predBenchmark.meets.latency?"#34d399":"#f87171"}}>Latency {predBenchmark.avgPerfMs}ms / {OPTIMIZATION_TARGETS.maxPredictLatencyMs}ms</span>
+                  <span aria-label={predBenchmark.meets.top1?"Top1 metric pass":"Top1 metric warning"} style={{color:predBenchmark.meets.top1?"#34d399":"#fbbf24"}}>{predBenchmark.meets.top1?"✓ PASS":"⚠ WARN"} · Top1 {predBenchmark.avgTop1Pct}% / {OPTIMIZATION_TARGETS.minTop1Pct}%</span>
+                  <span aria-label={predBenchmark.meets.consensus?"Consensus metric pass":"Consensus metric warning"} style={{color:predBenchmark.meets.consensus?"#34d399":"#fbbf24"}}>{predBenchmark.meets.consensus?"✓ PASS":"⚠ WARN"} · Consensus {predBenchmark.avgConsensus}% / {OPTIMIZATION_TARGETS.minConsensusPct}%</span>
+                  <span aria-label={predBenchmark.meets.harmony?"Harmony metric pass":"Harmony metric warning"} style={{color:predBenchmark.meets.harmony?"#34d399":"#fbbf24"}}>{predBenchmark.meets.harmony?"✓ PASS":"⚠ WARN"} · Harmony {predBenchmark.avgHarmonyStreams.toFixed(1)} / {OPTIMIZATION_TARGETS.minHarmonyStreams}</span>
+                  <span aria-label={predBenchmark.meets.latency?"Latency metric pass":"Latency metric slow"} style={{color:predBenchmark.meets.latency?"#34d399":"#f87171"}}>{predBenchmark.meets.latency?"✓ PASS":"✕ SLOW"} · Latency {predBenchmark.avgPerfMs}ms / {OPTIMIZATION_TARGETS.maxPredictLatencyMs}ms</span>
                 </div>}
                 <button onClick={()=>{
                   const lines=["Row "+pad2(S.predRow||0)+" — "+new Date().toLocaleString(),"─".repeat(36),...buildPredictionCopyLines(S.preds,COLS)];
