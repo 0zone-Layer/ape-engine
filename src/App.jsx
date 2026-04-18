@@ -100,6 +100,7 @@ const NEURAL_ALPHA_DEFAULT=0.22;
 const PRUNE_MIN_NEAR1_RATE=0.001;
 const PATTERN_MUTATION_PROBABILITY=0.65;
 const AUTO_EVOLVE_INTERVAL_ROWS=3;
+// Ensemble adaptation defaults (tuned for fast online convergence without collapse).
 const PERF_ROLLING_WINDOW=12;
 const MIN_PRUNE_EVAL_WINDOW=8;
 const PRUNE_KEEP_TOP_RATIO=0.40;
@@ -107,14 +108,30 @@ const PRUNE_KEEP_RANDOM_RATIO=0.20;
 const PRUNE_BOTTOM_RATIO=0.40;
 const PRUNE_RELAXED_BOTTOM_RATIO=0.20;
 const MIN_GENERATED_POOL_SIZE=8;
+const PRUNE_LOW_DIVERSITY_RATIO=0.10;
 const MUTATE_TOP_RATIO=0.20;
+const WEAK_DIVERSITY_MIN_KEEP=2;
+const WEAK_DIVERSITY_RATIO=0.20;
+const PERF_WEIGHT_DEFAULT=1.0;
 const PERF_WEIGHT_BASE=0.55;
 const PERF_WEIGHT_ACC_COEF=0.70;
 const PERF_WEIGHT_ERR_COEF=0.45;
 const PERF_WEIGHT_MIN=0.45;
 const PERF_WEIGHT_MAX=1.95;
+const PERF_EVIDENCE_MIN=0.55;
+const MAX_TRACKING_ERROR=25;
+const RECENT_ERROR_DECAY=0.7;
+const RECENT_ERROR_WEIGHT=0.3;
+const PERF_BASELINE_PENALTY=0.2;
+const NEAR_TOLERANCE=2;
 const LOW_POOL_TOP_SCORE_THRESHOLD=0.45;
 const LOW_POOL_MEAN_SCORE_THRESHOLD=0.22;
+const MUTATION_BIT_MASK=0x7F;
+const MUTATION_MUL_BASE=2;
+const MUTATION_MUL_RANGE=2;
+const MUTATION_SUFFIX_MOD=100000;
+const CLASS_LINEAR_RE=/lin|mean|trend|reg|lag|arith|step|fit|diff/;
+const CLASS_PERIODIC_RE=/period|cyc|markov|phase|season|repeat|sticky/;
 const SCORE_WEIGHT_NS=0.34;
 const SCORE_WEIGHT_STREAK=0.16;
 const SCORE_WEIGHT_BT=1.8;
@@ -152,16 +169,17 @@ const shuffleArray=a=>{
 };
 function classifyAlgo(name,code){
   const src=((name||"")+" "+(code||"")).toLowerCase();
-  if(/lin|mean|trend|reg|lag|arith|step|fit|diff/.test(src))return"linear";
-  if(/period|cyc|markov|phase|season|repeat|sticky/.test(src))return"periodic";
+  // Structure tags are soft hints only; pruning/selection still depends on observed performance.
+  if(CLASS_LINEAR_RE.test(src))return"linear";
+  if(CLASS_PERIODIC_RE.test(src))return"periodic";
   return"nonlinear";
 }
 function getAlgoPerfWeight(perf){
-  if(!perf||!ok(perf.rollingAccuracy))return 1;
+  if(!perf||!ok(perf.rollingAccuracy))return PERF_WEIGHT_DEFAULT;
   const acc=clamp(perf.rollingAccuracy,0,1);
-  const err=clamp(1-(perf.recentError||0)/25,0,1);
+  const err=clamp(1-(perf.recentError||0)/MAX_TRACKING_ERROR,0,1);
   // Keep new strong candidates competitive while still requiring evidence.
-  const ev=clamp((perf.evalCount||0)/PERF_ROLLING_WINDOW,0.55,1);
+  const ev=clamp((perf.evalCount||0)/PERF_ROLLING_WINDOW,PERF_EVIDENCE_MIN,1);
   // Weighted blend: prioritize rolling hit-rate, then recency error, then evidence maturity.
   return clamp(PERF_WEIGHT_BASE+acc*PERF_WEIGHT_ACC_COEF+err*PERF_WEIGHT_ERR_COEF,PERF_WEIGHT_MIN,PERF_WEIGHT_MAX)*ev;
 }
@@ -2955,19 +2973,19 @@ function getCalibrationLabel(conf,cal){
 function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const prev=perf[name]||{class:meta.class||classifyAlgo(name),rollingHits:[],rollingAccuracy:0,totalScore:0,recentError:0,evalCount:0};
   const ex=isExactOrReversed(predVal,actual)||!!meta.numberHit;
-  const nr=!ex&&M.near(M.mod(Math.round(predVal)),actual,2);
-  const closeness=clamp(1-M.cd(M.mod(Math.round(predVal)),actual)/50,0,1);
+  const nr=!ex&&M.near(M.mod(Math.round(predVal)),actual,NEAR_TOLERANCE);
+  const closeness=clamp(1-M.cd(M.mod(Math.round(predVal)),actual)/MAX_TRACKING_ERROR,0,1);
   const hitScore=ex?1:nr?0.55:closeness*0.25;
-  const signedErr=Math.min(M.cd(M.mod(Math.round(predVal)),actual),25);
+  const signedErr=Math.min(M.cd(M.mod(Math.round(predVal)),actual),MAX_TRACKING_ERROR);
   const rolling=[...(prev.rollingHits||[]),hitScore].slice(-PERF_ROLLING_WINDOW);
   const rollingAccuracy=rolling.length?M.mean(rolling):0;
-  const recentError=prev.evalCount?((prev.recentError||0)*0.7+signedErr*0.3):signedErr;
+  const recentError=prev.evalCount?((prev.recentError||0)*RECENT_ERROR_DECAY+signedErr*RECENT_ERROR_WEIGHT):signedErr;
   perf[name]={
     ...prev,
     class:prev.class||meta.class||classifyAlgo(name),
     rollingHits:rolling,
     rollingAccuracy:+rollingAccuracy.toFixed(4),
-    totalScore:+((prev.totalScore||0)+(hitScore-0.2)).toFixed(4),
+    totalScore:+((prev.totalScore||0)+(hitScore-PERF_BASELINE_PENALTY)).toFixed(4),
     recentError:+recentError.toFixed(3),
     evalCount:(prev.evalCount||0)+1,
     lastSeen:Date.now()
@@ -3247,7 +3265,7 @@ function filterGeneratedAlgos(candidates,data){
   const strong=scored.filter(ca=>ca._genScore>=AUTO_GENERATED_MIN_SCORE);
   const weak=scored.filter(ca=>ca._genScore<AUTO_GENERATED_MIN_SCORE);
   // Keep a weak tail for diversity instead of deleting low/degenerate forms too early.
-  const weakKeepCount=Math.min(weak.length,Math.max(2,Math.ceil(candidates.length*0.2)));
+  const weakKeepCount=Math.min(weak.length,Math.max(WEAK_DIVERSITY_MIN_KEEP,Math.ceil(candidates.length*WEAK_DIVERSITY_RATIO)));
   const selected=[...strong,...shuffleArray(weak).slice(0,weakKeepCount)];
   const seenCode=new Set();
   const out=[];
@@ -3265,9 +3283,9 @@ function mutateCode(code){
   const seedExpr="s[s.length-1]";
   const lagTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"s[Math.max(0,s.length-2)]"):code;
   // Intentionally uses bitwise XOR/shift to inject lightweight nonlinear behavior.
-  const bitBase="(M.mod(Math.round("+seedExpr+"))&127)";
+  const bitBase="(M.mod(Math.round("+seedExpr+"))&"+MUTATION_BIT_MASK+")";
   const shiftTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"("+bitBase+"^(("+bitBase+")>>1))"):code;
-  const mul=2+Math.floor(Math.random()*2);
+  const mul=MUTATION_MUL_BASE+Math.floor(Math.random()*MUTATION_MUL_RANGE);
   const mulTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"("+seedExpr+"*"+mul+")"):code;
   const candidates=shuffleArray([...new Set([lagTerm,shiftTerm,mulTerm])]).filter(v=>v!==code);
   for(const candidate of candidates){
@@ -3291,7 +3309,7 @@ function runTournament(customs,data,weights){
     if(mutCode===parent.code||existingCodes.has(mutCode))return;
     if(!makeCustomFn(mutCode))return;
     existingCodes.add(mutCode);
-    const suffix=(Date.now()%100000)+"_"+i;
+    const suffix=(Date.now()%MUTATION_SUFFIX_MOD)+"_"+i;
     clones.push({
       ...parent,
       name:"Mut_"+parent.name.slice(-10)+"_"+suffix,
@@ -3466,7 +3484,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
 
   // Keep some low performers for diversity (explicitly from lower tail).
   const lowTail=[...scored].reverse();
-  const lowDiversityKeep=Math.max(1,Math.ceil(generatedCount*0.1));
+  const lowDiversityKeep=Math.max(1,Math.ceil(generatedCount*PRUNE_LOW_DIVERSITY_RATIO));
   lowTail.forEach(x=>{
     if(keepSet.size>=Math.max(minKeep,keepTopCount+keepRandomCount+lowDiversityKeep))return;
     keepSet.add(x.ca.name);
