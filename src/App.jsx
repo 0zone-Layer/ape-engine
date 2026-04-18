@@ -36,6 +36,7 @@ function buildPredictionCopyLines(preds,cols){
   return lines;
 }
 const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
+// Domain rule: a two-digit reversal is also an exact hit (e.g., predicted 82 vs actual 28).
 const isExactOrReversed=(pred,actual)=>{
   if(!ok(pred)||!ok(actual))return false;
   const p=M.mod(Math.round(pred));
@@ -3208,9 +3209,9 @@ function shouldAutoPrune(customs,rows){
   const gen=(customs||[]).filter(a=>a.generated);
   return gen.length>=8&&rows>=6;
 }
-function shouldAutoEvolve(rows,lastAutoEvolveRows){
+function shouldAutoEvolve(rows,lastAutoEvolveRowCount){
   if(rows<3)return false;
-  const rowsSinceLast=rows-(lastAutoEvolveRows||0);
+  const rowsSinceLast=rows-(lastAutoEvolveRowCount||0);
   return rowsSinceLast>=AUTO_EVOLVE_INTERVAL_ROWS;
 }
 
@@ -3805,20 +3806,20 @@ function AppInner(){
           }
           // ── Auto-prune + auto-mutate every 3 rows ──
           if(shouldAutoEvolve(curRows.length,cur.lastAutoEvolveRows)){
-            let evolved=next.customs||[];
-            if(shouldAutoPrune(evolved,curRows.length)){
-              const {pruned,removed}=pruneWeakAlgos(evolved,next.weights||cur.weights,curRows);
-              evolved=pruned;
+            let pipelineCustoms=next.customs||[];
+            if(shouldAutoPrune(pipelineCustoms,curRows.length)){
+              const {pruned,removed}=pruneWeakAlgos(pipelineCustoms,next.weights||cur.weights,curRows);
+              pipelineCustoms=pruned;
               if(removed.length>0){
                 setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
                 removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
               }
             }
-            if(evolved.length>=4){
-              evolved=runTournament(evolved,curRows,next.weights||cur.weights);
+            if(pipelineCustoms.length>=4){
+              pipelineCustoms=runTournament(pipelineCustoms,curRows,next.weights||cur.weights);
               syslog("🧬 Auto-mutation tournament completed ("+curRows.length+" rows)","gen");
             }
-            next={...next,customs:evolved,lastAutoEvolveRows:curRows.length};
+            next={...next,customs:pipelineCustoms,lastAutoEvolveRows:curRows.length};
           }
           // ── Re-fit stale Gap/Lin algos ──
           if(curRows.length>=8&&curRows.length%4===0){
@@ -4279,17 +4280,17 @@ function AppInner(){
       }
       let nextAutoEvolveRows=prev.lastAutoEvolveRows||0;
       if(shouldAutoEvolve(newRows.length,prev.lastAutoEvolveRows)){
-        let evolved=finalCustoms;
-        if(shouldAutoPrune(evolved,newRows.length)){
-          const {pruned,removed}=pruneWeakAlgos(evolved,nw,newRows);
-          evolved=pruned;
+        let pipelineCustoms=finalCustoms;
+        if(shouldAutoPrune(pipelineCustoms,newRows.length)){
+          const {pruned,removed}=pruneWeakAlgos(pipelineCustoms,nw,newRows);
+          pipelineCustoms=pruned;
           if(removed.length>0){
             const msgs=removed.map(r=>"Pruned: "+r.name+" ("+r.reason+")");
             setAutoGenLog(p=>[...p.slice(-(5-Math.min(msgs.length,3))),...msgs.slice(0,3)]);
           }
         }
-        if(evolved.length>=4)evolved=runTournament(evolved,newRows,nw);
-        finalCustoms=evolved;
+        if(pipelineCustoms.length>=4)pipelineCustoms=runTournament(pipelineCustoms,newRows,nw);
+        finalCustoms=pipelineCustoms;
         nextAutoEvolveRows=newRows.length;
       }
 
