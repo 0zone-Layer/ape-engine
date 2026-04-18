@@ -3211,12 +3211,16 @@ function shouldAutoPrune(customs,rows){
   return gen.length>=8&&rows>=6;
 }
 // Trigger auto evolution when at least N new rows have been added since last cycle.
-// lastAutoEvolveRowCount stores the row-count snapshot from the previous cycle.
-function shouldAutoEvolve(rows,lastAutoEvolveRowCount){
+// lastAutoEvolveRows stores the row-count snapshot from the previous cycle.
+function shouldAutoEvolve(rows,lastAutoEvolveRows){
   if(rows<3)return false;
-  const rowsSinceLast=rows-(lastAutoEvolveRowCount||0);
+  const rowsSinceLast=rows-(lastAutoEvolveRows||0);
   return rowsSinceLast>=AUTO_EVOLVE_INTERVAL_ROWS;
 }
+// Runs one evolution cycle over custom algos:
+// 1) optional prune (when generated pool/rows threshold is met), then
+// 2) optional mutation tournament (when at least 4 customs exist).
+// Returns the updated customs list and whether mutation ran.
 function applyEvolutionCycle(customs,weights,rows,onPruned){
   let pipelineCustoms=customs||[];
   if(shouldAutoPrune(pipelineCustoms,rows.length)){
