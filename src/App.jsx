@@ -71,6 +71,12 @@ const NEURAL_ALPHA_VOLATILE=0.34;
 const NEURAL_ALPHA_FLAT=0.14;
 const NEURAL_ALPHA_DEFAULT=0.22;
 const PRUNE_MIN_NEAR1_RATE=0.001;
+const PATTERN_MUTATION_PROBABILITY=0.65;
+const SCORE_WEIGHT_NS=0.34;
+const SCORE_WEIGHT_STREAK=0.16;
+const SCORE_WEIGHT_BT=1.8;
+const SCORE_WEIGHT_WF=1.1;
+const SCORE_WEIGHT_NEAR1=1.8;
 
 const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 
@@ -798,7 +804,7 @@ const A={
       {name:"comp",fn:v=>M.mod(100-v)},
       {name:"rev",fn:v=>M.rev(v)},
       {name:"revComp",fn:v=>M.rev(M.mod(100-v))},
-      {name:"digitMirror",fn:v=>M.mod((9-M.d1(v))*10+(9-M.d2(v)))},
+      {name:"ninesComplement",fn:v=>M.mod((9-M.d1(v))*10+(9-M.d2(v)))},
     ];
     let best={sc:-1,fn:tx[0].fn};
     tx.forEach(t=>{
@@ -3034,7 +3040,7 @@ function generateAlgos(data,existing){
         {key:"comp",expr:"M.mod(100-s[s.length-1])"},
         {key:"rev",expr:"M.rev(s[s.length-1])"},
         {key:"revComp",expr:"M.rev(M.mod(100-s[s.length-1]))"},
-        {key:"digitMirror",expr:"M.mod((9-M.d1(s[s.length-1]))*10+(9-M.d2(s[s.length-1])))"},
+        {key:"ninesComplement",expr:"M.mod((9-M.d1(s[s.length-1]))*10+(9-M.d2(s[s.length-1])))"},
       ];
       let mb={sc:-1,key:"comp",expr:mirrorFns[0].expr};
       mirrorFns.forEach(f=>{
@@ -3057,12 +3063,12 @@ function generateAlgos(data,existing){
     // ── 12. pseudo-random detector (xorshift-lite / lcg-lite) ──
     if(n>=7){
       const variants=[
-        {name:"xs13",code:"(s,M)=>{let x=s[s.length-1]||1;x^=(x<<1)&0x7F;x^=(x>>3)&0x7F;x^=(x<<2)&0x7F;return[M.mod(Math.abs(x))];}"},
-        {name:"xs17",code:"(s,M)=>{let x=s[s.length-1]||1;x^=(x<<1)&0x7F;x^=(x>>7)&0x7F;x^=(x<<3)&0x7F;return[M.mod(Math.abs(x))];}"},
+        {name:"xorshift_1_3",code:"(s,M)=>{let x=s[s.length-1]||1;x^=(x<<1)&0x7F;x^=(x>>3)&0x7F;x^=(x<<2)&0x7F;return[M.mod(Math.abs(x))];}"},
+        {name:"xorshift_1_7",code:"(s,M)=>{let x=s[s.length-1]||1;x^=(x<<1)&0x7F;x^=(x>>7)&0x7F;x^=(x<<3)&0x7F;return[M.mod(Math.abs(x))];}"},
         {name:"lcg",code:"(s,M)=>[M.mod((37*s[s.length-1]+17)%97)]"},
         {name:"lcg2",code:"(s,M)=>[M.mod((73*s[s.length-1]+29)%89)]"},
       ];
-      let pb={sc:-1,name:"xs13",code:variants[0].code};
+      let pb={sc:-1,name:"xorshift_1_3",code:variants[0].code};
       variants.forEach(v=>{
         const fn=makeCustomFn(v.code);
         if(!fn)return;
@@ -3089,17 +3095,25 @@ const MAX_GENERATED_ALGOS=60;
 function mutateCode(code){
   // Replace numeric constants with stronger perturbations + pattern-aware swaps
   let mutated=code;
-  const numRe=/\b(\d+\.?\d*)\b/g;
+  const shuffle=a=>{
+    const arr=[...a];
+    for(let i=arr.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1));
+      [arr[i],arr[j]]=[arr[j],arr[i]];
+    }
+    return arr;
+  };
+  const numRe=/\b(\d+(?:\.\d+)?|\.\d+)\b/g;
   const nums=[];
   let m;
   while((m=numRe.exec(code))!==null){
     const v=parseFloat(m[1]);
     // Only mutate small constants (coefficients), not indices/lengths
-    if(v>0&&v<300&&v!==0&&String(v).length<=6)nums.push({idx:m.index,len:m[0].length,v});
+    if(v>0&&v<300&&String(v).length<=6)nums.push({idx:m.index,len:m[0].length,v});
   }
   if(!nums.length)return code;
   // Pick 3-8 constants to mutate for higher diversity
-  const toMutate=nums.sort(()=>Math.random()-0.5).slice(0,Math.min(8,Math.max(3,Math.floor(nums.length*0.35))));
+  const toMutate=shuffle(nums).slice(0,Math.min(8,Math.max(3,Math.floor(nums.length*0.35))));
   // Apply from end to start to preserve indices
   toMutate.sort((a,b)=>b.idx-a.idx);
   toMutate.forEach(({idx,len,v})=>{
@@ -3116,11 +3130,23 @@ function mutateCode(code){
     ["+","-"],
     ["-","+"],
   ];
+  const findAllIndices=(str,sub)=>{
+    const out=[];let from=0;
+    while(true){
+      const idx=str.indexOf(sub,from);
+      if(idx<0)break;
+      out.push(idx);
+      from=idx+sub.length;
+    }
+    return out;
+  };
   const mutSteps=2+Math.floor(Math.random()*4);
   for(let i=0;i<mutSteps;i++){
     const [from,to]=swaps[Math.floor(Math.random()*swaps.length)];
-    const idx=mutated.indexOf(from);
-    if(idx>=0&&Math.random()<0.65)mutated=mutated.slice(0,idx)+to+mutated.slice(idx+from.length);
+    const indices=findAllIndices(mutated,from);
+    if(!indices.length||Math.random()>=PATTERN_MUTATION_PROBABILITY)continue;
+    const idx=indices[Math.floor(Math.random()*indices.length)];
+    mutated=mutated.slice(0,idx)+to+mutated.slice(idx+from.length);
   }
   return mutated;
 }
@@ -3223,7 +3249,7 @@ function scoreAlgo(ca,weights,rows,btCache){
   const avgWf=btCnt?totalWf/btCnt:0.05;
   const avgNear1=btCnt?totalNear1/btCnt:0;
   return{
-    score:avgNs*0.34+avgStreak*0.16+avgBt*1.8+avgWf*1.1+avgNear1*2.4,
+    score:avgNs*SCORE_WEIGHT_NS+avgStreak*SCORE_WEIGHT_STREAK+avgBt*SCORE_WEIGHT_BT+avgWf*SCORE_WEIGHT_WF+avgNear1*SCORE_WEIGHT_NEAR1,
     avgNs,avgStreak,avgBt,avgWf,avgNear1,nsCount,btCnt
   };
 }
