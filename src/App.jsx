@@ -44,6 +44,18 @@ const isExactOrReversed=(pred,actual)=>{
   const a=M.mod(Math.round(actual));
   return p===a||M.rev(p)===a;
 };
+function getTop5HitContext(pred,actual){
+  const hitAlgos=new Set();
+  if(!pred||!ok(actual)||!Array.isArray(pred.top5)||pred.top5.length===0)return{top5Hit:false,hitAlgos};
+  let top5Hit=false;
+  pred.top5.forEach(item=>{
+    if(!item||!ok(item.value))return;
+    if(!isExactOrReversed(item.value,actual))return;
+    top5Hit=true;
+    (item.algos||[]).forEach(name=>{if(name)hitAlgos.add(name);});
+  });
+  return{top5Hit,hitAlgos};
+}
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
 const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
@@ -86,6 +98,19 @@ const SCORE_WEIGHT_STREAK=0.16;
 const SCORE_WEIGHT_BT=1.8;
 const SCORE_WEIGHT_WF=1.1;
 const SCORE_WEIGHT_NEAR1=1.8;
+const REWARD_EXACT=2.6;
+const REWARD_NUMBER_HIT=1.55;
+const REWARD_NEAR1=1.35;
+const REWARD_NEAR_REGIME=0.85;
+const REWARD_CLOSE=0.2;
+const REWARD_MISS=-0.55;
+const WEIGHT_MULT_EXACT=1.4;
+const WEIGHT_MULT_NUMBER_HIT=1.18;
+const WEIGHT_MULT_NEAR=1.1;
+const WEIGHT_MULT_MISS=0.80;
+const MAIN_BOOST_CAP=0.45;
+const MAIN_BOOST_PER_COL=0.12;
+const BAD_STREAK_THRESHOLD=-3;
 
 const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 
@@ -2810,24 +2835,27 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 
 // ── NEURAL RUNNING SCORE (per-algo accuracy tracker) ──
 // Tiered rewards + streak multiplier: consecutive hits compound.
-function updateNeuralScores(pred,actual,prevScores,regime){
+function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
   const next={...prevScores};
   if(!pred)return next;
+  const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
   // Adaptive learning rate by regime
   const alpha=regime==="volatile"?NEURAL_ALPHA_VOLATILE:regime==="flat"?NEURAL_ALPHA_FLAT:NEURAL_ALPHA_DEFAULT;
   // Streak counters stored with _ prefix
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
+    const numberHit=hitSet.has(name);
     const ex=isExactOrReversed(p,actual);
     const near1=!ex&&M.cd(p,actual)<=1;
     const nr=!ex&&M.nearR(p,actual,regime);
-    const close=!ex&&!nr&&M.cd(p,actual)<=5;
-    const baseReward=ex?2.6:near1?1.35:nr?0.85:close?0.2:-0.55;
+    const close=!ex&&!nr&&!numberHit&&M.cd(p,actual)<=5;
+    // numberHit reward sits between exact and near1: strong non-exact signal from top5 contributor consensus.
+    const baseReward=ex?REWARD_EXACT:numberHit?REWARD_NUMBER_HIT:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
     // Streak tracking per algo
     const streakKey="_s_"+name;
     const curStreak=next[streakKey]||0;
-    const newStreak=(ex||near1)?(curStreak>=0?curStreak+1:1):nr?Math.max(0,curStreak):(curStreak<=0?curStreak-1:-1);
+    const newStreak=(ex||near1||numberHit)?(curStreak>=0?curStreak+1:1):nr?Math.max(0,curStreak):(curStreak<=0?curStreak-1:-1);
     next[streakKey]=Math.max(-6,Math.min(10,newStreak));
     // Streak multiplier: conservative cap for stability
     const streakMult=newStreak>=5?1.55:newStreak>=3?1.25:newStreak<=-3?0.78:1.0;
@@ -2870,11 +2898,12 @@ function getCalibrationLabel(conf,cal){
 }
 
 // Fix 4+9: updateW now takes regime+calibration, maintains perRegime weights
-function updateW(pred,actual,W,predRow,regime,calibration){
+function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
   const gw={...W.global||{}};
   const rw={...W.perRow||{}};
   const rnw={...W.perRange||{}};
   const rgw={...(W.perRegime||{})};
+  const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
   if(!rgw[regime])rgw[regime]={};
   if(!pred)return{global:gw,perRow:rw,perRange:rnw,perRegime:rgw};
   const cr=Math.floor(actual/25);
@@ -2884,11 +2913,16 @@ function updateW(pred,actual,W,predRow,regime,calibration){
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
-    const ex=isExactOrReversed(p,actual),nr=!ex&&M.near(p,actual,2);
-    const mult=ex?1.4:nr?1.1:0.80;
+    const ex=isExactOrReversed(p,actual),numberHit=hitSet.has(name),nr=!ex&&M.near(p,actual,2);
+    // numberHit gets a mild boost above near (1.1) but below exact (1.4) so top5 hits help without overpowering exacts.
+    const mult=ex?WEIGHT_MULT_EXACT:numberHit?WEIGHT_MULT_NUMBER_HIT:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
     const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
     const newMom=0.75*mom+0.25*mult;
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
+    if(numberHit){
+      gw["_main_"+name]=1;
+      if(ok(predRow))gw["_lastTop5HitRow_"+name]=predRow;
+    }
     const prev=gw[name]!=null?gw[name]:1;
     const decay=prev>1?0.96:0.98;
     // Cold-streak dampening: if momentum < 0.85 for 2+ misses, increase decay speed
@@ -2904,7 +2938,7 @@ function updateW(pred,actual,W,predRow,regime,calibration){
   });
   // Fix 8: per-DOW and per-lunar weight update (passed via extra param from checkAndLearn)
   return{global:gw,perRow:rw,perRange:rnw,perRegime:rgw,
-    neuralScores:updateNeuralScores(pred,actual,W.neuralScores||{},regime)};
+    neuralScores:updateNeuralScores(pred,actual,W.neuralScores||{},regime,learnCtx)};
 }
 
 // Fix 8: update date-conditioned weights after learning
@@ -3162,6 +3196,7 @@ function mutateCode(code){
 function runTournament(customs,data,weights){
   const scored=customs.map(ca=>{
     let tot=0,wt=0;
+    let mainBoostHits=0;
     COLS.forEach(col=>{
       const s=getSeries(col,data);
       if(s.length<5)return;
@@ -3174,9 +3209,12 @@ function runTournament(customs,data,weights){
       const ns=weights&&weights[col]&&weights[col].neuralScores&&weights[col].neuralScores[ca.name]!=null?weights[col].neuralScores[ca.name]:0;
       const nBoost=ns>1?1.4:ns>0?1.1:ns<-0.5?0.7:1.0;
       tot+=(0.2+Math.sqrt(bt)*3.5)*wfBoost*nBoost;
+      if(weights&&weights[col]&&weights[col].global&&weights[col].global["_main_"+ca.name])mainBoostHits++;
       wt++;
     });
-    return{...ca,_sc:wt?tot/wt:0};
+    // Main-tag bonus: per-column boost with cap to avoid tournament lock-in.
+    const mainMult=mainBoostHits>0?1+Math.min(MAIN_BOOST_CAP,mainBoostHits*MAIN_BOOST_PER_COL):1;
+    return{...ca,_sc:wt?(tot/wt)*mainMult:0};
   }).sort((a,b)=>b._sc-a._sc);
   if(scored.length<4)return customs;
   const half=Math.ceil(scored.length/2);
@@ -3326,10 +3364,27 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   const userDefined=customs.filter(ca=>!ca.generated);
   if(generated.length<2)return{pruned:customs,removed:[]};
   if(rows.length<4)return{pruned:customs,removed:[]};
+  const latestRow=rows.length?Math.max(...rows.map(r=>r.row||0)):0;
+  const getAlgoSignals=name=>{
+    let hasMainTag=false;
+    let protectedByTop5Hit=false;
+    let worstStreak=0;
+    COLS.forEach(col=>{
+      const gw=weights&&weights[col]&&weights[col].global?weights[col].global:{};
+      const ns=weights&&weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
+      if(gw["_main_"+name])hasMainTag=true;
+      const hitRow=gw["_lastTop5HitRow_"+name];
+      if(ok(hitRow)&&hitRow>=latestRow)protectedByTop5Hit=true;
+      const streak=ns["_s_"+name];
+      if(ok(streak))worstStreak=Math.min(worstStreak,streak);
+    });
+    return{hasMainTag,protectedByTop5Hit,bad3OrMoreStreak:worstStreak<=BAD_STREAK_THRESHOLD,worstStreak};
+  };
   const redundant=detectRedundant(generated,rows);
   const scored=generated.map(ca=>{
     const stats=scoreAlgo(ca,weights,rows,btCache);
-    return{ca,score:stats.score,stats};
+    const signals=getAlgoSignals(ca.name);
+    return{ca,score:stats.score,stats,signals};
   });
   scored.sort((a,b)=>a.score-b.score); // ascending: worst first
 
@@ -3350,7 +3405,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
   const kept=[];
   let overCapRemoved=0;
 
-  scored.forEach(({ca,score,stats})=>{
+  scored.forEach(({ca,score,stats,signals})=>{
     const hasSufficientEvidence=stats.btCnt>=MIN_EVIDENCE_COUNT||stats.nsCount>=MIN_EVIDENCE_COUNT;
     const failsNear1=hasSufficientEvidence&&stats.avgNear1<PRUNE_MIN_NEAR1_RATE;
     // OR logic is intentional: a single strong and reliable signal is enough to avoid premature pruning.
@@ -3365,6 +3420,14 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
     // Always remove redundant
     if(redundant.has(ca.name)){
       removed.push({name:ca.name,reason:"redundant"});
+      return;
+    }
+    if(signals.protectedByTop5Hit){
+      kept.push({...ca,main:signals.hasMainTag||ca.main,enabled:true,benched:false});
+      return;
+    }
+    if(signals.bad3OrMoreStreak){
+      removed.push({name:ca.name,reason:"cold_streak_3"});
       return;
     }
     // Hard prune if algorithm never gets exact/±1 proximity under sufficient evidence
@@ -3394,7 +3457,7 @@ function pruneWeakAlgos(customs,weights,rows,btCache){
       kept.push({...ca,enabled:true,benched:false});
       return;
     }
-    kept.push(ca);
+    kept.push({...ca,main:signals.hasMainTag||ca.main});
   });
 
   const pruned=[...userDefined,...kept,...benched];
@@ -3985,7 +4048,8 @@ function AppInner(){
             const dtCtx=dateCtx?{dow:dateCtx.dow,lunar:dateCtx.lunarPhase,month:dateCtx.m,season:dateCtx.season}:null;
             newlyKnownCols.forEach(col=>{
               const colRegime=prev.preds[col]?prev.preds[col].regime:"normal";
-              let uw=updateW(prev.preds[col],actuals[col],nw[col],inc.row,colRegime,nc[col]);
+              const hitCtx=getTop5HitContext(prev.preds[col],actuals[col]);
+              let uw=updateW(prev.preds[col],actuals[col],nw[col],inc.row,colRegime,nc[col],hitCtx);
               uw.global=applyForgetting(uw.global,newAccLog);
               if(dtCtx)uw=updateDateWeights(prev.preds[col],actuals[col],uw,dtCtx);
               nw[col]=uw;
@@ -4199,19 +4263,22 @@ function AppInner(){
     }
     // Need at least 1 known column to learn
     if(knownCols.length===0){st("Enter at least one actual value (use XX for unknown)","warn");return;}
-    const results={};let exactCount=0;
+    const results={};let exactCount=0,numberHitCount=0;
     COLS.forEach(col=>{
       if(actuals[col]===null){
         // Unknown: mark as skipped, use top prediction as placeholder
         const top1=S.preds[col]&&S.preds[col].top5[0]?S.preds[col].top5[0].value:null;
-        results[col]={predicted:top1,actual:null,exact:false,near:false,skipped:true};
+        results[col]={predicted:top1,actual:null,exact:false,numberHit:false,near:false,skipped:true};
         return;
       }
       const top1=S.preds[col]&&S.preds[col].top5[0]?S.preds[col].top5[0].value:null;
       const actual=actuals[col];
+      const hitCtx=getTop5HitContext(S.preds[col],actual);
       const ex=isExactOrReversed(top1,actual),nr=!ex&&M.near(top1!=null?top1:-1,actual,2);
-      results[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
+      const numberHit=!ex&&hitCtx.top5Hit;
+      results[col]={predicted:top1,actual,exact:ex,numberHit,near:nr,skipped:false};
       if(ex)exactCount++;
+      if(numberHit)numberHitCount++;
     });
     setCheckRes(results);
     upd(prev=>{
@@ -4223,7 +4290,8 @@ function AppInner(){
       COLS.forEach(col=>{
         if(actuals[col]===null)return;
         const colRegime=prev.preds[col]?prev.preds[col].regime:"normal";
-        let updated=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow,colRegime,prev.calibration&&prev.calibration[col]);
+        const hitCtx=getTop5HitContext(prev.preds[col],actuals[col]);
+        let updated=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow,colRegime,prev.calibration&&prev.calibration[col],hitCtx);
         // Bug 12 fix: decay ALL weight maps, not just global
         updated.global=applyForgetting(updated.global,prev.accLog);
         // Soft decay perRow/perRange/perRegime toward 1.0 (prevent stale boosts)
@@ -4314,9 +4382,9 @@ function AppInner(){
 
       return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,accLog:newFullLog,lastAutoGenRows:newRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
     });
-    st("Learned! "+exactCount+"/4 exact — weights saved ✓");
+    st("Learned! "+exactCount+"/"+knownCols.length+" exact · "+numberHitCount+" top5 hits — weights saved ✓");
     const pct=Math.round(exactCount/knownCols.length*100);
-    syslog((exactCount===4?"🎯":"📊")+" Learn result: "+exactCount+"/"+knownCols.length+" exact ("+pct+"%)","learn");
+    syslog((exactCount===knownCols.length?"🎯":"📊")+" Learn result: "+exactCount+"/"+knownCols.length+" exact ("+pct+"%) · top5 hits "+numberHitCount,"learn");
     if(exactCount===4)syslog("✨ Perfect prediction! Pattern well-captured — consider exporting weights.","alert");
   }
 
@@ -4504,14 +4572,15 @@ function AppInner(){
       knownCols.forEach(col=>{
         const actual=csvRow[col];
         const pred=rowPreds[col];
-        if(!pred){rowResults[col]={predicted:null,actual,exact:false,near:false,skipped:true};return;}
+        if(!pred){rowResults[col]={predicted:null,actual,exact:false,numberHit:false,near:false,skipped:true};return;}
         const top1=pred.top5[0]?.value;
+        const hitCtx=getTop5HitContext(pred,actual);
         const ex=isExactOrReversed(top1,actual),nr=!ex&&M.near(top1??-1,actual,2);
-        rowResults[col]={predicted:top1,actual,exact:ex,near:nr,skipped:false};
+        rowResults[col]={predicted:top1,actual,exact:ex,numberHit:!ex&&hitCtx.top5Hit,near:nr,skipped:false};
         if(ex)rowExact++;rowKnown++;
         const regime=pred.regime||"normal";
         // Skip applyForgetting in hot path — deferred to autoTrainFinish
-        let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col]);
+        let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col],hitCtx);
         if(dateCtx)uw=updateDateWeights(pred,actual,uw,dateCtx);
         tr.weights[col]=uw;
         tr.calibration[col]=updateCalibration(pred.conf,ex,tr.calibration[col]||{});
@@ -5423,12 +5492,12 @@ function CheckCard(p){
       <div style={{fontSize:9,color:"#2d3158",marginTop:2}}>SKIPPED</div>
     </div>;
   }
-  const clr=r.exact?"#34d399":r.near?"#fbbf24":"#f87171";
+  const clr=r.exact?"#34d399":r.numberHit?"#60a5fa":r.near?"#fbbf24":"#f87171";
   return <div style={{background:clr+"12",border:"1px solid "+clr+"33",borderRadius:8,padding:"8px 12px",textAlign:"center",minWidth:78}}>
-    <div style={{fontSize:18,marginBottom:3}}>{r.exact?"✅":r.near?"🟡":"❌"}</div>
+    <div style={{fontSize:18,marginBottom:3}}>{r.exact?"✅":r.numberHit?"🔵":r.near?"🟡":"❌"}</div>
     <div style={{fontSize:9,color:"#4a4e6a",marginBottom:2}}>Col {p.col}</div>
     <div style={{fontSize:11}}><span style={{color:clr,fontWeight:700}}>{pad2(r.predicted||0)}</span>→<span style={{color:"#c8d0e8",fontWeight:700}}>{pad2(r.actual!=null?r.actual:0)}</span></div>
-    <div style={{fontSize:9,color:clr,marginTop:2,fontWeight:700}}>{r.exact?"EXACT":r.near?"NEAR ±2":"MISS"}</div>
+    <div style={{fontSize:9,color:clr,marginTop:2,fontWeight:700}}>{r.exact?"EXACT":r.numberHit?"TOP5 HIT":r.near?"NEAR ±2":"MISS"}</div>
   </div>;
 }
 function HeatCell(p){
