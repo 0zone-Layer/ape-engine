@@ -16,8 +16,8 @@ const M={
   median:a=>{const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;},
 };
 const pad2=n=>String(M.mod(n)).padStart(2,"0");
-const COLS=["A","B","C","D","E","F","G"];
-const COL_NAMES={A:"Desawar",B:"Delhi Bazar",C:"Shri Ganesh",D:"Faridabad",E:"Shri Krishna",F:"Ghaziabad",G:"Gali"};
+const COLS=["A","B","C","D","E","F"];
+const COL_NAMES={A:"Desawar",B:"Delhi Bazar",C:"Shri Ganesh",D:"Faridabad",E:"Shri Krishna",F:"Ghaziabad"};
 function buildPredictionCopyLines(preds,cols){
   const lines=[];
   (cols||COLS).forEach(col=>{
@@ -641,7 +641,7 @@ function getGlobalSeries(col,datasets){
   _TC.gs[ck]=result;
   return result;
 }
-const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#60a5fa",F:"#f472b6",G:"#22d3ee"};
+const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#60a5fa",F:"#f472b6"};
 const HASH_WEIGHTS=[3,5,7,11,13,17,19];
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
