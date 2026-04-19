@@ -4584,7 +4584,7 @@ function AppInner(){
     // RowSumTarget is kept because it uses historical sum distribution, not predictions.
     COLS.forEach(col=>{
       if(!result[col])return;
-        const sumSigs=getRowSumSignal(col,scopedRows,knownPreds);
+      const sumSigs=getRowSumSignal(col,scopedRows,knownPreds);
       Object.entries(sumSigs).forEach(([name,preds])=>{
         if(!preds||!preds.length)return;
         const top=result[col].top5;
@@ -4608,7 +4608,7 @@ function AppInner(){
           if(!result[col]?.top5[0])return;
           const nudged=M.mod(result[col].top5[0].value-correction);
           // Check nudged value is historically plausible
-           const colSeries=scopedRows.map(r=>r[col]).filter(ok);
+          const colSeries=scopedRows.map(r=>r[col]).filter(ok);
           const colMean=M.mean(colSeries),colStd=M.std(colSeries);
           if(Math.abs(nudged-colMean)<=colStd*2){
             // Inject nudged as a top candidate
