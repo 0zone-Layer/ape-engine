@@ -3119,6 +3119,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
         truncated:contributors.length>MAX_TOP_CONTRIBUTING_ALGOS
       };
     });
+  const elapsedBeforeFinalize=PERF_NOW()-tStart;
+  if(elapsedBeforeFinalize>FAILSAFE_PREDICT_MS&&top5.length>1){
+    top5.splice(1);
+  }
 
   const ac=Object.keys(details).length;
   const consensus=top5[0]?Math.round(top5[0].algos.length/ac*100):0;
@@ -3144,12 +3148,6 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const dateTotal=dateSigList.length;
   const layerSupport=topVal!=null&&signalTypeSupport[topVal]?signalTypeSupport[topVal].size:1;
   perf.totalMs=PERF_NOW()-tStart;
-  if(perf.totalMs>FAILSAFE_PREDICT_MS){
-    const topOnly=top5.length?top5[0].value:null;
-    if(ok(topOnly)){
-      top5.splice(1);
-    }
-  }
   return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,context:currentContext,contextMetrics:contextInfo.metrics,corrMatrix:contextInfo.corr,influenceMatrix:contextInfo.influence,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,layerSupport,perf,algoBudget,lightweight};
 }
 
