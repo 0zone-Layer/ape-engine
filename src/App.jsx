@@ -191,6 +191,12 @@ const CONTROL_PRUNE_STRICT=1.2;
 const DENSE_CLUSTER_RADIUS=4;
 const DENSE_CLUSTER_MASS_WEIGHT=0.12;
 const ENTROPY_BIN_SIZE=10;
+const LOG_TOP_WEIGHTS_COUNT=8; // [ADDED]
+const LOG_TOP_DEPENDENCIES_COUNT=3; // [ADDED]
+const CONSENSUS_BOOST_FACTOR=0.08; // [ADDED]
+const CONSENSUS_MEAN_AGREE_RADIUS=5; // [ADDED]
+const CONSENSUS_MEAN_AGREE_MULT=1.07; // [ADDED]
+const SIGNATURE_MEMORY_MAX_ENTRIES=96; // [ADDED]
 const CONTEXT_SIG_BINS={ // [ADDED]
   trend:[0.45,0.95,1.45],
   volatility:[6,12,18],
@@ -2855,15 +2861,16 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const sigEntries=Object.entries(signatureMemory);
   let matchedSignature=null;
   let matchedSigPayload=null;
+  let matchedSigDistance=null;
   if(sigEntries.length){
     let best={k:null,d:Infinity,p:null};
     sigEntries.forEach(([k,p])=>{
       const d=signatureDistance(signature,p&&p.signature?p.signature:null);
       if(d<best.d){best={k,d,p};}
     });
-    if(best.k&&best.d<=0.5){matchedSignature=best.k;matchedSigPayload=best.p;}
+    if(best.k&&best.d<=0.5){matchedSignature=best.k;matchedSigPayload=best.p;matchedSigDistance=best.d;}
   }
-  console.log("[MEMORY_MATCH]",matchedSignature); // [ADDED]
+  console.log("[MEMORY_MATCH]",{matched_signature:matchedSignature,distance:matchedSigDistance}); // [ADDED]
 
   // ── Pre-cache: use globalSeries for btScore to leverage all historical data ──
   if(btSeries.length>=5){
@@ -2921,7 +2928,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     }catch(e){}
   });
   perf.builtinMs+=PERF_NOW()-builtinT0;
-  const weightTop=Object.entries(details).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,8).map(([name,info])=>({name,w:+(info.w||0).toFixed(3)})); // [ADDED]
+  const weightTop=Object.entries(details).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,LOG_TOP_WEIGHTS_COUNT).map(([name,info])=>({name,w:+(info.w||0).toFixed(3)})); // [ADDED]
   console.log("[WEIGHT_TOP]",weightTop); // [ADDED]
 
   // cross-col (temporal-aware)
@@ -2943,7 +2950,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:isTemp?"temporal":"cross",source:srcCol,influence:+infl.toFixed(3),context:currentContext,category:"HEURISTIC"};
   });
   perf.crossMs+=PERF_NOW()-crossT0;
-  const strongestDependencies=Object.entries(influenceRow).filter(([k])=>k!==col).sort((a,b)=>(b[1]||0)-(a[1]||0)).slice(0,3).map(([source,influence])=>({source,influence:+(+influence).toFixed(3)})); // [ADDED]
+  const strongestDependencies=Object.entries(influenceRow).filter(([k])=>k!==col).sort((a,b)=>(b[1]||0)-(a[1]||0)).slice(0,LOG_TOP_DEPENDENCIES_COUNT).map(([source,influence])=>({source,influence:+(+influence).toFixed(3)})); // [ADDED]
   console.log("[CROSS_TOP]",strongestDependencies); // [ADDED]
 
   // ── DATE SIGNALS ────────────────────────────────
@@ -3120,8 +3127,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const clusterPeak=densestClusterPeak(votes,DENSE_CLUSTER_RADIUS);
   if(weightedMedian!=null&&clusterPeak!=null){
     const consensusVal=M.mod(Math.round(weightedMedian*0.5+clusterPeak*0.5));
-    votes[consensusVal]=(votes[consensusVal]||0)+(voteTotal*0.08);
-    if(weightedMean!=null&&M.cd(weightedMean,consensusVal)<=5)votes[consensusVal]*=1.07;
+    votes[consensusVal]=(votes[consensusVal]||0)+(voteTotal*CONSENSUS_BOOST_FACTOR);
+    if(weightedMean!=null&&M.cd(weightedMean,consensusVal)<=CONSENSUS_MEAN_AGREE_RADIUS)votes[consensusVal]*=CONSENSUS_MEAN_AGREE_MULT;
   }
 
   // ── FAMILY DIVERSITY BONUS ────────────────────────────────────────────
@@ -3543,7 +3550,7 @@ function updateSignatureMemory(memory,pred,actual){ // [ADDED]
   slot.total=(slot.total||0)+1;
   if(isExactOrReversed(pred.top5&&pred.top5[0]?pred.top5[0].value:null,actual))slot.hits=(slot.hits||0)+1;
   slot.lastSeen=Date.now();
-  const entries=Object.entries(next).sort((a,b)=>(b[1]?.lastSeen||0)-(a[1]?.lastSeen||0)).slice(0,96);
+  const entries=Object.entries(next).sort((a,b)=>(b[1]?.lastSeen||0)-(a[1]?.lastSeen||0)).slice(0,SIGNATURE_MEMORY_MAX_ENTRIES);
   return Object.fromEntries(entries);
 }
 function buildAdaptiveControl(accLog,prevControl){
