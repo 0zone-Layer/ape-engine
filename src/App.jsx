@@ -102,6 +102,157 @@ function getLongPatternScore(v,model){
   const p=(model.intervalScore&&model.intervalScore[n])||0;
   return clamp(f*0.65+p*0.35,0,1);
 }
+function getDigitParts(v){
+  if(!ok(v))return{value:null,tens:null,units:null};
+  const value=M.mod(Math.round(v));
+  return{value,tens:Math.floor(value/10),units:value%10};
+}
+function getRangeBucket(v){
+  if(!ok(v))return null;
+  return Math.floor(M.mod(Math.round(v))/10);
+}
+function getRangeLabel(v){
+  const b=getRangeBucket(v);
+  if(b===null)return null;
+  const s=b*10;
+  return s+"-"+(s+9);
+}
+function _topKeysByScore(hist,recent,limit=3){
+  const keys=[...new Set([...Object.keys(hist||{}),...Object.keys(recent||{})])];
+  return keys
+    .map(k=>({k,score:(hist[k]||0)*0.55+(recent[k]||0)}))
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,limit)
+    .map(x=>parseInt(x.k,10))
+    .filter(v=>!isNaN(v));
+}
+function buildDigitRangeProfile(historySeries,recentSeries){
+  const histTens={},histUnits={},histPairs={},histRanges={};
+  const recTens={},recUnits={},recPairs={},recRanges={};
+  const transitionPairs={};
+  const src=(historySeries||[]).filter(ok).map(v=>M.mod(Math.round(v)));
+  const recent=(recentSeries||[]).filter(ok).map(v=>M.mod(Math.round(v)));
+  const inc=(map,key,weight=1)=>{if(key==null)return;map[key]=(map[key]||0)+weight;};
+  src.forEach((v,i)=>{
+    const tens=Math.floor(v/10),units=v%10,pair=tens*10+units,range=tens;
+    inc(histTens,tens,1);inc(histUnits,units,1);inc(histPairs,pair,1);inc(histRanges,range,1);
+    if(i>0){
+      const prev=src[i-1];
+      const prevPair=Math.floor(prev/10)*10+(prev%10);
+      if(!transitionPairs[prevPair])transitionPairs[prevPair]={};
+      transitionPairs[prevPair][pair]=(transitionPairs[prevPair][pair]||0)+1;
+    }
+  });
+  recent.forEach((v,i)=>{
+    const tens=Math.floor(v/10),units=v%10,pair=tens*10+units,range=tens;
+    inc(recTens,tens,1);inc(recUnits,units,1);inc(recPairs,pair,1);inc(recRanges,range,1);
+    if(i>0){
+      const prev=recent[i-1];
+      const prevPair=Math.floor(prev/10)*10+(prev%10);
+      if(!transitionPairs[prevPair])transitionPairs[prevPair]={};
+      transitionPairs[prevPair][pair]=(transitionPairs[prevPair][pair]||0)+1.2;
+    }
+  });
+  const nextPairByLast={};
+  Object.entries(transitionPairs).forEach(([k,nextMap])=>{
+    const best=Object.entries(nextMap).sort((a,b)=>b[1]-a[1])[0];
+    if(best)nextPairByLast[parseInt(k,10)]=parseInt(best[0],10);
+  });
+  const histTransitions={};
+  Object.keys(transitionPairs).forEach(k=>{
+    histTransitions[k]=Object.entries(transitionPairs[k])
+      .sort((a,b)=>b[1]-a[1])
+      .slice(0,3)
+      .map(([n])=>parseInt(n,10));
+  });
+  const lastPair=src.length?(()=>{
+    const lv=src[src.length-1];
+    return Math.floor(lv/10)*10+(lv%10);
+  })():null;
+  return{
+    frequentTens:_topKeysByScore(histTens,recTens,3),
+    frequentUnits:_topKeysByScore(histUnits,recUnits,3),
+    repeatingPairs:_topKeysByScore(histPairs,recPairs,4),
+    dominantRanges:_topKeysByScore(histRanges,recRanges,3),
+    pairTransitions:histTransitions,
+    nextPairByLast,
+    lastPair
+  };
+}
+function getDigitRangeMatch(predicted,actual){
+  if(!ok(predicted)||!ok(actual))return{tensMatch:false,unitsMatch:false,digitMatchBonus:0,rangeMatch:false,rangeMatchBonus:0,nearHit:false,nearHitBonus:0,predictedRange:null,actualRange:null};
+  const p=M.mod(Math.round(predicted));
+  const a=M.mod(Math.round(actual));
+  const pt=Math.floor(p/10),pu=p%10,at=Math.floor(a/10),au=a%10;
+  const tensMatch=pt===at;
+  const unitsMatch=pu===au;
+  const both=tensMatch&&unitsMatch;
+  const rangeMatch=Math.floor(p/10)===Math.floor(a/10);
+  const nearHit=Math.abs(p-a)<=5;
+  return{
+    tensMatch,
+    unitsMatch,
+    digitMatchBonus:both?REWARD_DIGIT_MATCH_FULL:(tensMatch||unitsMatch?REWARD_DIGIT_MATCH_PARTIAL:0),
+    rangeMatch,
+    rangeMatchBonus:rangeMatch?REWARD_RANGE_MATCH:0,
+    nearHit,
+    nearHitBonus:nearHit?REWARD_NEAR_HIT:0,
+    predictedRange:getRangeLabel(p),
+    actualRange:getRangeLabel(a)
+  };
+}
+function applyDigitRangeEnsembleBoost(vote,v,profile){
+  if(!ok(vote)||!ok(v)||!profile)return vote;
+  const n=M.mod(Math.round(v));
+  const tens=Math.floor(n/10),units=n%10,pair=tens*10+units,bucket=tens;
+  let mult=1;
+  if((profile.frequentTens||[]).includes(tens))mult*=1.018;
+  if((profile.frequentUnits||[]).includes(units))mult*=1.018;
+  if((profile.repeatingPairs||[]).includes(pair))mult*=1.016;
+  if((profile.dominantRanges||[]).includes(bucket))mult*=1.022;
+  const expectedNext=profile.lastPair!=null?profile.nextPairByLast&&profile.nextPairByLast[profile.lastPair]:null;
+  if(expectedNext!=null&&expectedNext===pair)mult*=1.014;
+  return vote*clamp(mult,1,1+DIGIT_RANGE_ENSEMBLE_MAX_BOOST);
+}
+function updateDigitRangeStats(stats,value){
+  if(!ok(value))return stats||{};
+  const next={
+    ...(stats||{}),
+    tens:{...((stats&&stats.tens)||{})},
+    units:{...((stats&&stats.units)||{})},
+    pairs:{...((stats&&stats.pairs)||{})},
+    ranges:{...((stats&&stats.ranges)||{})},
+    transitions:{...((stats&&stats.transitions)||{})},
+    recentPairs:[...((stats&&stats.recentPairs)||[])]
+  };
+  const n=M.mod(Math.round(value));
+  const tens=Math.floor(n/10),units=n%10,pair=tens*10+units,range=tens;
+  next.tens[tens]=(next.tens[tens]||0)+1;
+  next.units[units]=(next.units[units]||0)+1;
+  next.pairs[pair]=(next.pairs[pair]||0)+1;
+  next.ranges[range]=(next.ranges[range]||0)+1;
+  const prevPair=next.recentPairs.length?next.recentPairs[next.recentPairs.length-1]:null;
+  if(prevPair!=null){
+    const tr={...((next.transitions&&next.transitions[prevPair])||{})};
+    tr[pair]=(tr[pair]||0)+1;
+    next.transitions[prevPair]=tr;
+  }
+  next.recentPairs.push(pair);
+  if(next.recentPairs.length>DIGIT_RECENT_WINDOW*3)next.recentPairs=next.recentPairs.slice(-DIGIT_RECENT_WINDOW*3);
+  const trimMap=(m,max=12)=>{
+    const keys=Object.keys(m||{});
+    if(keys.length<=max)return m;
+    return Object.fromEntries(keys.map(k=>[k,m[k]]).sort((a,b)=>b[1]-a[1]).slice(0,max));
+  };
+  next.tens=trimMap(next.tens,10);
+  next.units=trimMap(next.units,10);
+  next.pairs=trimMap(next.pairs,20);
+  next.ranges=trimMap(next.ranges,10);
+  const trimmedTransitions={};
+  Object.entries(next.transitions||{}).forEach(([k,m])=>{trimmedTransitions[k]=trimMap(m,6);});
+  next.transitions=trimmedTransitions;
+  return next;
+}
 function detectCrossHit(predicted,actual,col,rowActuals,rows,predRow){
   if(!ok(predicted)||!ok(actual))return{crossHit:false};
   const p=M.mod(Math.round(predicted));
@@ -244,10 +395,16 @@ const REWARD_NEAR1=1.35;
 const REWARD_NEAR_REGIME=0.85;
 const REWARD_CLOSE=0.2;
 const REWARD_MISS=-0.55;
+const REWARD_DIGIT_MATCH_PARTIAL=0.18;
+const REWARD_DIGIT_MATCH_FULL=0.32;
+const REWARD_RANGE_MATCH=0.12;
+const REWARD_NEAR_HIT=0.08;
 const WEIGHT_MULT_EXACT=1.4;
 const WEIGHT_MULT_NUMBER_HIT=1.18;
 const WEIGHT_MULT_NEAR=1.1;
 const WEIGHT_MULT_MISS=0.80;
+const DIGIT_RECENT_WINDOW=24;
+const DIGIT_RANGE_ENSEMBLE_MAX_BOOST=0.12;
 const MAIN_BOOST_CAP=0.45;
 const MAIN_BOOST_PER_COL=0.12;
 const BAD_STREAK_THRESHOLD=-3;
@@ -461,7 +618,7 @@ const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#60a5fa",F:"#f472b
 const HASH_WEIGHTS=[3,5,7,11,13,17,19];
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
-const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{},performance:{}}]));
+const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{},performance:{},digitRangeStats:{}}]));
 // Cached algo count — avoids Object.keys(A) in every render
 let ALGO_COUNT=0; // filled after A{} definition
 
@@ -2821,6 +2978,14 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const globalSeries=allDatasets?getGlobalSeries(col,allDatasets):longLocalSeries;
   const btSource=globalSeries.length>longLocalSeries.length?globalSeries:longLocalSeries;
   const btSeries=btSource.length>MAX_BT_SERIES?btSource.slice(-MAX_BT_SERIES):btSource;
+  const recentDigitSeries=series.slice(-DIGIT_RECENT_WINDOW);
+  const digitRangeProfile=buildDigitRangeProfile(btSeries,recentDigitSeries);
+  const storedDigitStats=W.digitRangeStats||{};
+  const toTop=(m,limit)=>Object.entries(m||{}).sort((a,b)=>b[1]-a[1]).slice(0,limit).map(([k])=>parseInt(k,10)).filter(v=>!isNaN(v));
+  digitRangeProfile.frequentTens=[...new Set([...(digitRangeProfile.frequentTens||[]),...toTop(storedDigitStats.tens,2)])];
+  digitRangeProfile.frequentUnits=[...new Set([...(digitRangeProfile.frequentUnits||[]),...toTop(storedDigitStats.units,2)])];
+  digitRangeProfile.repeatingPairs=[...new Set([...(digitRangeProfile.repeatingPairs||[]),...toTop(storedDigitStats.pairs,3)])];
+  digitRangeProfile.dominantRanges=[...new Set([...(digitRangeProfile.dominantRanges||[]),...toTop(storedDigitStats.ranges,2)])];
   const longPatternModel=buildLongPatternModel(btSeries);
 
   const gw=W.global||{},rw=W.perRow||{},rnw=W.perRange||{};
@@ -3172,6 +3337,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     const agreeRatio=wt/maxAgree;
     if(agreeRatio>CONSENSUS_MIN_AGREEMENT_RATIO&&votes[parseInt(v)])votes[parseInt(v)]*=1+clamp(agreeRatio*CONSENSUS_MAX_BOOST,0,CONSENSUS_MAX_BOOST);
   });
+  Object.keys(votes).forEach(v=>{
+    const vi=parseInt(v,10);
+    votes[vi]=applyDigitRangeEnsembleBoost(votes[vi],vi,digitRangeProfile);
+  });
 
   // Meta-learner
   const metaModel=W._metaModel||null;
@@ -3296,7 +3465,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const dateTotal=dateSigList.length;
   const layerSupport=topVal!=null&&signalTypeSupport[topVal]?signalTypeSupport[topVal].size:1;
   perf.totalMs=PERF_NOW()-tStart;
-  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,context:currentContext,contextMetrics:contextInfo.metrics,corrMatrix:contextInfo.corr,influenceMatrix:contextInfo.influence,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,layerSupport,perf,algoBudget,lightweight};
+  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,context:currentContext,contextMetrics:contextInfo.metrics,corrMatrix:contextInfo.corr,influenceMatrix:contextInfo.influence,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,layerSupport,perf,algoBudget,lightweight,digitRangeProfile};
 }
 
 // ── NEURAL RUNNING SCORE (per-algo accuracy tracker) ──
@@ -3316,10 +3485,12 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
     const crossHit=crossHitSet.has(name);
     const ex=isExactOrReversed(p,actual);
     const exactLike=ex||numberHit;
+    const intel=getDigitRangeMatch(p,actual);
     const near1=!exactLike&&M.cd(p,actual)<=1;
     const nr=!exactLike&&!crossHit&&M.nearR(p,actual,regime);
-    const close=!exactLike&&!crossHit&&M.cd(p,actual)<=5;
+    const close=!exactLike&&!crossHit&&intel.nearHit;
     const baseReward=exactLike?REWARD_EXACT:crossHit?CROSS_HIT_PARTIAL_REWARD:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
+    const supportBonus=!exactLike&&!crossHit?(intel.digitMatchBonus+intel.rangeMatchBonus+intel.nearHitBonus):0;
     // Streak tracking per algo
     const streakKey="_s_"+name;
     const curStreak=next[streakKey]||0;
@@ -3327,7 +3498,7 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
     next[streakKey]=Math.max(-6,Math.min(10,newStreak));
     // Streak multiplier: conservative cap for stability
     const streakMult=newStreak>=5?1.55:newStreak>=3?1.25:newStreak<=-3?0.78:1.0;
-    const reward=baseReward*streakMult;
+    const reward=(baseReward+supportBonus)*streakMult;
     const prev=next[name]!=null?next[name]:0;
     // bound neural EMA so one short streak cannot permanently dominate downstream weighting.
     next[name]=+clamp((1-alpha)*prev+alpha*reward,-4.5,5.2).toFixed(3);
@@ -3371,9 +3542,11 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const prev=perf[name]||{class:meta.class||classifyAlgo(name),category,rollingHits:[],rollingAccuracy:0,totalScore:0,recentError:0,evalCount:0,shortHits:[],midHits:[],errors:[],contextScore:{}};
   const ex=isExactOrReversed(predVal,actual)||!!meta.numberHit;
   const crossHit=!!meta.crossHit;
-  const nr=!ex&&!crossHit&&M.near(M.mod(Math.round(predVal)),actual,NEAR_TOLERANCE);
+  const intel=getDigitRangeMatch(predVal,actual);
+  const nr=!ex&&!crossHit&&intel.nearHit;
   const closeness=clamp(1-M.cd(M.mod(Math.round(predVal)),actual)/MAX_TRACKING_ERROR,0,1);
-  const hitScore=ex?1:crossHit?CROSS_HIT_PARTIAL_REWARD:nr?0.55:closeness*0.25;
+  const supportBonus=!ex&&!crossHit?(intel.digitMatchBonus+intel.rangeMatchBonus+intel.nearHitBonus):0;
+  const hitScore=clamp((ex?1:crossHit?CROSS_HIT_PARTIAL_REWARD:nr?0.55:closeness*0.25)+supportBonus*0.35,0,1.25);
   const signedErr=Math.min(M.cd(M.mod(Math.round(predVal)),actual),MAX_TRACKING_ERROR);
   const rolling=[...(prev.rollingHits||[]),hitScore].slice(-PERF_ROLLING_WINDOW);
   const shortHits=[...(prev.shortHits||[]),hitScore].slice(-SHORT_WINDOW);
@@ -3385,7 +3558,14 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const midScore=midHits.length?M.mean(midHits):rollingAccuracy;
   const longPatternScore=clamp(meta&&meta.longPatternScore!=null?meta.longPatternScore:(prev.longPatternScore||0),0,1);
   const crossHitScore=clamp(crossHit?1:(prev.crossHitScore||0)*0.92,0,1);
-  const compositeScore=(shortScore*COMPOSITE_RECENT_WEIGHT)+(midScore*COMPOSITE_MID_WEIGHT)+(longPatternScore*COMPOSITE_LONG_WEIGHT)+(crossHitScore*COMPOSITE_CROSS_WEIGHT);
+  const recentAccuracy=shortScore;
+  const starHitBonus=meta&&meta.numberHit?0.22:0;
+  const crossHitBonus=crossHit?0.18:0;
+  const digitMatchBonus=intel.digitMatchBonus;
+  const rangeMatchBonus=intel.rangeMatchBonus;
+  const nearHitBonus=intel.nearHitBonus;
+  const enhancedScore=recentAccuracy+starHitBonus+crossHitBonus+digitMatchBonus+rangeMatchBonus+nearHitBonus;
+  const compositeScore=(shortScore*COMPOSITE_RECENT_WEIGHT)+(midScore*COMPOSITE_MID_WEIGHT)+(longPatternScore*COMPOSITE_LONG_WEIGHT)+(crossHitScore*COMPOSITE_CROSS_WEIGHT)+(enhancedScore*0.12);
   const globalScore=((prev.globalScore!=null?prev.globalScore:rollingAccuracy)*PERF_GLOBAL_DECAY)+hitScore*(1-PERF_GLOBAL_DECAY);
   const prevCtxScore=prev.contextScore&&prev.contextScore[context]!=null?prev.contextScore[context]:midScore;
   const contextScore={...(prev.contextScore||{}),[context]:prevCtxScore*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)};
@@ -3404,6 +3584,10 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
     midScore:+midScore.toFixed(4),
     longPatternScore:+longPatternScore.toFixed(4),
     crossHitScore:+crossHitScore.toFixed(4),
+    enhancedScore:+enhancedScore.toFixed(4),
+    digitMatchScore:+digitMatchBonus.toFixed(4),
+    rangeMatchScore:+rangeMatchBonus.toFixed(4),
+    nearHitScore:+nearHitBonus.toFixed(4),
     compositeScore:+compositeScore.toFixed(4),
     globalScore:+globalScore.toFixed(4),
     contextScore,
@@ -3431,10 +3615,11 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
   const rnw={...W.perRange||{}};
   const rgw={...(W.perRegime||{})};
   const perf={...(W.performance||{})};
+  const digitRangeStats={...(W.digitRangeStats||{})};
   const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
   const crossHitSet=learnCtx&&learnCtx.crossHitAlgos instanceof Set?learnCtx.crossHitAlgos:new Set();
   if(!rgw[regime])rgw[regime]={};
-  if(!pred)return{global:gw,perRow:rw,perRange:rnw,perRegime:rgw,performance:perf};
+  if(!pred)return{global:gw,perRow:rw,perRange:rnw,perRegime:rgw,performance:perf,digitRangeStats};
   const cr=Math.floor(actual/25);
   if(!rw[predRow])rw[predRow]={};
   if(!rnw[cr])rnw[cr]={};
@@ -3444,9 +3629,14 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     const p=M.mod(Math.round(info.pred));
     const ex=isExactOrReversed(p,actual),numberHit=hitSet.has(name),crossHit=crossHitSet.has(name);
     const exactLike=ex||numberHit;
-    const nr=!exactLike&&!crossHit&&M.near(p,actual,2);
+    const intel=getDigitRangeMatch(p,actual);
+    const nr=!exactLike&&!crossHit&&intel.nearHit;
     updateAlgoPerformance(perf,name,p,actual,{class:info.class||classifyAlgo(name),category:info.category||classifyAlgoCategory(name),context:pred.context||"MIXED",numberHit,crossHit,longPatternScore:info.longPatternScore});
-    const mult=exactLike?WEIGHT_MULT_EXACT:crossHit?1.03:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
+    let mult=exactLike?WEIGHT_MULT_EXACT:crossHit?1.03:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
+    if(!exactLike&&!crossHit){
+      const support=(intel.digitMatchBonus*0.08)+(intel.rangeMatchBonus*0.06)+(intel.nearHitBonus*0.05);
+      mult=clamp(mult+support,WEIGHT_MULT_MISS,WEIGHT_MULT_NEAR+0.08);
+    }
     const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
     const newMom=0.75*mom+0.25*mult;
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
@@ -3477,7 +3667,8 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     perRange:trimNestedMap(rnw,8),
     perRegime:trimNestedMap(rgw,6),
     neuralScores:trimFlatMap(updateNeuralScores(pred,actual,W.neuralScores||{},regime,learnCtx)),
-    performance:trimPerformanceMap(perf)
+    performance:trimPerformanceMap(perf),
+    digitRangeStats:updateDigitRangeStats(digitRangeStats,actual)
   };
 }
 
@@ -4066,6 +4257,7 @@ function migrateWeights(weights){
     if(!w.perLunar)w.perLunar={};
     if(!w.neuralScores)w.neuralScores={};
     if(!w.performance)w.performance={};
+    if(!w.digitRangeStats)w.digitRangeStats={};
     migrated[col]=w;
   });
   return migrated;
@@ -4885,10 +5077,18 @@ function AppInner(){
       const exactLike=isExactLikePrediction(S.preds[col],actual,hitCtx);
       const crossHitMeta=detectCrossHit(top1,actual,col,actuals,rows,S.predRow);
       const crossHit=!exactLike&&!!crossHitMeta.crossHit;
-      const nr=!exactLike&&!crossHit&&M.near(top1!=null?top1:-1,actual,2);
+      const intel=getDigitRangeMatch(top1,actual);
+      const nr=!exactLike&&!crossHit&&intel.nearHit;
       const numberHit=!exTop1&&hitCtx.top5Hit;
-      results[col]={predicted:top1,actual,exact:exactLike,numberHit,near:nr,crossHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
+      results[col]={predicted:top1,actual,exact:exactLike,numberHit,near:nr,crossHit,tensMatch:intel.tensMatch,unitsMatch:intel.unitsMatch,rangeMatch:intel.rangeMatch,nearHit:intel.nearHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
       predActualLog[col]={prediction:top1,actual};
+      console.log("[DIGIT-MATCH]",{predicted:top1,actual,tens_match:intel.tensMatch,units_match:intel.unitsMatch});
+      if(intel.rangeMatch){
+        console.log("[RANGE-MATCH]",{predicted_range:intel.predictedRange,actual_range:intel.actualRange});
+      }
+      if(!exactLike&&!crossHit&&intel.nearHit){
+        console.log("[NEAR-HIT]",top1,actual);
+      }
       if(crossHit){
         console.log("[CROSS-HIT]",{predicted:top1,actual,found_in:crossHitMeta.found_in==="same_row"?"same_row":"nearby_row",column:crossHitMeta.column});
         crossHitCount++;
@@ -5218,9 +5418,17 @@ function AppInner(){
         const exactLike=isExactLikePrediction(pred,actual,hitCtx);
         const crossHitMeta=detectCrossHit(top1,actual,col,csvRow,tr.historyRows,csvRow.row);
         const crossHit=!exactLike&&!!crossHitMeta.crossHit;
-        const nr=!exactLike&&!crossHit&&M.near(top1??-1,actual,2);
-        rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,crossHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
+        const intel=getDigitRangeMatch(top1,actual);
+        const nr=!exactLike&&!crossHit&&intel.nearHit;
+        rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,crossHit,tensMatch:intel.tensMatch,unitsMatch:intel.unitsMatch,rangeMatch:intel.rangeMatch,nearHit:intel.nearHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
         predActualLog[col]={prediction:top1,actual};
+        console.log("[DIGIT-MATCH]",{predicted:top1,actual,tens_match:intel.tensMatch,units_match:intel.unitsMatch});
+        if(intel.rangeMatch){
+          console.log("[RANGE-MATCH]",{predicted_range:intel.predictedRange,actual_range:intel.actualRange});
+        }
+        if(!exactLike&&!crossHit&&intel.nearHit){
+          console.log("[NEAR-HIT]",top1,actual);
+        }
         if(crossHit){
           console.log("[CROSS-HIT]",{predicted:top1,actual,found_in:crossHitMeta.found_in==="same_row"?"same_row":"nearby_row",column:crossHitMeta.column});
           rowCrossHit++;
