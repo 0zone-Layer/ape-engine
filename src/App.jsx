@@ -156,6 +156,7 @@ const WEIGHT_MULT_EXACT=1.4;
 const WEIGHT_MULT_NUMBER_HIT=1.18;
 const WEIGHT_MULT_NEAR=1.1;
 const WEIGHT_MULT_MISS=0.80;
+// Keeps number-hit reward between exact(1.0) and near(0.55) so top5 matches help retention without inflating exact quality.
 const HIT_SCORE_NUMBER_HIT=0.72;
 const MAIN_BOOST_CAP=0.45;
 const MAIN_BOOST_PER_COL=0.12;
@@ -3462,8 +3463,11 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
     if(ex){
       gw["_main_"+name]=1;
-      // Keep legacy key for backward compatibility with existing saved state.
-      if(ok(predRow))gw["_lastExactLikeRow_"+name]=predRow;
+      if(ok(predRow)){
+        gw["_lastExactRow_"+name]=predRow;
+        // Keep legacy key for backward compatibility with existing saved state.
+        gw["_lastExactLikeRow_"+name]=predRow;
+      }
     }
     if(numberHit){
       if(ok(predRow))gw["_lastTop5HitRow_"+name]=predRow;
