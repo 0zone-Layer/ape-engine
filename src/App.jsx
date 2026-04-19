@@ -41,9 +41,9 @@ function parseCellValue(raw){
   if(!t)return null;
   const u=t.toUpperCase();
   if(u==="XX"||u==="?"||u==="(PRED)")return null;
-  const m=u.match(/\d{1,3}/);
+  const m=u.match(/^(\d{1,2})\D*$/);
   if(!m)return undefined;
-  const n=parseInt(m[0],10);
+  const n=parseInt(m[1],10);
   return(isNaN(n)||n<0||n>99)?undefined:n;
 }
 // Domain rule: a two-digit reversal is also an exact hit (e.g., predicted 82 vs actual 28).
@@ -140,7 +140,7 @@ function applyCrossColumnIntelligence(predMap){
       const v=M.mod(Math.round(item.value));
       const repeats=freq[v]||0;
       if(repeats<2)return;
-      const boost=Math.min(0.1,0.04*(repeats-1));
+      const boost=Math.min(CROSS_RECURRENCE_BOOST_MAX,CROSS_RECURRENCE_BOOST_FACTOR*(repeats-1));
       item.votes=(item.votes||0)*(1+boost);
       item._crossBoost=boost;
       if(boost>0&&item===pred.top5[0]){
@@ -169,7 +169,7 @@ const HEAVY_UPDATE_INTERVAL=4;
 const HEAVY_TOPK_EVAL=40; // [UPDATED] evaluate top-K in 30–50 band
 const HEAVY_TOPK_CUSTOM=20;
 const MAX_GENERATED_ALGOS=150;
-const MUTATION_BUDGET_MAX=3;
+const MUTATION_BUDGET_MAX=3; // Controlled mutation (up to 3 clones/cycle) prevents random strategy explosion.
 const MAX_WEIGHT_HISTORY_KEYS=180;
 const MAX_WEIGHT_ALGO_ENTRIES=180;
 const MAX_PERF_ALGO_ENTRIES=220;
@@ -206,8 +206,8 @@ const PERF_ROLLING_WINDOW=12;
 const MIN_PRUNE_EVAL_WINDOW=8;
 const PRUNE_KEEP_TOP_RATIO=0.40;
 const PRUNE_KEEP_RANDOM_RATIO=0.30;
-const PRUNE_BOTTOM_RATIO=0.12;
-const PRUNE_RELAXED_BOTTOM_RATIO=0.10;
+const PRUNE_BOTTOM_RATIO=0.12; // Safe pruning: remove only worst ~10–15% to preserve diversity.
+const PRUNE_RELAXED_BOTTOM_RATIO=0.10; // Even safer fallback when pool quality is globally weak.
 const MIN_GENERATED_POOL_SIZE=8;
 const PRUNE_LOW_DIVERSITY_RATIO=0.10;
 const MUTATE_TOP_RATIO=0.20;
@@ -273,6 +273,16 @@ const SHORT_WINDOW=10;
 const MID_WINDOW=50;
 const SHORT_MEMORY_ROWS=25;
 const LONG_MEMORY_MAX_BOOST=1.12;
+const LONG_PATTERN_BOOST_FACTOR=0.12;
+const LONG_MEMORY_UNSEEN_PENALTY=0.88;
+const LONG_MEMORY_RARE_PENALTY=0.94;
+const CROSS_RECURRENCE_BOOST_FACTOR=0.04;
+const CROSS_RECURRENCE_BOOST_MAX=0.10;
+const ENSEMBLE_VARIANCE_THRESHOLD=12;
+const COMPOSITE_RECENT_WEIGHT=0.5;
+const COMPOSITE_MID_WEIGHT=0.2;
+const COMPOSITE_LONG_WEIGHT=0.1;
+const COMPOSITE_CROSS_WEIGHT=0.2;
 const CROSS_HIT_PARTIAL_REWARD=0.45;
 const ENSEMBLE_TOP_SIGNAL_COUNT=70;
 const CONTROL_RECENT_WINDOW=8;
@@ -2827,7 +2837,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const cast=(name,val,w)=>{
     const v=M.mod(Math.round(val));
     const longScore=getLongPatternScore(v,longPatternModel);
-    const longBoost=1+Math.min(LONG_MEMORY_MAX_BOOST-1,longScore*0.12);
+    const longBoost=1+Math.min(LONG_MEMORY_MAX_BOOST-1,longScore*LONG_PATTERN_BOOST_FACTOR);
     votes[v]=(votes[v]||0)+w*longBoost;
     if(!_contribSets[v])_contribSets[v]=new Set();
     _contribSets[v].add(name);
@@ -2856,7 +2866,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
         }
         const btLong=btScore(fn,btSeries); // ← long memory reference
         const btShort=series.length>=5?btScore(fn,series):btLong;
-        const bt=btShort*0.7+btLong*0.3; // short memory primary, long moderate
+        // 70/30 keeps adaptation anchored in the latest 25 rows while still using deep history as a stabilizer.
+        const bt=btShort*0.7+btLong*0.3;
         let wfBoost=1.0;
         if(!lightweight&&btSeries.length>=10){
           const wf=walkFwd(fn,btSeries);
@@ -3035,6 +3046,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       if(W._btCache&&W._btCache[cacheKey]){algoCache[ca.name]=W._btCache[cacheKey];return;}
       const btLong=btScore(fn,btSeries); // ← long memory reference
       const btShort=series.length>=5?btScore(fn,series):btLong;
+      // Match built-in 70/30 short-vs-long blend so long memory supports without dominating.
       const bt=btShort*0.7+btLong*0.3;
       let wfBoost=1.0;
       if(!lightweight&&btSeries.length>=10){
@@ -3100,10 +3112,11 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     }
     const vals=ensembleSignals.map(x=>x.v);
     const variance=vals.length>1?M.std(vals):0;
-    const finalEnsemble=variance<=12?weightedMean:weightedMedian;
+    // On a 0–99 target space, std≈ENSEMBLE_VARIANCE_THRESHOLD is where mean starts getting pulled by spread/outliers; median is more robust beyond this.
+    const finalEnsemble=variance<=ENSEMBLE_VARIANCE_THRESHOLD?weightedMean:weightedMedian;
     const injectWeight=(Math.max(1,...Object.values(votes))*0.35)+(sumW/ensembleSignals.length)*0.15;
     cast("EnsembleBlend",finalEnsemble,injectWeight);
-    details.EnsembleBlend={pred:finalEnsemble,bt:null,lw:1,rw:1,w:+injectWeight.toFixed(2),type:"ensemble",class:"ensemble",category:"HEURISTIC",context:currentContext,longPatternScore:+getLongPatternScore(finalEnsemble,longPatternModel).toFixed(4),ensembleVariance:+variance.toFixed(2),ensembleMode:variance<=12?"mean":"median"};
+    details.EnsembleBlend={pred:finalEnsemble,bt:null,lw:1,rw:1,w:+injectWeight.toFixed(2),type:"ensemble",class:"ensemble",category:"HEURISTIC",context:currentContext,longPatternScore:+getLongPatternScore(finalEnsemble,longPatternModel).toFixed(4),ensembleVariance:+variance.toFixed(2),ensembleMode:variance<=ENSEMBLE_VARIANCE_THRESHOLD?"mean":"median"};
   }
 
   // Adaptive: redistribute tiny votes (< 1% of max) to reduce noise
@@ -3185,8 +3198,9 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   Object.keys(votes).forEach(v=>{
     const vInt=parseInt(v);
     const seenCount=freqMap[vInt]||0;
-    if(seenCount===0)votes[vInt]*=0.88;
-    else if(seenCount===1)votes[vInt]*=0.94;
+    // Gentle long-memory penalty keeps unseen/rare values in play so long-history priors cannot overpower short-memory adaptation.
+    if(seenCount===0)votes[vInt]*=LONG_MEMORY_UNSEEN_PENALTY;
+    else if(seenCount===1)votes[vInt]*=LONG_MEMORY_RARE_PENALTY;
   });
 
   // ── DEAD-ZONE BIAS CORRECTION ─────────────────────────────────────────
@@ -3371,7 +3385,7 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const midScore=midHits.length?M.mean(midHits):rollingAccuracy;
   const longPatternScore=clamp(meta&&meta.longPatternScore!=null?meta.longPatternScore:(prev.longPatternScore||0),0,1);
   const crossHitScore=clamp(crossHit?1:(prev.crossHitScore||0)*0.92,0,1);
-  const compositeScore=(shortScore*0.5)+(midScore*0.2)+(longPatternScore*0.1)+(crossHitScore*0.2);
+  const compositeScore=(shortScore*COMPOSITE_RECENT_WEIGHT)+(midScore*COMPOSITE_MID_WEIGHT)+(longPatternScore*COMPOSITE_LONG_WEIGHT)+(crossHitScore*COMPOSITE_CROSS_WEIGHT);
   const globalScore=((prev.globalScore!=null?prev.globalScore:rollingAccuracy)*PERF_GLOBAL_DECAY)+hitScore*(1-PERF_GLOBAL_DECAY);
   const prevCtxScore=prev.contextScore&&prev.contextScore[context]!=null?prev.contextScore[context]:midScore;
   const contextScore={...(prev.contextScore||{}),[context]:prevCtxScore*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)};
@@ -4856,6 +4870,7 @@ function AppInner(){
     // Need at least 1 known column to learn
     if(knownCols.length===0){st("Enter at least one actual value (use XX for unknown)","warn");return;}
     const results={};let exactCount=0,numberHitCount=0,crossHitCount=0;
+    const predActualLog={};
     COLS.forEach(col=>{
       if(actuals[col]===null){
         // Unknown: mark as skipped, use top prediction as placeholder
@@ -4873,7 +4888,7 @@ function AppInner(){
       const nr=!exactLike&&!crossHit&&M.near(top1!=null?top1:-1,actual,2);
       const numberHit=!exTop1&&hitCtx.top5Hit;
       results[col]={predicted:top1,actual,exact:exactLike,numberHit,near:nr,crossHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
-      console.log("[PRED vs ACTUAL]", top1, actual);
+      predActualLog[col]={prediction:top1,actual};
       if(crossHit){
         console.log("[CROSS-HIT]",{predicted:top1,actual,found_in:crossHitMeta.found_in==="same_row"?"same_row":"nearby_row",column:crossHitMeta.column});
         crossHitCount++;
@@ -5000,6 +5015,7 @@ function AppInner(){
     const rollingAccuracy=knownCols.length?+(exactCount/knownCols.length).toFixed(4):0;
     const topAlgorithms=Object.fromEntries(knownCols.map(col=>[col,Object.entries(S.preds?.[col]?.details||{}).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,3).map(([name])=>name)]));
     const recentCrossHits=(S.accLog||[]).slice(-10).reduce((s,e)=>s+(e.crossHitCount||0),0)+crossHitCount;
+    console.log("[PRED vs ACTUAL]",predActualLog);
     console.log("[ACC]",rollingAccuracy);
     console.log("[TOP]",topAlgorithms);
     console.log("[CROSS-HIT COUNT]",recentCrossHits);
@@ -5190,6 +5206,7 @@ function AppInner(){
       const dateCtx=dateCtxPd?{dow:dateCtxPd.dow,lunar:dateCtxPd.lunarPhase,month:dateCtxPd.m,season:dateCtxPd.season}:null;
       let rowExact=0,rowKnown=0,rowCrossHit=0;
       const rowResults={};
+      const predActualLog={};
       const updT0=PERF_NOW();
       knownCols.forEach(col=>{
         const actual=csvRow[col];
@@ -5203,7 +5220,7 @@ function AppInner(){
         const crossHit=!exactLike&&!!crossHitMeta.crossHit;
         const nr=!exactLike&&!crossHit&&M.near(top1??-1,actual,2);
         rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,crossHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
-        console.log("[PRED vs ACTUAL]", top1, actual);
+        predActualLog[col]={prediction:top1,actual};
         if(crossHit){
           console.log("[CROSS-HIT]",{predicted:top1,actual,found_in:crossHitMeta.found_in==="same_row"?"same_row":"nearby_row",column:crossHitMeta.column});
           rowCrossHit++;
@@ -5229,6 +5246,7 @@ function AppInner(){
       tr.totalKnown+=rowKnown;
       const rowAcc=rowKnown?+(rowExact/rowKnown).toFixed(4):0;
       const rowTop=Object.fromEntries(knownCols.map(col=>[col,Object.entries(rowPreds[col]?.details||{}).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,3).map(([name])=>name)]));
+      console.log("[PRED vs ACTUAL]",predActualLog);
       console.log("[ACC]",rowAcc);
       console.log("[TOP]",rowTop);
       console.log("[CROSS-HIT COUNT]",rowCrossHit);
