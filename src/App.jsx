@@ -73,13 +73,13 @@ const LIGHTWEIGHT_TRIGGER_STREAK=2;
 const LIGHTWEIGHT_HISTORY_THRESHOLD=350;
 const MAX_ANALYSIS_ROWS=200;
 const MAX_BT_SERIES=160;
-const ROLLING_WINDOW_ROWS=100; // [UPDATED] strict rolling-window cap (50–100)
+const ROLLING_WINDOW_ROWS=64; // [UPDATED] strict rolling-window cap (W=64)
 const HEAVY_SAMPLE_POINTS=30;
 const HEAVY_UPDATE_INTERVAL=4;
-const HEAVY_TOPK_EVAL=40; // [UPDATED] evaluate top-K in 30–50 band
-const HEAVY_TOPK_CUSTOM=20;
-const MAX_GENERATED_ALGOS=150;
-const MUTATION_BUDGET_MAX=8;
+const HEAVY_TOPK_EVAL=32; // [UPDATED] strict evaluate top-K per step
+const HEAVY_TOPK_CUSTOM=16; // [UPDATED]
+const MAX_GENERATED_ALGOS=128; // [UPDATED]
+const MUTATION_BUDGET_MAX=6; // [UPDATED]
 const MAX_WEIGHT_HISTORY_KEYS=180;
 const MAX_WEIGHT_ALGO_ENTRIES=180;
 const MAX_PERF_ALGO_ENTRIES=220;
@@ -168,15 +168,15 @@ const AUTO_GENERATED_MIN_SCORE=0.16;
 const AUTO_GENERATED_SCORE_MIN_SERIES=6;
 const AUTO_GENERATED_SCORE_BT_WEIGHT=0.72;
 const AUTO_GENERATED_SCORE_WF_WEIGHT=0.28;
-const CONTEXT_WINDOW_MIN=50;
-const CONTEXT_WINDOW_MAX=100; // [UPDATED] strict context window cap
+const CONTEXT_WINDOW_MIN=64; // [UPDATED]
+const CONTEXT_WINDOW_MAX=64; // [UPDATED]
 const CONTEXTS=["TREND","CYCLIC","STABLE","CHAOTIC","MIXED"];
 const ALGO_CATEGORIES=["TRANSFORM","STATISTICAL","SEQUENCE","STOCHASTIC","HEURISTIC"];
-const ADAPT_ALPHA=0.45;
-const ADAPT_BETA=0.95;
-const ADAPT_GAMMA=0.35;
-const ADAPT_LAMBDA=0.55; // [ADDED]
-const ADAPT_DELTA=0.25;
+const ADAPT_ALPHA=0.40; // [UPDATED]
+const ADAPT_BETA=0.25; // [UPDATED]
+const ADAPT_GAMMA=0.20; // [UPDATED]
+const ADAPT_LAMBDA=0.10; // [UPDATED]
+const ADAPT_DELTA=0.15; // [UPDATED]
 const PERF_GLOBAL_DECAY=0.985;
 const PERF_CONTEXT_DECAY=0.96;
 const SHORT_WINDOW=10;
@@ -191,12 +191,23 @@ const CONTROL_PRUNE_STRICT=1.2;
 const DENSE_CLUSTER_RADIUS=4;
 const DENSE_CLUSTER_MASS_WEIGHT=0.12;
 const ENTROPY_BIN_SIZE=10;
-const LOG_TOP_WEIGHTS_COUNT=8; // [ADDED]
+const LOG_TOP_WEIGHTS_COUNT=10; // [UPDATED]
 const LOG_TOP_DEPENDENCIES_COUNT=3; // [ADDED]
 const CONSENSUS_BOOST_FACTOR=0.08; // [ADDED]
 const CONSENSUS_MEAN_AGREE_RADIUS=5; // [ADDED]
 const CONSENSUS_MEAN_AGREE_MULT=1.07; // [ADDED]
 const SIGNATURE_MEMORY_MAX_ENTRIES=96; // [ADDED]
+const SIGNATURE_MEMORY_TOP_ALGOS=8; // [ADDED]
+const ADAPT_ACCURACY_WINDOW=32; // [ADDED]
+const ADAPT_MUTATION_RATE_HIGH=MUTATION_BUDGET_MAX; // [ADDED]
+const ADAPT_MUTATION_RATE_LOW=2; // [ADDED]
+const ADAPT_MUTATION_RATE_BALANCED=4; // [ADDED]
+const SLOPE_CALCULATION_WINDOW=16; // [ADDED]
+const MAX_PREDICTION_VALUE=99; // [ADDED]
+const TOP_PREDICTIONS_COUNT=5; // [ADDED]
+const MUTATE_TOP_CANDIDATES=16; // [ADDED]
+const PRUNE_TOP_KEEP_COUNT=50; // [ADDED]
+const PRUNE_RANDOM_KEEP_COUNT=40; // [ADDED]
 const CONTEXT_SIG_BINS={ // [ADDED]
   trend:[0.45,0.95,1.45],
   volatility:[6,12,18],
@@ -251,15 +262,15 @@ function getAlgoPerfWeight(perf){
   return clamp(consistency<0.35?base*0.8:base,PERF_WEIGHT_MIN,PERF_WEIGHT_MAX)*ev;
 }
 function getAdaptiveRawScore(perf,currentContext){
-  if(!perf)return ADAPT_ALPHA*0.25+ADAPT_BETA*0.25+ADAPT_GAMMA*0.2;
+  if(!perf)return ADAPT_ALPHA*0.5+ADAPT_BETA*0.5+ADAPT_GAMMA*0.5+ADAPT_LAMBDA*0.5;
   const shortScore=clamp(perf.shortScore!=null?perf.shortScore:perf.rollingAccuracy||0,0,1);
   const midScore=clamp(perf.midScore!=null?perf.midScore:shortScore,0,1);
   const contextScore=clamp(perf.contextScore&&perf.contextScore[currentContext]!=null?perf.contextScore[currentContext]:midScore,0,1);
-  const confidenceScore=clamp(perf.confidenceScore!=null?perf.confidenceScore:midScore,0,1);
   const consistency=clamp(perf.predictionConsistency!=null?perf.predictionConsistency:0.5,0,1);
   const errVar=clamp(perf.errorVariance!=null?perf.errorVariance:0,0,MAX_TRACKING_ERROR);
-  const raw=ADAPT_ALPHA*shortScore+ADAPT_BETA*contextScore+ADAPT_GAMMA*midScore+ADAPT_LAMBDA*confidenceScore-ADAPT_DELTA*(errVar/MAX_TRACKING_ERROR);
-  return Math.max(0.02,consistency<0.35?raw*0.78:raw);
+  const raw=ADAPT_ALPHA*shortScore+ADAPT_BETA*contextScore+ADAPT_GAMMA*midScore+ADAPT_LAMBDA*consistency-ADAPT_DELTA*(errVar/MAX_TRACKING_ERROR);
+  const unstablePenalty=errVar>(MAX_TRACKING_ERROR*0.4)?0.9:1;
+  return Math.max(0.02,raw*unstablePenalty);
 }
 function normalizeAdaptiveWeights(names,perfMap,currentContext){
   const raw={};
@@ -276,25 +287,27 @@ function binMetric(value,edges){ // [ADDED]
   return"EXTREME";
 }
 function buildPatternSignature(metrics){ // [ADDED]
-  return{
-    trend_bin:binMetric(Math.abs(metrics.trend_strength||0),CONTEXT_SIG_BINS.trend),
-    volatility_bin:binMetric(metrics.volatility||0,CONTEXT_SIG_BINS.volatility),
-    periodicity_bin:binMetric(metrics.periodicity_score||0,CONTEXT_SIG_BINS.periodicity),
-    entropy_bin:binMetric(metrics.entropy_level||0,CONTEXT_SIG_BINS.entropy),
-  };
+  return[
+    binMetric(Math.abs(metrics.trend_strength||0),CONTEXT_SIG_BINS.trend),
+    binMetric(metrics.volatility||0,CONTEXT_SIG_BINS.volatility),
+    binMetric(metrics.periodicity_score||0,CONTEXT_SIG_BINS.periodicity),
+    binMetric(metrics.entropy_level||0,CONTEXT_SIG_BINS.entropy),
+  ];
 }
 function signatureKey(signature){ // [ADDED]
   if(!signature)return"NONE";
+  if(Array.isArray(signature))return signature.join("|");
   return [signature.trend_bin,signature.volatility_bin,signature.periodicity_bin,signature.entropy_bin].join("|");
 }
 function signatureDistance(a,b){ // [ADDED]
   if(!a||!b)return 1;
   const order=["LOW","MID","HIGH","EXTREME"];
-  const fields=["trend_bin","volatility_bin","periodicity_bin","entropy_bin"];
   let dist=0;
-  fields.forEach(f=>{
-    const ai=Math.max(0,order.indexOf(a[f]));
-    const bi=Math.max(0,order.indexOf(b[f]));
+  const aSig=Array.isArray(a)?a:[a.trend_bin,a.volatility_bin,a.periodicity_bin,a.entropy_bin];
+  const bSig=Array.isArray(b)?b:[b.trend_bin,b.volatility_bin,b.periodicity_bin,b.entropy_bin];
+  [0,1,2,3].forEach(i=>{
+    const ai=Math.max(0,order.indexOf(aSig[i]));
+    const bi=Math.max(0,order.indexOf(bSig[i]));
     dist+=Math.abs(ai-bi);
   });
   return dist/12;
@@ -2684,7 +2697,7 @@ function buildInfluenceMatrix(data){
       const n=Math.min(ty.length,sx.length);
       if(n<8){matrix[target][src]=0;return;}
       let best=0;
-      for(let lag=0;lag<=2;lag++){
+      for(let lag=1;lag<=2;lag++){
         const span=n-lag;
         if(span<6)continue;
         const x=sx.slice(sx.length-span-lag,sx.length-lag);
@@ -2697,6 +2710,14 @@ function buildInfluenceMatrix(data){
       }
       matrix[target][src]=+clamp(best,0,1).toFixed(3);
     });
+    const rowSum=Object.entries(matrix[target]).reduce((s,[k,v])=>k===target?s:s+Math.max(0,v||0),0);
+    if(rowSum>0){
+      Object.keys(matrix[target]).forEach(src=>{
+        if(src===target)return;
+        matrix[target][src]=+clamp((matrix[target][src]||0)/rowSum,0,1).toFixed(3);
+      });
+      matrix[target][target]=0;
+    }
   });
   return matrix;
 }
@@ -2724,7 +2745,7 @@ function classifyContext(series,data,col,influenceHint){
   const cacheStep=Math.floor((data?.length||0)/HEAVY_UPDATE_INTERVAL);
   const cacheKey=col+"_"+(data?.length||0)+"_"+cacheStep+"_"+_TC._ver;
   if(_contextCache[cacheKey])return _contextCache[cacheKey];
-  const slope=getSeriesSlope(recent);
+  const slope=getSeriesSlope(recent.slice(-SLOPE_CALCULATION_WINDOW));
   const volatility=M.std(recent);
   const periodicity=getPeriodicityStrength(recent);
   const entropy=getEntropySpread(recent);
@@ -2751,7 +2772,7 @@ function classifyContext(series,data,col,influenceHint){
   const signature=buildPatternSignature(metrics);
   const activeRoles=getActiveRolesForContext(context);
   console.log("[CTX]",{context,context_confidence:contextConfidence}); // [ADDED]
-  console.log("[SIGNATURE]",signature); // [ADDED]
+  console.log("[SIG]",signature); // [ADDED]
   console.log("[ROLE]",activeRoles); // [ADDED]
   const result={context,metrics,contextConfidence,signature,activeRoles,corr,influence};
   _contextCache[cacheKey]=result;
@@ -2851,11 +2872,11 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const perf={btMs:0,builtinMs:0,crossMs:0,dateMs:0,customMs:0,totalMs:0};
   const lightweight=!!W._lightweight;
   const allowedAlgos=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
-  const autoBudget=lightweight?30:series.length>80?42:40; // [UPDATED]
-  const algoBudget=Math.max(10,Math.min(W._algoBudget||autoBudget,50,allowedAlgos.length));
+  const autoBudget=HEAVY_TOPK_EVAL; // [UPDATED]
+  const algoBudget=Math.max(8,Math.min(W._algoBudget||autoBudget,HEAVY_TOPK_EVAL,allowedAlgos.length));
   const evalNames=selectAlgoNames(allowedAlgos,regime,algoBudget);
   const throttledHeavy=((W._safeTick||0)%3)===0; // [ADDED]
-  const activeEvalNames=(lightweight||throttledHeavy)?evalNames.slice(0,Math.min(10,evalNames.length)):evalNames; // [ADDED]
+  const activeEvalNames=(lightweight||throttledHeavy)?evalNames.slice(0,Math.min(16,evalNames.length)):evalNames; // [UPDATED]
   const adaptiveNorm=normalizeAdaptiveWeights(activeEvalNames,perfMap,currentContext);
   const signatureMemory=W._signatureMemory||{}; // [ADDED]
   const sigEntries=Object.entries(signatureMemory);
@@ -2912,16 +2933,20 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const nScore=ns[name]!=null?ns[name]:0;
       const lb=W._leaderboard&&W._leaderboard[name]!=null?W._leaderboard[name]:0;
       const category=classifyAlgoCategory(name);
+      const perfMeta=perfMap[name]||{};
       const lbMult=lb>2?1.35:lb>1?1.2:lb>0.4?1.08:lb<0.05?0.85:1.0;
       const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
       const btFactor=0.2+Math.sqrt(bt)*3.5;
-      const perfW=getAlgoPerfWeight(perfMap[name]);
+      const perfW=getAlgoPerfWeight(perfMeta);
       const adaptMult=0.35+(adaptiveNorm[name]||0)*Math.max(1,activeEvalNames.length)*1.65;
       const roleMult=getContextRoleMult(category,currentContext);
+      const strictWeight=getAdaptiveRawScore(perfMeta,currentContext);
+      const strictContextBoost=getCategoryContextRole(category).has(currentContext)?1.1:1.0;
+      const strictVariancePenalty=(perfMeta.errorVariance||0)>(MAX_TRACKING_ERROR*0.4)?0.9:1.0;
       const contextMemBoost=(W._contextMemory&&W._contextMemory[currentContext]&&W._contextMemory[currentContext][name])?1.18:1.0;
-      const sigMemBoost=matchedSigPayload&&matchedSigPayload.algos&&matchedSigPayload.algos[name]!=null?1+clamp(matchedSigPayload.algos[name],0,0.25):1.0;
+      const sigMemBoost=matchedSigPayload&&matchedSigPayload.algos&&matchedSigPayload.algos[name]?1.15:1.0;
       const memoryBoost=clamp(contextMemBoost*sigMemBoost,1,1.24);
-      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult*Math.max(0.45,perfW)*adaptMult*roleMult*memoryBoost;
+      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult*Math.max(0.45,perfW)*adaptMult*roleMult*memoryBoost*Math.max(0.05,strictWeight)*strictContextBoost*strictVariancePenalty;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
       details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin",class:classifyAlgo(name),category,context:currentContext,perf:+(perfMap[name]?.rollingAccuracy||0).toFixed(3)};
@@ -2951,7 +2976,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   });
   perf.crossMs+=PERF_NOW()-crossT0;
   const strongestDependencies=Object.entries(influenceRow).filter(([k])=>k!==col).sort((a,b)=>(b[1]||0)-(a[1]||0)).slice(0,LOG_TOP_DEPENDENCIES_COUNT).map(([source,influence])=>({source,influence:+(+influence).toFixed(3)})); // [ADDED]
-  console.log("[CROSS_TOP]",strongestDependencies); // [ADDED]
+  console.log("[CROSS]",{column:col,influences:strongestDependencies}); // [UPDATED]
 
   // ── DATE SIGNALS ────────────────────────────────
   const dateT0=PERF_NOW();
@@ -3089,16 +3114,20 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const nScore=ns[ca.name]!=null?ns[ca.name]:0;
       const lb=W._leaderboard&&W._leaderboard[ca.name]!=null?W._leaderboard[ca.name]:0;
       const category=classifyAlgoCategory(ca.name,ca.code);
+      const perfMeta=perfMap[ca.name]||{};
       const lbMult=lb>2?1.35:lb>1?1.2:lb>0.4?1.08:lb<0.05?0.85:1.0;
       const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
       const btFactor=0.2+Math.sqrt(bt)*3.5;
-      const perfW=getAlgoPerfWeight(perfMap[ca.name]);
+      const perfW=getAlgoPerfWeight(perfMeta);
       const adaptMult=0.35+(customAdaptiveNorm[ca.name]||0)*Math.max(1,scopedCustoms.length)*1.65;
       const roleMult=getContextRoleMult(category,currentContext);
+      const strictWeight=getAdaptiveRawScore(perfMeta,currentContext);
+      const strictContextBoost=getCategoryContextRole(category).has(currentContext)?1.1:1.0;
+      const strictVariancePenalty=(perfMeta.errorVariance||0)>(MAX_TRACKING_ERROR*0.4)?0.9:1.0;
       const contextMemBoost=(W._contextMemory&&W._contextMemory[currentContext]&&W._contextMemory[currentContext][ca.name])?1.2:1.0;
-      const sigMemBoost=matchedSigPayload&&matchedSigPayload.algos&&matchedSigPayload.algos[ca.name]!=null?1+clamp(matchedSigPayload.algos[ca.name],0,0.26):1.0;
+      const sigMemBoost=matchedSigPayload&&matchedSigPayload.algos&&matchedSigPayload.algos[ca.name]?1.15:1.0;
       const memoryBoost=clamp(contextMemBoost*sigMemBoost,1,1.26);
-      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult*Math.max(0.45,perfW)*adaptMult*roleMult*memoryBoost;
+      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult*Math.max(0.45,perfW)*adaptMult*roleMult*memoryBoost*Math.max(0.05,strictWeight)*strictContextBoost*strictVariancePenalty;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1)));
       details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom",class:ca.class||classifyAlgo(ca.name,ca.code),category,context:currentContext,perf:+(perfMap[ca.name]?.rollingAccuracy||0).toFixed(3)};
@@ -3125,6 +3154,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const weightedMean=votePairs.length?M.mod(Math.round(votePairs.reduce((s,x)=>s+x.v*x.wt,0)/voteTotal)):null;
   const weightedMedian=weightedMedianFromVotes(votes);
   const clusterPeak=densestClusterPeak(votes,DENSE_CLUSTER_RADIUS);
+  const clusterMass=clusterPeak==null?0:votePairs.reduce((s,x)=>s+(M.cd(x.v,clusterPeak)<=DENSE_CLUSTER_RADIUS?x.wt:0),0);
+  const clusterStable=(clusterMass/(voteTotal||1))>=0.36;
   if(weightedMedian!=null&&clusterPeak!=null){
     const consensusVal=M.mod(Math.round(weightedMedian*0.5+clusterPeak*0.5));
     votes[consensusVal]=(votes[consensusVal]||0)+(voteTotal*CONSENSUS_BOOST_FACTOR);
@@ -3262,7 +3293,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const _ensembleVar=_allPreds.length>3?+M.std(_allPreds).toFixed(1):0;
 
   const total=Object.values(votes).reduce((a,b)=>a+b,0)||1;
-  const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,5)
+  const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,TOP_PREDICTIONS_COUNT)
     .map(([v,vt])=>{
       const contributors=_contribSets[v]?[..._contribSets[v]]:[];
       return{
@@ -3294,7 +3325,13 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const sAllP=[...allP].sort((a,b)=>a-b);
   const lo=sAllP[Math.floor(sAllP.length*0.1)]||top5[0]?.value||0;
   const hi=sAllP[Math.floor(sAllP.length*0.9)]||top5[0]?.value||0;
-  const topVal=top5[0]?.value;
+  const finalPredictionRaw=clusterStable&&clusterPeak!=null?clusterPeak:(weightedMedian!=null?weightedMedian:(top5[0]?.value));
+  const topVal=clamp(M.mod(Math.round(finalPredictionRaw!=null?finalPredictionRaw:0)),0,MAX_PREDICTION_VALUE);
+  if(!top5.length||top5[0].value!==topVal){
+    const vt=votes[topVal]||0;
+    top5.unshift({value:topVal,votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:[],truncated:false});
+    if(top5.length>TOP_PREDICTIONS_COUNT)top5.splice(TOP_PREDICTIONS_COUNT);
+  }
   const tempSignals=Object.entries(details).filter(([,d])=>d.type==="temporal"&&ok(d.pred)).map(([name,d])=>({name,pred:M.mod(Math.round(d.pred)),w:d.w,match:topVal!=null&&M.mod(Math.round(d.pred))===topVal}));
   const tempAgree=tempSignals.filter(s=>s.match).length;
   const tempTotal=tempSignals.length;
@@ -3302,7 +3339,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const dateAgree=dateSigList.filter(s=>s.match).length;
   const dateTotal=dateSigList.length;
   const layerSupport=topVal!=null&&signalTypeSupport[topVal]?signalTypeSupport[topVal].size:1;
-  const prediction_confidence=+clamp((top5[0]?.pct||0)/100*0.5+(consensus/100)*0.3+Math.max(0,1-_ensembleVar/28)*0.2,0,1).toFixed(3); // [ADDED]
+  const prediction_confidence=+clamp(1/(1+Math.max(0,_ensembleVar)),0,1).toFixed(3); // [UPDATED]
   console.log("[PRED]",{column:col,final_prediction:topVal,prediction_confidence}); // [ADDED]
   perf.totalMs=PERF_NOW()-tStart;
   const safeStatus={overloaded:perf.totalMs>FAILSAFE_PREDICT_MS||lightweight,fallback:activeEvalNames.length<evalNames.length,algoBudget:activeEvalNames.length,pool:allowedAlgos.length,throttled:throttledHeavy}; // [ADDED]
@@ -3541,12 +3578,14 @@ function updateSignatureMemory(memory,pred,actual){ // [ADDED]
   const key=signatureKey(pred.signature);
   if(!next[key])next[key]={signature:pred.signature,algos:{},hits:0,total:0,lastSeen:Date.now()};
   const slot=next[key];
-  Object.entries(pred.details||{}).forEach(([name,info])=>{
+  const topAlgos=Object.entries(pred.details||{}).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,SIGNATURE_MEMORY_TOP_ALGOS);
+  topAlgos.forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const hit=isExactOrReversed(info.pred,actual)?1:0;
     const prev=slot.algos[name]||0;
     slot.algos[name]=+((prev*0.9)+hit*0.1).toFixed(4);
   });
+  slot.algos=Object.fromEntries(Object.entries(slot.algos).sort((a,b)=>(b[1]||0)-(a[1]||0)).slice(0,SIGNATURE_MEMORY_TOP_ALGOS));
   slot.total=(slot.total||0)+1;
   if(isExactOrReversed(pred.top5&&pred.top5[0]?pred.top5[0].value:null,actual))slot.hits=(slot.hits||0)+1;
   slot.lastSeen=Date.now();
@@ -3554,25 +3593,25 @@ function updateSignatureMemory(memory,pred,actual){ // [ADDED]
   return Object.fromEntries(entries);
 }
 function buildAdaptiveControl(accLog,prevControl){
-  const recent=(accLog||[]).slice(-CONTROL_RECENT_WINDOW);
-  if(recent.length<4)return prevControl||{mutationScale:1,pruneScale:1};
+  const recent=(accLog||[]).slice(-ADAPT_ACCURACY_WINDOW);
+  if(recent.length<6)return prevControl||{mutationScale:4,pruneScale:1,status:"balanced",exploration:"mid"};
   const rates=recent.map(e=>((e.exactCount||0)+(e.numberHitCount||0)*0.5)/Math.max(1,e.knownCount||COLS.length));
-  const latest=M.mean(rates.slice(-3));
-  const baseline=M.mean(rates.slice(0,Math.max(1,rates.length-3)));
-  const drop=baseline-latest;
-  const accuracyTrend=+((latest-baseline)).toFixed(4);
-  if(drop>CONTROL_DROP_THRESHOLD){
-    const out={mutationScale:CONTROL_MUTATION_MAX,pruneScale:CONTROL_PRUNE_RELAX,status:"recovering"};
-    console.log("[ADAPT]",{accuracy_trend:accuracyTrend,mutation_rate:+out.mutationScale.toFixed(3),exploration_ratio:+clamp(0.3*out.mutationScale,0.2,0.55).toFixed(3)}); // [ADDED]
+  const split=Math.max(1,Math.floor(rates.length/2));
+  const early=M.mean(rates.slice(0,split));
+  const late=M.mean(rates.slice(split));
+  const trend=+(late-early).toFixed(4);
+  if(trend<0){
+    const out={mutationScale:ADAPT_MUTATION_RATE_HIGH,pruneScale:0.9,status:"recovering",exploration:"high"};
+    console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:ADAPT_MUTATION_RATE_HIGH,exploration:"high"}); // [UPDATED]
     return out;
   }
-  if(latest>CONTROL_STABLE_THRESHOLD){
-    const out={mutationScale:CONTROL_MUTATION_MIN,pruneScale:CONTROL_PRUNE_STRICT,status:"stable"};
-    console.log("[ADAPT]",{accuracy_trend:accuracyTrend,mutation_rate:+out.mutationScale.toFixed(3),exploration_ratio:+clamp(0.3*out.mutationScale,0.2,0.55).toFixed(3)}); // [ADDED]
+  if(trend>0){
+    const out={mutationScale:ADAPT_MUTATION_RATE_LOW,pruneScale:1.05,status:"stable",exploration:"low"};
+    console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:ADAPT_MUTATION_RATE_LOW,exploration:"low"}); // [UPDATED]
     return out;
   }
-  const out={mutationScale:1,pruneScale:1,status:"balanced"};
-  console.log("[ADAPT]",{accuracy_trend:accuracyTrend,mutation_rate:1,exploration_ratio:0.3}); // [ADDED]
+  const out={mutationScale:ADAPT_MUTATION_RATE_BALANCED,pruneScale:1,status:"balanced",exploration:"mid"};
+  console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:ADAPT_MUTATION_RATE_BALANCED,exploration:"mid"}); // [UPDATED]
   return out;
 }
 
@@ -3812,14 +3851,13 @@ function runTournament(customs,data,weights,adaptiveControl){
     const stats=scoreAlgo(ca,weights,data);
     return{ca,score:stats.score};
   }).sort((a,b)=>b.score-a.score);
-  const mutScale=adaptiveControl&&adaptiveControl.mutationScale?adaptiveControl.mutationScale:1;
-  const topN=Math.max(1,Math.ceil(ranked.length*MUTATE_TOP_RATIO*mutScale));
-  const mutationCap=Math.max(5,Math.min(8,Math.round(5+Math.max(0,mutScale-1)*3))); // [UPDATED]
-  const top=ranked.slice(0,topN).map(x=>x.ca);
+  const mutationRate=adaptiveControl&&adaptiveControl.mutationScale?adaptiveControl.mutationScale:MUTATION_BUDGET_MAX;
+  const mutationCap=Math.min(MUTATION_BUDGET_MAX,Math.max(2,mutationRate));
+  const top=ranked.slice(0,MUTATE_TOP_CANDIDATES).map(x=>x.ca);
   const existingCodes=new Set((customs||[]).map(c=>c.code));
   const clones=[];
   top.forEach((parent,i)=>{
-    if(clones.length>=Math.min(MUTATION_BUDGET_MAX,mutationCap))return;
+    if(clones.length>=mutationCap)return;
     const peer=top.length>1?top[(i+1)%top.length]:null;
     const mutCode=mutateCode(parent.code,generatedAlgoTargetCol(parent.name),peer?peer.code:null);
     if(mutCode===parent.code||existingCodes.has(mutCode))return;
@@ -3838,7 +3876,7 @@ function runTournament(customs,data,weights,adaptiveControl){
       enabled:true
     });
   });
-  console.log("[MUTATION]",clones.map(c=>c.name)); // [ADDED]
+  console.log("[MUTATION]",{new_count:clones.length}); // [UPDATED]
   return clones.length?[...customs,...clones]:customs;
 }
 
@@ -3989,69 +4027,26 @@ function pruneWeakAlgos(customs,weights,rows,btCache,adaptiveControl){
 
   const removed=[];
   const generatedCount=scored.length;
-  const minKeep=Math.min(generatedCount,Math.max(MIN_GENERATED_POOL_SIZE,Math.ceil(generatedCount*0.5)));
-  const keepTopCount=Math.max(1,Math.floor(generatedCount*PRUNE_KEEP_TOP_RATIO));
-  const top=scored.slice(0,keepTopCount);
-  const remaining=scored.slice(keepTopCount);
-  const keepRandomCount=Math.min(remaining.length,Math.max(1,Math.floor(remaining.length*PRUNE_KEEP_RANDOM_RATIO)));
-  const randomKeep=shuffleArray(remaining).slice(0,keepRandomCount);
-  const keepSet=new Set([...top,...randomKeep].map(x=>x.ca.name));
-  ALGO_CATEGORIES.forEach(cat=>{ // [UPDATED] preserve >=2 per category when possible
-    const picks=scored.filter(x=>classifyAlgoCategory(x.ca.name,x.ca.code)===cat).slice(0,2);
+  const topKeep=scored.slice(0,Math.min(PRUNE_TOP_KEEP_COUNT,generatedCount));
+  const midPool=scored.slice(topKeep.length);
+  const randomKeep=shuffleArray(midPool).slice(0,Math.min(PRUNE_RANDOM_KEEP_COUNT,midPool.length));
+  const keepSet=new Set([...topKeep,...randomKeep].map(x=>x.ca.name));
+  ALGO_CATEGORIES.forEach(cat=>{ // [UPDATED] minimum 3 per category
+    const picks=scored.filter(x=>classifyAlgoCategory(x.ca.name,x.ca.code)===cat).slice(0,3);
     picks.forEach(p=>keepSet.add(p.ca.name));
   });
-
-  // Keep some low performers for diversity (explicitly from lower tail).
-  const lowTail=[...scored].reverse();
-  const lowDiversityKeep=Math.max(1,Math.ceil(generatedCount*PRUNE_LOW_DIVERSITY_RATIO));
-  lowTail.forEach(x=>{
-    if(keepSet.size>=Math.max(minKeep,keepTopCount+keepRandomCount+lowDiversityKeep))return;
-    keepSet.add(x.ca.name);
-  });
-
-  // Prune only bottom segment and only after minimum evaluation window.
-  const bottomStart=Math.floor(generatedCount*(1-PRUNE_BOTTOM_RATIO));
-  const bottom=scored.slice(bottomStart);
-  // If whole pool quality is weak, relax pruning to avoid collapse.
-  let sumScore=0;
-  scored.forEach(x=>{sumScore+=x.score;});
-  const meanScore=scored.length?sumScore/scored.length:0;
-  const globallyLow=scored[0].score<LOW_POOL_TOP_SCORE_THRESHOLD&&meanScore<LOW_POOL_MEAN_SCORE_THRESHOLD;
-  const pruneScale=adaptiveControl&&adaptiveControl.pruneScale?adaptiveControl.pruneScale:1;
-  const pruneRatio=(globallyLow?PRUNE_RELAXED_BOTTOM_RATIO:PRUNE_BOTTOM_RATIO)*pruneScale;
-  const maxPrunes=Math.max(0,Math.floor(generatedCount*pruneRatio));
-  let prunedNow=0;
-  bottom.forEach(x=>{
-    if(prunedNow>=maxPrunes)return;
+  const removedSet=new Set();
+  scored.forEach(x=>{
+    if(redundant.has(x.ca.name))return;
     if(keepSet.has(x.ca.name))return;
-    if(x.perfEval<MIN_PRUNE_EVAL_WINDOW)return; // wait for sufficient evaluation window
-    if(generatedCount-prunedNow<=minKeep)return; // never drop below minimum pool size
-    removed.push({name:x.ca.name,reason:globallyLow?"bottom_relaxed":"bottom_40"});
-    prunedNow++;
+    removed.push({name:x.ca.name,reason:"strict_pool_prune"});
+    removedSet.add(x.ca.name);
   });
-  const removedSet=new Set(removed.map(r=>r.name));
   const keptGenerated=generated
     .filter(ca=>!redundant.has(ca.name)&&!removedSet.has(ca.name))
     .map(ca=>({...ca,class:ca.class||classifyAlgo(ca.name,ca.code),enabled:true,benched:false}));
-  // If all candidates are weak, relax pruning and keep more.
-  if(keptGenerated.length<minKeep){
-    const keptNames=new Set(keptGenerated.map(k=>k.name));
-    const needed=minKeep-keptGenerated.length;
-    let added=0;
-    for(let i=scored.length-1;i>=0&&added<needed;i--){
-      const x=scored[i];
-      if(removedSet.has(x.ca.name)||keptNames.has(x.ca.name))continue;
-      keptGenerated.push({...x.ca,class:x.ca.class||classifyAlgo(x.ca.name,x.ca.code),enabled:true,benched:false});
-      keptNames.add(x.ca.name);
-      added++;
-    }
-  }
   const pruned=[...userDefined,...keptGenerated];
-  const diversityScore=ALGO_CATEGORIES.reduce((acc,cat)=>{
-    const n=keptGenerated.filter(ca=>classifyAlgoCategory(ca.name,ca.code)===cat).length;
-    return acc+(n>=2?1:n>0?0.5:0);
-  },0)/ALGO_CATEGORIES.length;
-  console.log("[PRUNE]",{pool_size:pruned.length,diversity_score:+diversityScore.toFixed(3)}); // [ADDED]
+  console.log("[PRUNE]",{pool_size_after:pruned.length}); // [UPDATED]
   return{pruned,removed};
 }
 function enforceGeneratedPoolCap(customs,weights,rows,cap=MAX_GENERATED_ALGOS){
@@ -4060,10 +4055,15 @@ function enforceGeneratedPoolCap(customs,weights,rows,cap=MAX_GENERATED_ALGOS){
   const userDefined=(customs||[]).filter(c=>!c.generated);
   const scopedRows=getWindowRows(rows,ROLLING_WINDOW_ROWS);
   const scored=generated.map(ca=>({ca,score:scoreAlgo(ca,weights,scopedRows).score}))
+    .sort((a,b)=>b.score-a.score);
+  const memoryPressure=generated.length>Math.floor(cap*1.1);
+  const pressureTrimCount=memoryPressure?Math.floor(scored.length*0.2):0;
+  const trimmed=pressureTrimCount>0?scored.slice(0,Math.max(0,scored.length-pressureTrimCount)):scored;
+  const kept=trimmed
     .sort((a,b)=>b.score-a.score)
     .slice(0,cap)
     .map(x=>x.ca);
-  return [...userDefined,...scored];
+  return [...userDefined,...kept];
 }
 
 // ── EXPORT HELPERS ─────────────────────────────
@@ -4926,7 +4926,8 @@ function AppInner(){
       const pv=S.preds[c]&&S.preds[c].top5&&S.preds[c].top5[0]?S.preds[c].top5[0].value:null;
       return ok(pv)&&ok(actuals[c])?M.cd(M.mod(Math.round(pv)),actuals[c]):null;
     }).filter(v=>v!=null);
-    console.log("[ERROR]",{actual:actuals,error_distribution:errorDistribution}); // [ADDED]
+    const mean_error=errorDistribution.length?+(M.mean(errorDistribution).toFixed(3)):null;
+    console.log("[ERROR]",{actual:actuals,mean_error}); // [UPDATED]
     setCheckRes(results);
     upd(prev=>{
       const nw={...prev.weights};
