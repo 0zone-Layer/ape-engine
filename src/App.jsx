@@ -17,7 +17,7 @@ const M={
 };
 const pad2=n=>String(M.mod(n)).padStart(2,"0");
 const COLS=["A","B","C","D","E","F"];
-const COL_NAMES={A:"Desawar",B:"Delhi Bazar",C:"Shri Ganesh",D:"Faridabad",E:"Shri Krishna",F:"Ghaziabad"};
+const COL_NAMES={A:"Disawar",B:"Delhi Bazar",C:"Shree Ganesh",D:"Faridabad",E:"Ghaziabad",F:"Gali"};
 function buildPredictionCopyLines(preds,cols){
   const lines=[];
   (cols||COLS).forEach(col=>{
@@ -2408,12 +2408,12 @@ function getColGapSignals(col,data){
 }
 
 // ── TEMPORAL CONSTANTS ─────────────────────────
-// A=06:00(360min), B=18:00(1080min), C=21:00(1260min), D=23:50(1430min)
+// A=06:00(360min), B=18:00(1080min), C=21:00(1260min), D=23:50(1430min), E=02:50(1610min), F=05:50(1790min)
 // Gap to next row's A (next day 06:00 = 1800min from current A)
 // Recency weights for predicting next-A: D is freshest (370min ago), C(540), B(720), A(1440)
 const DEFAULT_COLUMN_GAP_MINUTES=180;
 const DEFAULT_COLUMN_GAP_FALLBACK_MINUTES=300;
-const T_MINS_BASE={A:360,B:1080,C:1260,D:1430};
+const T_MINS_BASE={A:360,B:1080,C:1260,D:1430,E:1610,F:1790};
 const D_ANCHOR_INDEX=Math.max(0,COLS.indexOf("D"));
 const T_MINS=Object.fromEntries(COLS.map((col,idx)=>{
   const v=T_MINS_BASE[col];
@@ -4816,7 +4816,8 @@ function AppInner(){
           const exist=existIdx>=0?existingRows[existIdx]:null;
           const newlyKnownCols=COLS.filter(c=>inc[c]!=null&&(exist?.[c]==null));
           if(exist===null){
-            const entry={row:inc.row,A:inc.A,B:inc.B,C:inc.C,D:inc.D};
+            const entry={row:inc.row};
+            COLS.forEach(c=>{entry[c]=inc[c];});
             if(inc.date)entry.date=inc.date;
             existingRows.push(entry);added++;
           } else {
@@ -5806,10 +5807,7 @@ function AppInner(){
                 <div style={{fontSize:9,color:"#a78bfa",marginBottom:3,letterSpacing:2}}>DATE</div>
                 <input type="date" value={dateIn} onChange={e=>setDateIn(e.target.value)} style={{background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:"7px 6px",borderRadius:6,fontSize:11,fontFamily:"monospace",outline:"none",width:130,colorScheme:"dark"}}/>
               </div>
-              <FI label="A" val={vals.A} color={CLR.A} onChange={v=>setVals(p=>({...p,A:v}))} w={54}/>
-              <FI label="B" val={vals.B} color={CLR.B} onChange={v=>setVals(p=>({...p,B:v}))} w={54}/>
-              <FI label="C" val={vals.C} color={CLR.C} onChange={v=>setVals(p=>({...p,C:v}))} w={54}/>
-              <FI label="D" val={vals.D} color={CLR.D} onChange={v=>setVals(p=>({...p,D:v}))} w={54}/>
+              {COLS.map(col=><FI key={col} label={col} val={vals[col]} color={CLR[col]} onChange={v=>setVals(p=>({...p,[col]:v}))} w={54}/>)}
               <PB onClick={addRow}>＋ Add</PB>
               <GB onClick={()=>{setRowIn(String(new Date().getDate()).padStart(2,"0"));setDateIn(todayStr());}}>📅 Today</GB>
             </div>
@@ -5888,14 +5886,14 @@ function AppInner(){
               </button>
             </div>
             {showBulk&&<div style={{marginTop:8,background:"#0c0e1a",border:"1px solid #1a1e35",borderRadius:8,padding:12}}>
-              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,02,10,92,XX\n02,91,10,30,68"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
+              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,"+COLS.map((_,i)=>pad2((2+i*11)%100)).join(",")+"\n02,"+COLS.map((_,i)=>pad2((17+i*13)%100)).join(",")} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
               <div style={{display:"flex",gap:6,marginTop:8}}><PB onClick={doBulk}>Import</PB><GB onClick={()=>setShowBulk(false)}>Cancel</GB></div>
             </div>}
           </div>
           {rows.length>0?<Card>
             <div style={{overflowX:"auto",maxHeight:320,overflowY:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date","A","B","C","D",""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date",...COLS,""].map((h,i)=><th key={h+"_"+i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
                 <tbody>{rows.map((r,i)=>{const dp=r.date?parseDate(r.date):null;const DAYS=["Su","Mo","Tu","We","Th","Fr","Sa"];return<tr key={r.row} style={{background:i%2?"rgba(255,255,255,.01)":"transparent",borderBottom:"1px solid rgba(255,255,255,.02)"}}>
                   <td style={{padding:"5px 10px",color:"#252840",textAlign:"center"}}>{i+1}</td>
                   <td style={{padding:"5px 10px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(r.row)}</td>
