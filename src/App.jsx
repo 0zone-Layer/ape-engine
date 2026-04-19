@@ -59,7 +59,9 @@ function getTop5HitContext(pred,actual){
 function isExactLikePrediction(pred,actual,hitCtx){
   if(!pred||!ok(actual))return false;
   const top1=pred.top5&&pred.top5[0]?pred.top5[0].value:null;
-  return isExactOrReversed(top1,actual);
+  if(isExactOrReversed(top1,actual))return true;
+  const ctx=hitCtx||getTop5HitContext(pred,actual);
+  return !!ctx.top5Hit;
 }
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
@@ -156,8 +158,6 @@ const WEIGHT_MULT_EXACT=1.4;
 const WEIGHT_MULT_NUMBER_HIT=1.18;
 const WEIGHT_MULT_NEAR=1.1;
 const WEIGHT_MULT_MISS=0.80;
-// Keeps number-hit reward between exact(1.0) and near(0.55) so top5 matches help retention without inflating exact quality.
-const HIT_SCORE_NUMBER_HIT=0.72;
 const MAIN_BOOST_CAP=0.45;
 const MAIN_BOOST_PER_COL=0.12;
 const BAD_STREAK_THRESHOLD=-3;
@@ -3156,7 +3156,6 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
   const next={...prevScores};
   if(!pred)return next;
-  // hitSet contains algos that contributed to any top5 value matching actual (exact or reverse).
   const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
   // Adaptive learning rate by regime
   const alpha=regime==="volatile"?NEURAL_ALPHA_VOLATILE:regime==="flat"?NEURAL_ALPHA_FLAT:NEURAL_ALPHA_DEFAULT;
@@ -3164,16 +3163,17 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
+    const numberHit=hitSet.has(name);
     const ex=isExactOrReversed(p,actual);
-    const numberHit=!ex&&hitSet.has(name);
-    const near1=!ex&&!numberHit&&M.cd(p,actual)<=1;
-    const nr=!ex&&!numberHit&&M.nearR(p,actual,regime);
-    const close=!ex&&!numberHit&&M.cd(p,actual)<=5;
-    const baseReward=ex?REWARD_EXACT:numberHit?REWARD_NUMBER_HIT:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
+    const exactLike=ex||numberHit;
+    const near1=!exactLike&&M.cd(p,actual)<=1;
+    const nr=!exactLike&&M.nearR(p,actual,regime);
+    const close=!exactLike&&M.cd(p,actual)<=5;
+    const baseReward=exactLike?REWARD_EXACT:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
     // Streak tracking per algo
     const streakKey="_s_"+name;
     const curStreak=next[streakKey]||0;
-    const newStreak=(ex||numberHit||near1)?(curStreak>=0?curStreak+1:1):nr?Math.max(0,curStreak):(curStreak<=0?curStreak-1:-1);
+    const newStreak=(exactLike||near1)?(curStreak>=0?curStreak+1:1):nr?Math.max(0,curStreak):(curStreak<=0?curStreak-1:-1);
     next[streakKey]=Math.max(-6,Math.min(10,newStreak));
     // Streak multiplier: conservative cap for stability
     const streakMult=newStreak>=5?1.55:newStreak>=3?1.25:newStreak<=-3?0.78:1.0;
@@ -3218,12 +3218,11 @@ function getCalibrationLabel(conf,cal){
 function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const context=(meta&&meta.context)||"MIXED";
   const category=(meta&&meta.category)||classifyAlgoCategory(name);
-  const prev=perf[name]||{class:meta.class||classifyAlgo(name),category,rollingHits:[],rollingAccuracy:0,totalScore:0,recentError:0,evalCount:0,shortHits:[],midHits:[],errors:[],predSeries:[],contextScore:{},predictionConsistency:0.5,confidenceScore:0.5};
-  const ex=isExactOrReversed(predVal,actual);
-  const numberHit=!ex&&!!meta.numberHit;
-  const nr=!ex&&!numberHit&&M.near(M.mod(Math.round(predVal)),actual,NEAR_TOLERANCE);
+  const prev=perf[name]||{class:meta.class||classifyAlgo(name),category,rollingHits:[],rollingAccuracy:0,totalScore:0,recentError:0,evalCount:0,shortHits:[],midHits:[],errors:[],contextScore:{}};
+  const ex=isExactOrReversed(predVal,actual)||!!meta.numberHit;
+  const nr=!ex&&M.near(M.mod(Math.round(predVal)),actual,NEAR_TOLERANCE);
   const closeness=clamp(1-M.cd(M.mod(Math.round(predVal)),actual)/MAX_TRACKING_ERROR,0,1);
-  const hitScore=ex?1:numberHit?HIT_SCORE_NUMBER_HIT:nr?0.55:closeness*0.25;
+  const hitScore=ex?1:nr?0.55:closeness*0.25;
   const signedErr=Math.min(M.cd(M.mod(Math.round(predVal)),actual),MAX_TRACKING_ERROR);
   const rolling=[...(prev.rollingHits||[]),hitScore].slice(-PERF_ROLLING_WINDOW);
   const shortHits=[...(prev.shortHits||[]),hitScore].slice(-SHORT_WINDOW);
@@ -3285,21 +3284,17 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
-    const ex=isExactOrReversed(p,actual);
-    const numberHit=!ex&&hitSet.has(name);
-    const nr=!ex&&!numberHit&&M.near(p,actual,2);
+    const ex=isExactOrReversed(p,actual),numberHit=hitSet.has(name);
+    const exactLike=ex||numberHit;
+    const nr=!exactLike&&M.near(p,actual,2);
     updateAlgoPerformance(perf,name,p,actual,{class:info.class||classifyAlgo(name),category:info.category||classifyAlgoCategory(name),context:pred.context||"MIXED",numberHit});
-    const mult=ex?WEIGHT_MULT_EXACT:numberHit?WEIGHT_MULT_NUMBER_HIT:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
+    const mult=exactLike?WEIGHT_MULT_EXACT:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
     const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
     const newMom=0.75*mom+0.25*mult;
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
-    if(ex){
+    if(exactLike){
       gw["_main_"+name]=1;
-      if(ok(predRow)){
-        gw["_lastExactRow_"+name]=predRow;
-        // Keep legacy key for backward compatibility with existing saved state.
-        gw["_lastExactLikeRow_"+name]=predRow;
-      }
+      if(ok(predRow))gw["_lastExactLikeRow_"+name]=predRow;
     }
     if(numberHit){
       if(ok(predRow))gw["_lastTop5HitRow_"+name]=predRow;
@@ -3310,12 +3305,12 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     const coldDamp=newMom<0.82?0.92:decay;
     gw[name]=Math.min(6,Math.max(0.04,prev*newMom))*coldDamp+(1-coldDamp);
     const rp=rw[predRow][name]!=null?rw[predRow][name]:1;
-    rw[predRow][name]=Math.min(5,Math.max(0.05,rp*(ex?1.5:numberHit?1.25:nr?1.15:0.75)));
+    rw[predRow][name]=Math.min(5,Math.max(0.05,rp*(exactLike?1.5:nr?1.15:0.75)));
     const rn=rnw[cr][name]!=null?rnw[cr][name]:1;
     rnw[cr][name]=Math.min(5,Math.max(0.05,rn*mult));
     // Fix 4: per-regime weight track
     const rv=rgw[regime][name]!=null?rgw[regime][name]:1;
-    rgw[regime][name]=Math.min(5,Math.max(0.05,rv*(ex?1.45*calMult:numberHit?1.2:nr?1.1:0.82)));
+    rgw[regime][name]=Math.min(5,Math.max(0.05,rv*(exactLike?1.45*calMult:nr?1.1:0.82)));
   });
   // Fix 8: per-DOW and per-lunar weight update (passed via extra param from checkAndLearn)
   return{
