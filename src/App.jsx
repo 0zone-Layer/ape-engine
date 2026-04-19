@@ -36,6 +36,16 @@ function buildPredictionCopyLines(preds,cols){
   return lines;
 }
 const ok=v=>v!==null&&v!==undefined&&!isNaN(v);
+function parseCellValue(raw){
+  const t=String(raw??"").trim();
+  if(!t)return null;
+  const u=t.toUpperCase();
+  if(u==="XX"||u==="?"||u==="(PRED)")return null;
+  const m=u.match(/^(\d{1,2})\D*$/);
+  if(!m)return undefined;
+  const n=parseInt(m[1],10);
+  return(isNaN(n)||n<0||n>99)?undefined:n;
+}
 // Domain rule: a two-digit reversal is also an exact hit (e.g., predicted 82 vs actual 28).
 // This reflects game logic where mirrored jodi outcomes are treated as an exact catch.
 const isExactOrReversed=(pred,actual)=>{
@@ -63,6 +73,86 @@ function isExactLikePrediction(pred,actual,hitCtx){
   const ctx=hitCtx||getTop5HitContext(pred,actual);
   return !!ctx.top5Hit;
 }
+function buildLongPatternModel(series){
+  const freq={};
+  const idx={};
+  (series||[]).forEach((v,i)=>{
+    if(!ok(v))return;
+    const n=M.mod(Math.round(v));
+    freq[n]=(freq[n]||0)+1;
+    if(!idx[n])idx[n]=[];
+    idx[n].push(i);
+  });
+  const maxFreq=Math.max(1,...Object.values(freq));
+  const intervalScore={};
+  Object.entries(idx).forEach(([k,arr])=>{
+    if(arr.length<3){intervalScore[k]=0;return;}
+    const gaps=[];
+    for(let i=1;i<arr.length;i++)gaps.push(arr[i]-arr[i-1]);
+    const mean=M.mean(gaps);
+    const sd=M.std(gaps);
+    intervalScore[k]=mean>0?clamp(1-sd/Math.max(1,mean),0,1):0;
+  });
+  return{freq,maxFreq,intervalScore};
+}
+function getLongPatternScore(v,model){
+  if(!ok(v)||!model)return 0;
+  const n=M.mod(Math.round(v));
+  const f=((model.freq&&model.freq[n])||0)/(model.maxFreq||1);
+  const p=(model.intervalScore&&model.intervalScore[n])||0;
+  return clamp(f*0.65+p*0.35,0,1);
+}
+function detectCrossHit(predicted,actual,col,rowActuals,rows,predRow){
+  if(!ok(predicted)||!ok(actual))return{crossHit:false};
+  const p=M.mod(Math.round(predicted));
+  if(isExactOrReversed(p,actual))return{crossHit:false};
+  for(const c of COLS){
+    if(c===col)continue;
+    if(ok(rowActuals?.[c])&&M.mod(Math.round(rowActuals[c]))===p){
+      return{crossHit:true,found_in:"same_row",column:c};
+    }
+  }
+  const nearby=(rows||[]).filter(r=>Math.abs((r?.row??-9999)-(predRow??0))<=2&&(r?.row)!==predRow);
+  for(const r of nearby){
+    for(const c of COLS){
+      if(ok(r?.[c])&&M.mod(Math.round(r[c]))===p){
+        return{crossHit:true,found_in:"nearby_row",column:c};
+      }
+    }
+  }
+  return{crossHit:false};
+}
+function applyCrossColumnIntelligence(predMap){
+  const out={...(predMap||{})};
+  const topVals={};
+  COLS.forEach(c=>{
+    const v=out[c]?.top5?.[0]?.value;
+    if(ok(v))topVals[c]=M.mod(Math.round(v));
+  });
+  const freq={};
+  Object.values(topVals).forEach(v=>{freq[v]=(freq[v]||0)+1;});
+  const alerts=[];
+  COLS.forEach(col=>{
+    const pred=out[col];
+    if(!pred||!Array.isArray(pred.top5)||!pred.top5.length)return;
+    pred.top5.forEach(item=>{
+      if(!ok(item?.value))return;
+      const v=M.mod(Math.round(item.value));
+      const repeats=freq[v]||0;
+      if(repeats<2)return;
+      const boost=Math.min(CROSS_RECURRENCE_BOOST_MAX,CROSS_RECURRENCE_BOOST_FACTOR*(repeats-1));
+      item.votes=(item.votes||0)*(1+boost);
+      item._crossBoost=boost;
+      if(boost>0&&item===pred.top5[0]){
+        alerts.push("Number "+pad2(v)+" has cross-column recurrence probability for col "+col);
+      }
+    });
+    pred.top5.sort((a,b)=>(b.votes||0)-(a.votes||0));
+    const total=pred.top5.reduce((s,x)=>s+(x.votes||0),0)||1;
+    pred.top5=pred.top5.slice(0,5).map(x=>({...x,pct:Math.round((x.votes||0)/total*100)}));
+  });
+  return{preds:out,alerts};
+}
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
 const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
@@ -79,7 +169,7 @@ const HEAVY_UPDATE_INTERVAL=4;
 const HEAVY_TOPK_EVAL=40; // [UPDATED] evaluate top-K in 30–50 band
 const HEAVY_TOPK_CUSTOM=20;
 const MAX_GENERATED_ALGOS=150;
-const MUTATION_BUDGET_MAX=8;
+const MUTATION_BUDGET_MAX=3; // Controlled mutation (up to 3 clones/cycle) prevents random strategy explosion.
 const MAX_WEIGHT_HISTORY_KEYS=180;
 const MAX_WEIGHT_ALGO_ENTRIES=180;
 const MAX_PERF_ALGO_ENTRIES=220;
@@ -116,8 +206,8 @@ const PERF_ROLLING_WINDOW=12;
 const MIN_PRUNE_EVAL_WINDOW=8;
 const PRUNE_KEEP_TOP_RATIO=0.40;
 const PRUNE_KEEP_RANDOM_RATIO=0.30;
-const PRUNE_BOTTOM_RATIO=0.30;
-const PRUNE_RELAXED_BOTTOM_RATIO=0.20;
+const PRUNE_BOTTOM_RATIO=0.12; // Safe pruning: remove only worst ~10–15% to preserve diversity.
+const PRUNE_RELAXED_BOTTOM_RATIO=0.10; // Even safer fallback when pool quality is globally weak.
 const MIN_GENERATED_POOL_SIZE=8;
 const PRUNE_LOW_DIVERSITY_RATIO=0.10;
 const MUTATE_TOP_RATIO=0.20;
@@ -181,6 +271,20 @@ const PERF_GLOBAL_DECAY=0.985;
 const PERF_CONTEXT_DECAY=0.96;
 const SHORT_WINDOW=10;
 const MID_WINDOW=50;
+const SHORT_MEMORY_ROWS=25;
+const LONG_MEMORY_MAX_BOOST=1.12;
+const LONG_PATTERN_BOOST_FACTOR=0.12;
+const LONG_MEMORY_UNSEEN_PENALTY=0.88;
+const LONG_MEMORY_RARE_PENALTY=0.94;
+const CROSS_RECURRENCE_BOOST_FACTOR=0.04;
+const CROSS_RECURRENCE_BOOST_MAX=0.10;
+const ENSEMBLE_VARIANCE_THRESHOLD=12;
+const COMPOSITE_RECENT_WEIGHT=0.5;
+const COMPOSITE_MID_WEIGHT=0.2;
+const COMPOSITE_LONG_WEIGHT=0.1;
+const COMPOSITE_CROSS_WEIGHT=0.2;
+const CROSS_HIT_PARTIAL_REWARD=0.45;
+const ENSEMBLE_TOP_SIGNAL_COUNT=70;
 const CONTROL_RECENT_WINDOW=8;
 const CONTROL_DROP_THRESHOLD=0.22;
 const CONTROL_STABLE_THRESHOLD=0.58;
@@ -2707,15 +2811,17 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const tStart=PERF_NOW();
   const boundedRows=getWindowRows(data,ROLLING_WINDOW_ROWS);
   const analysisData=boundedRows.length>MAX_ANALYSIS_ROWS?boundedRows.slice(-MAX_ANALYSIS_ROWS):boundedRows;
-  const series=getSeries(col,analysisData);
+  const longLocalSeries=getSeries(col,analysisData);
+  const series=longLocalSeries.slice(-SHORT_MEMORY_ROWS);
   if(series.length<3)return null;
 
   // ── GLOBAL SERIES: spans ALL datasets for superior algo calibration ──
   // When 2026 data is sparse (10 rows), global series adds 150 rows from 2025.
   // btScore on globalSeries gives far better algo ranking than 10 rows alone.
-  const globalSeries=allDatasets?getGlobalSeries(col,allDatasets):series;
-  const btSource=globalSeries.length>series.length?globalSeries:series;
+  const globalSeries=allDatasets?getGlobalSeries(col,allDatasets):longLocalSeries;
+  const btSource=globalSeries.length>longLocalSeries.length?globalSeries:longLocalSeries;
   const btSeries=btSource.length>MAX_BT_SERIES?btSource.slice(-MAX_BT_SERIES):btSource;
+  const longPatternModel=buildLongPatternModel(btSeries);
 
   const gw=W.global||{},rw=W.perRow||{},rnw=W.perRange||{};
   const perfMap=W.performance||{};
@@ -2723,23 +2829,26 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const maxRow=data.length?data.reduce((m,r)=>r.row>m?r.row:m,0)||1:1;
   const predRow=maxRow+1;
   const curRange=Math.floor((series[series.length-1]||0)/25);
-  const contextInfo=classifyContext(series,analysisData,col);
+  const contextInfo=classifyContext(longLocalSeries,analysisData,col);
   const currentContext=contextInfo.context;
   const regime=mapContextToRegime(currentContext);
   const influenceRow=contextInfo.influence&&contextInfo.influence[col]?contextInfo.influence[col]:{};
   const votes={},_contribSets={},details={};
   const cast=(name,val,w)=>{
     const v=M.mod(Math.round(val));
-    votes[v]=(votes[v]||0)+w;
+    const longScore=getLongPatternScore(v,longPatternModel);
+    const longBoost=1+Math.min(LONG_MEMORY_MAX_BOOST-1,longScore*LONG_PATTERN_BOOST_FACTOR);
+    votes[v]=(votes[v]||0)+w*longBoost;
     if(!_contribSets[v])_contribSets[v]=new Set();
     _contribSets[v].add(name);
+    return{longScore,longBoost};
   };
   const rgw=W.perRegime&&W.perRegime[regime]?W.perRegime[regime]:{};
   const algoCache={};
   const perf={btMs:0,builtinMs:0,crossMs:0,dateMs:0,customMs:0,totalMs:0};
   const lightweight=!!W._lightweight;
   const allowedAlgos=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
-  const autoBudget=lightweight?12:series.length>140?20:series.length>80?28:HEAVY_TOPK_EVAL;
+  const autoBudget=lightweight?12:longLocalSeries.length>140?20:longLocalSeries.length>80?28:HEAVY_TOPK_EVAL;
   const algoBudget=Math.max(8,Math.min(W._algoBudget||autoBudget,HEAVY_TOPK_EVAL,allowedAlgos.length));
   const evalNames=selectAlgoNames(allowedAlgos,regime,algoBudget);
   const adaptiveNorm=normalizeAdaptiveWeights(evalNames,perfMap,currentContext);
@@ -2755,7 +2864,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
           algoCache[name]=W._btCache[cacheKey];
           return;
         }
-        const bt=btScore(fn,btSeries); // ← uses global series
+        const btLong=btScore(fn,btSeries); // ← long memory reference
+        const btShort=series.length>=5?btScore(fn,series):btLong;
+        // 70/30 keeps adaptation anchored in the latest 25 rows while still using deep history as a stabilizer.
+        const bt=btShort*0.7+btLong*0.3;
         let wfBoost=1.0;
         if(!lightweight&&btSeries.length>=10){
           const wf=walkFwd(fn,btSeries);
@@ -2794,7 +2906,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult*Math.max(0.45,perfW)*adaptMult*roleMult*memoryBoost;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
-      details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin",class:classifyAlgo(name),category,context:currentContext,perf:+(perfMap[name]?.rollingAccuracy||0).toFixed(3)};
+      details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin",class:classifyAlgo(name),category,context:currentContext,perf:+(perfMap[name]?.rollingAccuracy||0).toFixed(3),longPatternScore:+getLongPatternScore(preds[0],longPatternModel).toFixed(4)};
     }catch(e){}
   });
   perf.builtinMs+=PERF_NOW()-builtinT0;
@@ -2815,7 +2927,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     if(w<MIN_CROSS_SIGNAL_WEIGHT)return;
     preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
     const isTemp=!!(TEMPORAL_BOOST[name]||name.startsWith("Tx_")||name.startsWith("XL_"));
-    details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:isTemp?"temporal":"cross",source:srcCol,influence:+infl.toFixed(3),context:currentContext,category:"HEURISTIC"};
+    details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:isTemp?"temporal":"cross",source:srcCol,influence:+infl.toFixed(3),context:currentContext,category:"HEURISTIC",longPatternScore:+getLongPatternScore(preds[0],longPatternModel).toFixed(4)};
   });
   perf.crossMs+=PERF_NOW()-crossT0;
 
@@ -2829,7 +2941,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const baseW=DATE_SIGNAL_WEIGHTS[name]||1.0;
       const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
-      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"date"};
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"date",longPatternScore:+getLongPatternScore(preds[0],longPatternModel).toFixed(4)};
     });
   }
   perf.dateMs+=PERF_NOW()-dateT0;
@@ -2845,7 +2957,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const baseW=DATE_SIGNAL_WEIGHTS[name]||2.0;
       const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>{if(ok(p))cast(name,p,w/(i*0.5+1));});
-      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"patternbank"};
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"patternbank",longPatternScore:+getLongPatternScore(preds[0],longPatternModel).toFixed(4)};
     });
   }
 
@@ -2902,7 +3014,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
       details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),
-        type:name.startsWith("CrossDs")?"patternbank":"rowhistory"};
+        type:name.startsWith("CrossDs")?"patternbank":"rowhistory",longPatternScore:+getLongPatternScore(preds[0],longPatternModel).toFixed(4)};
     });
   }
 
@@ -2914,7 +3026,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const baseW=name.startsWith("Gap_")?2.0:1.6;
       const w=baseW*Math.max(0.05,lw);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.5+1)));
-      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"colgap"};
+      details[name]={pred:preds[0],bt:null,lw:+lw.toFixed(2),rw:1,w:+w.toFixed(2),type:"colgap",longPatternScore:+getLongPatternScore(preds[0],longPatternModel).toFixed(4)};
     });
   }
 
@@ -2932,7 +3044,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const fn=makeCustomFn(ca.code);if(!fn)return;
       const cacheKey=col+"__"+ca.name;
       if(W._btCache&&W._btCache[cacheKey]){algoCache[ca.name]=W._btCache[cacheKey];return;}
-      const bt=btScore(fn,btSeries); // ← global series
+      const btLong=btScore(fn,btSeries); // ← long memory reference
+      const btShort=series.length>=5?btScore(fn,series):btLong;
+      // Match built-in 70/30 short-vs-long blend so long memory supports without dominating.
+      const bt=btShort*0.7+btLong*0.3;
       let wfBoost=1.0;
       if(!lightweight&&btSeries.length>=10){
         const wf=walkFwd(fn,btSeries);
@@ -2965,7 +3080,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult*Math.max(0.45,perfW)*adaptMult*roleMult*memoryBoost;
       const preds=fn(series);
       preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1)));
-      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom",class:ca.class||classifyAlgo(ca.name,ca.code),category,context:currentContext,perf:+(perfMap[ca.name]?.rollingAccuracy||0).toFixed(3)};
+      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom",class:ca.class||classifyAlgo(ca.name,ca.code),category,context:currentContext,perf:+(perfMap[ca.name]?.rollingAccuracy||0).toFixed(3),longPatternScore:+getLongPatternScore(preds[0],longPatternModel).toFixed(4)};
     }catch(e){}
   });
   perf.customMs+=PERF_NOW()-customT0;
@@ -2977,6 +3092,31 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     detailEntries.sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0));
     const keep=new Set(detailEntries.slice(0,detailCap).map(([name])=>name));
     Object.keys(details).forEach(name=>{if(!keep.has(name))delete details[name];});
+  }
+
+  // Balanced ensemble blend from top 60–80 signals.
+  const ensembleSignals=Object.entries(details)
+    .map(([name,info])=>({name,v:ok(info?.pred)?M.mod(Math.round(info.pred)):null,w:Math.max(0.001,info?.w||0)}))
+    .filter(x=>x.v!=null)
+    .sort((a,b)=>b.w-a.w)
+    .slice(0,ENSEMBLE_TOP_SIGNAL_COUNT);
+  if(ensembleSignals.length>=12){
+    const sumW=ensembleSignals.reduce((s,x)=>s+x.w,0)||1;
+    const weightedMean=M.mod(Math.round(ensembleSignals.reduce((s,x)=>s+x.v*x.w,0)/sumW));
+    const sortedByVal=[...ensembleSignals].sort((a,b)=>a.v-b.v);
+    let accW=0;
+    let weightedMedian=sortedByVal[0].v;
+    for(const item of sortedByVal){
+      accW+=item.w;
+      if(accW>=sumW/2){weightedMedian=item.v;break;}
+    }
+    const vals=ensembleSignals.map(x=>x.v);
+    const variance=vals.length>1?M.std(vals):0;
+    // On a 0–99 target space, std≈ENSEMBLE_VARIANCE_THRESHOLD is where mean starts getting pulled by spread/outliers; median is more robust beyond this.
+    const finalEnsemble=variance<=ENSEMBLE_VARIANCE_THRESHOLD?weightedMean:weightedMedian;
+    const injectWeight=(Math.max(1,...Object.values(votes))*0.35)+(sumW/ensembleSignals.length)*0.15;
+    cast("EnsembleBlend",finalEnsemble,injectWeight);
+    details.EnsembleBlend={pred:finalEnsemble,bt:null,lw:1,rw:1,w:+injectWeight.toFixed(2),type:"ensemble",class:"ensemble",category:"HEURISTIC",context:currentContext,longPatternScore:+getLongPatternScore(finalEnsemble,longPatternModel).toFixed(4),ensembleVariance:+variance.toFixed(2),ensembleMode:variance<=ENSEMBLE_VARIANCE_THRESHOLD?"mean":"median"};
   }
 
   // Adaptive: redistribute tiny votes (< 1% of max) to reduce noise
@@ -3058,8 +3198,9 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   Object.keys(votes).forEach(v=>{
     const vInt=parseInt(v);
     const seenCount=freqMap[vInt]||0;
-    if(seenCount===0)votes[vInt]*=0.35;
-    else if(seenCount===1)votes[vInt]*=0.7;
+    // Gentle long-memory penalty keeps unseen/rare values in play so long-history priors cannot overpower short-memory adaptation.
+    if(seenCount===0)votes[vInt]*=LONG_MEMORY_UNSEEN_PENALTY;
+    else if(seenCount===1)votes[vInt]*=LONG_MEMORY_RARE_PENALTY;
   });
 
   // ── DEAD-ZONE BIAS CORRECTION ─────────────────────────────────────────
@@ -3164,6 +3305,7 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
   const next={...prevScores};
   if(!pred)return next;
   const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
+  const crossHitSet=learnCtx&&learnCtx.crossHitAlgos instanceof Set?learnCtx.crossHitAlgos:new Set();
   // Adaptive learning rate by regime
   const alpha=regime==="volatile"?NEURAL_ALPHA_VOLATILE:regime==="flat"?NEURAL_ALPHA_FLAT:NEURAL_ALPHA_DEFAULT;
   // Streak counters stored with _ prefix
@@ -3171,12 +3313,13 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
     const numberHit=hitSet.has(name);
+    const crossHit=crossHitSet.has(name);
     const ex=isExactOrReversed(p,actual);
     const exactLike=ex||numberHit;
     const near1=!exactLike&&M.cd(p,actual)<=1;
-    const nr=!exactLike&&M.nearR(p,actual,regime);
-    const close=!exactLike&&M.cd(p,actual)<=5;
-    const baseReward=exactLike?REWARD_EXACT:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
+    const nr=!exactLike&&!crossHit&&M.nearR(p,actual,regime);
+    const close=!exactLike&&!crossHit&&M.cd(p,actual)<=5;
+    const baseReward=exactLike?REWARD_EXACT:crossHit?CROSS_HIT_PARTIAL_REWARD:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
     // Streak tracking per algo
     const streakKey="_s_"+name;
     const curStreak=next[streakKey]||0;
@@ -3227,9 +3370,10 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const category=(meta&&meta.category)||classifyAlgoCategory(name);
   const prev=perf[name]||{class:meta.class||classifyAlgo(name),category,rollingHits:[],rollingAccuracy:0,totalScore:0,recentError:0,evalCount:0,shortHits:[],midHits:[],errors:[],contextScore:{}};
   const ex=isExactOrReversed(predVal,actual)||!!meta.numberHit;
-  const nr=!ex&&M.near(M.mod(Math.round(predVal)),actual,NEAR_TOLERANCE);
+  const crossHit=!!meta.crossHit;
+  const nr=!ex&&!crossHit&&M.near(M.mod(Math.round(predVal)),actual,NEAR_TOLERANCE);
   const closeness=clamp(1-M.cd(M.mod(Math.round(predVal)),actual)/MAX_TRACKING_ERROR,0,1);
-  const hitScore=ex?1:nr?0.55:closeness*0.25;
+  const hitScore=ex?1:crossHit?CROSS_HIT_PARTIAL_REWARD:nr?0.55:closeness*0.25;
   const signedErr=Math.min(M.cd(M.mod(Math.round(predVal)),actual),MAX_TRACKING_ERROR);
   const rolling=[...(prev.rollingHits||[]),hitScore].slice(-PERF_ROLLING_WINDOW);
   const shortHits=[...(prev.shortHits||[]),hitScore].slice(-SHORT_WINDOW);
@@ -3239,6 +3383,9 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const recentError=prev.evalCount?((prev.recentError||0)*RECENT_ERROR_DECAY+signedErr*RECENT_ERROR_WEIGHT):signedErr;
   const shortScore=shortHits.length?M.mean(shortHits):rollingAccuracy;
   const midScore=midHits.length?M.mean(midHits):rollingAccuracy;
+  const longPatternScore=clamp(meta&&meta.longPatternScore!=null?meta.longPatternScore:(prev.longPatternScore||0),0,1);
+  const crossHitScore=clamp(crossHit?1:(prev.crossHitScore||0)*0.92,0,1);
+  const compositeScore=(shortScore*COMPOSITE_RECENT_WEIGHT)+(midScore*COMPOSITE_MID_WEIGHT)+(longPatternScore*COMPOSITE_LONG_WEIGHT)+(crossHitScore*COMPOSITE_CROSS_WEIGHT);
   const globalScore=((prev.globalScore!=null?prev.globalScore:rollingAccuracy)*PERF_GLOBAL_DECAY)+hitScore*(1-PERF_GLOBAL_DECAY);
   const prevCtxScore=prev.contextScore&&prev.contextScore[context]!=null?prev.contextScore[context]:midScore;
   const contextScore={...(prev.contextScore||{}),[context]:prevCtxScore*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)};
@@ -3255,9 +3402,12 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
     rollingAccuracy:+rollingAccuracy.toFixed(4),
     shortScore:+shortScore.toFixed(4),
     midScore:+midScore.toFixed(4),
+    longPatternScore:+longPatternScore.toFixed(4),
+    crossHitScore:+crossHitScore.toFixed(4),
+    compositeScore:+compositeScore.toFixed(4),
     globalScore:+globalScore.toFixed(4),
     contextScore,
-    totalScore:+((prev.totalScore||0)+(hitScore-PERF_BASELINE_PENALTY)).toFixed(4),
+    totalScore:+((prev.totalScore||0)+(compositeScore-PERF_BASELINE_PENALTY)).toFixed(4),
     lastError:+signedErr.toFixed(3),
     errorVariance:+errorVariance.toFixed(4),
     recentError:+recentError.toFixed(3),
@@ -3282,6 +3432,7 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
   const rgw={...(W.perRegime||{})};
   const perf={...(W.performance||{})};
   const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
+  const crossHitSet=learnCtx&&learnCtx.crossHitAlgos instanceof Set?learnCtx.crossHitAlgos:new Set();
   if(!rgw[regime])rgw[regime]={};
   if(!pred)return{global:gw,perRow:rw,perRange:rnw,perRegime:rgw,performance:perf};
   const cr=Math.floor(actual/25);
@@ -3291,11 +3442,11 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
-    const ex=isExactOrReversed(p,actual),numberHit=hitSet.has(name);
+    const ex=isExactOrReversed(p,actual),numberHit=hitSet.has(name),crossHit=crossHitSet.has(name);
     const exactLike=ex||numberHit;
-    const nr=!exactLike&&M.near(p,actual,2);
-    updateAlgoPerformance(perf,name,p,actual,{class:info.class||classifyAlgo(name),category:info.category||classifyAlgoCategory(name),context:pred.context||"MIXED",numberHit});
-    const mult=exactLike?WEIGHT_MULT_EXACT:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
+    const nr=!exactLike&&!crossHit&&M.near(p,actual,2);
+    updateAlgoPerformance(perf,name,p,actual,{class:info.class||classifyAlgo(name),category:info.category||classifyAlgoCategory(name),context:pred.context||"MIXED",numberHit,crossHit,longPatternScore:info.longPatternScore});
+    const mult=exactLike?WEIGHT_MULT_EXACT:crossHit?1.03:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
     const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
     const newMom=0.75*mom+0.25*mult;
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
@@ -3312,12 +3463,12 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     const coldDamp=newMom<0.82?0.92:decay;
     gw[name]=Math.min(6,Math.max(0.04,prev*newMom))*coldDamp+(1-coldDamp);
     const rp=rw[predRow][name]!=null?rw[predRow][name]:1;
-    rw[predRow][name]=Math.min(5,Math.max(0.05,rp*(exactLike?1.5:nr?1.15:0.75)));
+    rw[predRow][name]=Math.min(5,Math.max(0.05,rp*(exactLike?1.5:crossHit?1.05:nr?1.15:0.75)));
     const rn=rnw[cr][name]!=null?rnw[cr][name]:1;
     rnw[cr][name]=Math.min(5,Math.max(0.05,rn*mult));
     // Fix 4: per-regime weight track
     const rv=rgw[regime][name]!=null?rgw[regime][name]:1;
-    rgw[regime][name]=Math.min(5,Math.max(0.05,rv*(exactLike?1.45*calMult:nr?1.1:0.82)));
+    rgw[regime][name]=Math.min(5,Math.max(0.05,rv*(exactLike?1.45*calMult:crossHit?1.04:nr?1.1:0.82)));
   });
   // Fix 8: per-DOW and per-lunar weight update (passed via extra param from checkAndLearn)
   return{
@@ -4274,7 +4425,7 @@ function AppInner(){
     for(let i=0;i<COLS.length;i++){
       const col=COLS[i],raw=vals[col].trim();
       if(!raw||raw.toUpperCase()==="XX"){entry[col]=null;continue;}
-      const n=parseInt(raw);if(isNaN(n)||n<0||n>99){st(col+" must be 00–99 or XX","err");return;}
+      const n=parseCellValue(raw);if(n===undefined){st(col+" must be 00–99 or XX","err");return;}
       entry[col]=n;
     }
     if(COLS.every(c=>entry[c]===null)){st("Enter at least one value","err");return;}
@@ -4355,7 +4506,7 @@ function AppInner(){
     lines.forEach(line=>{
       const pts=line.split(",").map(p=>p.trim());if(pts.length<COLS.length+1||pts.length>COLS.length+2){errs++;return;}
       const row=parseInt(pts[0]);if(isNaN(row)||row<1||row>9999){errs++;return;}
-      const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{if(!p||p.toUpperCase()==="XX")return null;const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;});
+      const colVals=COLS.map((_,i)=>parseCellValue(pts[i+1]));
       if(colVals.some(v=>v===undefined)){errs++;return;}
       const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:undefined;
       const idx=next.findIndex(x=>x.row===row);
@@ -4422,10 +4573,7 @@ function AppInner(){
         if(pts.length<COLS.length+1||pts.length>COLS.length+2){errs++;return;}
         const row=parseInt(pts[0]);
         if(isNaN(row)||row<1||row>9999){errs++;return;}
-        const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
-          if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
-          const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;
-        });
+        const colVals=COLS.map((_,i)=>parseCellValue(pts[i+1]));
         if(colVals.some(v=>v===undefined)){errs++;return;}
         const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:undefined;
         const parsedRow={row,date:rowDate};
@@ -4466,7 +4614,14 @@ function AppInner(){
             newlyKnownCols.forEach(col=>{
               const colRegime=prev.preds[col]?prev.preds[col].regime:"normal";
               const hitCtx=getTop5HitContext(prev.preds[col],actuals[col]);
-              let uw=updateW(prev.preds[col],actuals[col],nw[col],inc.row,colRegime,nc[col],hitCtx);
+              const top1=prev.preds[col]?.top5?.[0]?.value;
+              const crossHitMeta=detectCrossHit(top1,actuals[col],col,actuals,existingRows,inc.row);
+              const crossHitAlgos=new Set();
+              if(crossHitMeta.crossHit){
+                (prev.preds[col]?.top5?.[0]?.algos||[]).forEach(a=>{if(a)crossHitAlgos.add(a);});
+              }
+              const learnCtx={top5Hit:hitCtx.top5Hit,hitAlgos:hitCtx.hitAlgos,crossHitAlgos};
+              let uw=updateW(prev.preds[col],actuals[col],nw[col],inc.row,colRegime,nc[col],learnCtx);
               uw.global=applyForgetting(uw.global,newAccLog);
               if(dtCtx)uw=updateDateWeights(prev.preds[col],actuals[col],uw,dtCtx);
               nw[col]=uw;
@@ -4485,10 +4640,15 @@ function AppInner(){
               const hitCtx=getTop5HitContext(prev.preds[c],actuals[c]);
               return !isExactOrReversed(top1,actuals[c])&&hitCtx.top5Hit;
             }).length;
+            const crossHitCount=newlyKnownCols.filter(c=>{
+              if(!prev.preds[c])return false;
+              const top1=prev.preds[c]?.top5?.[0]?.value;
+              return detectCrossHit(top1,actuals[c],c,actuals,existingRows,inc.row).crossHit===true;
+            }).length;
             newAccLog.push({at:new Date().toISOString(),targetRow:inc.row,date:inc.date||null,dateCtx:dtCtx,
               preds:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?.top5[0]?.value??null])),
               algoDetails:Object.fromEntries(COLS.map(c=>[c,prev.preds[c]?Object.fromEntries(Object.entries(prev.preds[c].details).sort((a,b)=>b[1].w-a[1].w).slice(0,20).map(([n,d])=>[n,d.pred])):{}])),
-              actuals,exactCount,numberHitCount,knownCount:newlyKnownCols.length,autoLearned:true});
+              actuals,exactCount,numberHitCount,crossHitCount,knownCount:newlyKnownCols.length,autoLearned:true});
             newContextMemory=updateContextMemory(newContextMemory,prev.preds,actuals);
             autoLearned++;
             syslog("🤖 Auto-learned row "+pad2(inc.row)+": "+exactCount+"/"+newlyKnownCols.length+" exact","learn");
@@ -4626,7 +4786,9 @@ function AppInner(){
         });
       }
     }
-    upd(prev=>({...prev,preds:result,predRow:target,predDate:tDate}));
+    const crossColBoost=applyCrossColumnIntelligence(result);
+    crossColBoost.alerts.slice(0,8).forEach(msg=>syslog("⚠ "+msg,"alert"));
+    upd(prev=>({...prev,preds:crossColBoost.preds,predRow:target,predDate:tDate}));
     setCheckRes(null);setActs(mkColTextDefaults());setTab("predict");
     setTimeout(()=>st("Predictions ready"+(tDate?" · "+tDate:"")+" ✓"),300);
   }
@@ -4637,9 +4799,9 @@ function AppInner(){
     let hasKnown=false;
     COLS.forEach(col=>{
       const raw=acts[col].trim();
-      const n=parseInt(raw);
+      const n=parseCellValue(raw);
       const autoPredictedValue=missingPreds[col]?.top5?.[0]?.value??null;
-      if(raw&&raw.toUpperCase()!=="XX"&&!isNaN(n)&&n>=0&&n<=99&&(autoPredictedValue===null||n!==autoPredictedValue)){
+      if(n!=null&&n!==undefined&&(autoPredictedValue===null||n!==autoPredictedValue)){
         known[col]=n;
         hasKnown=true;
       }
@@ -4701,13 +4863,14 @@ function AppInner(){
       const col=COLS[i],raw=acts[col].trim();
       // Allow XX or empty = unknown column
       if(!raw||raw.toUpperCase()==="XX"){actuals[col]=null;continue;}
-      const n=parseInt(raw);if(isNaN(n)||n<0||n>99){st(col+" must be 00–99 or XX","warn");return;}
+      const n=parseCellValue(raw);if(n===undefined){st(col+" must be 00–99 or XX","warn");return;}
       actuals[col]=n;
       knownCols.push(col);
     }
     // Need at least 1 known column to learn
     if(knownCols.length===0){st("Enter at least one actual value (use XX for unknown)","warn");return;}
-    const results={};let exactCount=0,numberHitCount=0;
+    const results={};let exactCount=0,numberHitCount=0,crossHitCount=0;
+    const predActualLog={};
     COLS.forEach(col=>{
       if(actuals[col]===null){
         // Unknown: mark as skipped, use top prediction as placeholder
@@ -4720,9 +4883,16 @@ function AppInner(){
       const hitCtx=getTop5HitContext(S.preds[col],actual);
       const exTop1=isExactOrReversed(top1,actual);
       const exactLike=isExactLikePrediction(S.preds[col],actual,hitCtx);
-      const nr=!exactLike&&M.near(top1!=null?top1:-1,actual,2);
+      const crossHitMeta=detectCrossHit(top1,actual,col,actuals,rows,S.predRow);
+      const crossHit=!exactLike&&!!crossHitMeta.crossHit;
+      const nr=!exactLike&&!crossHit&&M.near(top1!=null?top1:-1,actual,2);
       const numberHit=!exTop1&&hitCtx.top5Hit;
-      results[col]={predicted:top1,actual,exact:exactLike,numberHit,near:nr,skipped:false};
+      results[col]={predicted:top1,actual,exact:exactLike,numberHit,near:nr,crossHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
+      predActualLog[col]={prediction:top1,actual};
+      if(crossHit){
+        console.log("[CROSS-HIT]",{predicted:top1,actual,found_in:crossHitMeta.found_in==="same_row"?"same_row":"nearby_row",column:crossHitMeta.column});
+        crossHitCount++;
+      }
       if(exactLike)exactCount++;
       if(numberHit)numberHitCount++;
     });
@@ -4737,7 +4907,13 @@ function AppInner(){
         if(actuals[col]===null)return;
         const colRegime=prev.preds[col]?prev.preds[col].regime:"normal";
         const hitCtx=getTop5HitContext(prev.preds[col],actuals[col]);
-        let updated=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow,colRegime,prev.calibration&&prev.calibration[col],hitCtx);
+        const crossHitAlgos=new Set();
+        if(results[col]?.crossHit){
+          const topAlgos=(prev.preds[col]?.top5&&prev.preds[col].top5[0]?.algos)||[];
+          topAlgos.forEach(a=>{if(a)crossHitAlgos.add(a);});
+        }
+        const learnCtx={top5Hit:hitCtx.top5Hit,hitAlgos:hitCtx.hitAlgos,crossHitAlgos};
+        let updated=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow,colRegime,prev.calibration&&prev.calibration[col],learnCtx);
         // Bug 12 fix: decay ALL weight maps, not just global
         updated.global=applyForgetting(updated.global,prev.accLog);
         // Soft decay perRow/perRange/perRegime toward 1.0 (prevent stale boosts)
@@ -4783,7 +4959,7 @@ function AppInner(){
         ):{}
       ]));
       const entry={at:new Date().toISOString(),targetRow:prev.predRow,date:prev.predDate||null,dateCtx,
-        preds:predsTop1,algoDetails,actuals,results,exactCount,numberHitCount,knownCount};
+        preds:predsTop1,algoDetails,actuals,results,exactCount,numberHitCount,crossHitCount,knownCount};
       const tentativeLog=[...(prev.accLog||[]).slice(-365),entry];
       const adaptiveControl=buildAdaptiveControl(tentativeLog,prev.adaptiveControl);
       // Auto-prune weak generated algos
@@ -4836,7 +5012,14 @@ function AppInner(){
 
       return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,contextMemory:newContextMemory,adaptiveControl,accLog:newFullLog,lastAutoGenRows:newRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
     });
-    st("Learned! "+exactCount+"/"+knownCols.length+" exact · "+numberHitCount+" top5 hits — weights saved ✓");
+    const rollingAccuracy=knownCols.length?+(exactCount/knownCols.length).toFixed(4):0;
+    const topAlgorithms=Object.fromEntries(knownCols.map(col=>[col,Object.entries(S.preds?.[col]?.details||{}).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,3).map(([name])=>name)]));
+    const recentCrossHits=(S.accLog||[]).slice(-10).reduce((s,e)=>s+(e.crossHitCount||0),0)+crossHitCount;
+    console.log("[PRED vs ACTUAL]",predActualLog);
+    console.log("[ACC]",rollingAccuracy);
+    console.log("[TOP]",topAlgorithms);
+    console.log("[CROSS-HIT COUNT]",recentCrossHits);
+    st("Learned! "+exactCount+"/"+knownCols.length+" exact · "+numberHitCount+" top5 hits · "+crossHitCount+" cross-hits — weights saved ✓");
     const pct=Math.round(exactCount/knownCols.length*100);
     syslog((exactCount===knownCols.length?"🎯":"📊")+" Learn result: "+exactCount+"/"+knownCols.length+" exact ("+pct+"%) · top5 hits "+numberHitCount,"learn");
     if(exactCount===4)syslog("✨ Perfect prediction! Pattern well-captured — consider exporting weights.","alert");
@@ -4870,11 +5053,7 @@ function AppInner(){
       if(pts.length<COLS.length+1||pts.length>COLS.length+2){skipped++;return;}
       const rowNum=parseInt(pts[0]);
       if(isNaN(rowNum)||rowNum<1||rowNum>99999){skipped++;return;}
-      const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
-        if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
-        const n=parseInt(p);
-        return(isNaN(n)||n<0||n>99)?undefined:n;
-      });
+      const colVals=COLS.map((_,i)=>parseCellValue(pts[i+1]));
       if(colVals.some(v=>v===undefined)){skipped++;return;}
       // At least one column must be known
       if(colVals.every(v=>v===null)){skipped++;return;}
@@ -5025,8 +5204,9 @@ function AppInner(){
       // ── Compare & weight update ───────────────────────────────────────
       const dateCtxPd=csvRow.date?parseDate(csvRow.date):null;
       const dateCtx=dateCtxPd?{dow:dateCtxPd.dow,lunar:dateCtxPd.lunarPhase,month:dateCtxPd.m,season:dateCtxPd.season}:null;
-      let rowExact=0,rowKnown=0;
+      let rowExact=0,rowKnown=0,rowCrossHit=0;
       const rowResults={};
+      const predActualLog={};
       const updT0=PERF_NOW();
       knownCols.forEach(col=>{
         const actual=csvRow[col];
@@ -5036,12 +5216,25 @@ function AppInner(){
         const hitCtx=getTop5HitContext(pred,actual);
         const exTop1=isExactOrReversed(top1,actual);
         const exactLike=isExactLikePrediction(pred,actual,hitCtx);
-        const nr=!exactLike&&M.near(top1??-1,actual,2);
-        rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,skipped:false};
+        const crossHitMeta=detectCrossHit(top1,actual,col,csvRow,tr.historyRows,csvRow.row);
+        const crossHit=!exactLike&&!!crossHitMeta.crossHit;
+        const nr=!exactLike&&!crossHit&&M.near(top1??-1,actual,2);
+        rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,crossHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
+        predActualLog[col]={prediction:top1,actual};
+        if(crossHit){
+          console.log("[CROSS-HIT]",{predicted:top1,actual,found_in:crossHitMeta.found_in==="same_row"?"same_row":"nearby_row",column:crossHitMeta.column});
+          rowCrossHit++;
+        }
         if(exactLike)rowExact++;rowKnown++;
         const regime=pred.regime||"normal";
+        const crossHitAlgos=new Set();
+        if(crossHit){
+          const topAlgos=(pred.top5&&pred.top5[0]?.algos)||[];
+          topAlgos.forEach(a=>{if(a)crossHitAlgos.add(a);});
+        }
+        const learnCtx={top5Hit:hitCtx.top5Hit,hitAlgos:hitCtx.hitAlgos,crossHitAlgos};
         // Skip applyForgetting in hot path — deferred to autoTrainFinish
-        let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col],hitCtx);
+        let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col],learnCtx);
         if(dateCtx)uw=updateDateWeights(pred,actual,uw,dateCtx);
         tr.weights[col]=uw;
         tr.calibration[col]=updateCalibration(pred.conf,exactLike,tr.calibration[col]||{});
@@ -5051,6 +5244,12 @@ function AppInner(){
       tr.exactTotal+=rowExact;
       tr.nearTotal+=Object.values(rowResults).filter(r=>r.near).length;
       tr.totalKnown+=rowKnown;
+      const rowAcc=rowKnown?+(rowExact/rowKnown).toFixed(4):0;
+      const rowTop=Object.fromEntries(knownCols.map(col=>[col,Object.entries(rowPreds[col]?.details||{}).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,3).map(([name])=>name)]));
+      console.log("[PRED vs ACTUAL]",predActualLog);
+      console.log("[ACC]",rowAcc);
+      console.log("[TOP]",rowTop);
+      console.log("[CROSS-HIT COUNT]",rowCrossHit);
 
       // ── Insert row into sorted history (binary insert — O(log n), not O(n log n)) ──
       const insT0=PERF_NOW();
@@ -5065,7 +5264,7 @@ function AppInner(){
           ?Object.fromEntries(Object.entries(rowPreds[c].details||{}).sort((a,b)=>b[1].w-a[1].w).slice(0,15).map(([n,d])=>[n,d.pred]))
           :{}])),
         actuals:Object.fromEntries(COLS.map(c=>[c,csvRow[c]??null])),
-        results:rowResults,exactCount:rowExact,numberHitCount:Object.values(rowResults).filter(r=>r.numberHit).length,knownCount:rowKnown,autoTrained:true
+        results:rowResults,exactCount:rowExact,numberHitCount:Object.values(rowResults).filter(r=>r.numberHit).length,crossHitCount:rowCrossHit,knownCount:rowKnown,autoTrained:true
       });
       tr.contextMemory=updateContextMemory(tr.contextMemory,rowPreds,Object.fromEntries(COLS.map(c=>[c,csvRow[c]??null])));
       tr.adaptiveControl=buildAdaptiveControl(tr.accLog,tr.adaptiveControl);
