@@ -150,7 +150,7 @@ function buildDigitRangeProfile(historySeries,recentSeries){
       const prev=recent[i-1];
       const prevPair=Math.floor(prev/10)*10+(prev%10);
       if(!transitionPairs[prevPair])transitionPairs[prevPair]={};
-      transitionPairs[prevPair][pair]=(transitionPairs[prevPair][pair]||0)+1.2;
+      transitionPairs[prevPair][pair]=(transitionPairs[prevPair][pair]||0)+DIGIT_PROFILE_RECENT_TRANSITION_WEIGHT;
     }
   });
   const nextPairByLast={};
@@ -188,7 +188,7 @@ function getDigitRangeMatch(predicted,actual){
   const unitsMatch=pu===au;
   const both=tensMatch&&unitsMatch;
   const rangeMatch=Math.floor(p/10)===Math.floor(a/10);
-  const nearHit=Math.abs(p-a)<=5;
+  const nearHit=Math.abs(p-a)<=NEAR_HIT_THRESHOLD;
   return{
     tensMatch,
     unitsMatch,
@@ -206,12 +206,12 @@ function applyDigitRangeEnsembleBoost(vote,v,profile){
   const n=M.mod(Math.round(v));
   const tens=Math.floor(n/10),units=n%10,pair=tens*10+units,bucket=tens;
   let mult=1;
-  if((profile.frequentTens||[]).includes(tens))mult*=1.018;
-  if((profile.frequentUnits||[]).includes(units))mult*=1.018;
-  if((profile.repeatingPairs||[]).includes(pair))mult*=1.016;
-  if((profile.dominantRanges||[]).includes(bucket))mult*=1.022;
+  if((profile.frequentTens||[]).includes(tens))mult*=ENSEMBLE_BOOST_TENS;
+  if((profile.frequentUnits||[]).includes(units))mult*=ENSEMBLE_BOOST_UNITS;
+  if((profile.repeatingPairs||[]).includes(pair))mult*=ENSEMBLE_BOOST_PAIR;
+  if((profile.dominantRanges||[]).includes(bucket))mult*=ENSEMBLE_BOOST_RANGE;
   const expectedNext=profile.lastPair!=null?profile.nextPairByLast&&profile.nextPairByLast[profile.lastPair]:null;
-  if(expectedNext!=null&&expectedNext===pair)mult*=1.014;
+  if(expectedNext!=null&&expectedNext===pair)mult*=ENSEMBLE_BOOST_TRANSITION;
   return vote*clamp(mult,1,1+DIGIT_RANGE_ENSEMBLE_MAX_BOOST);
 }
 function updateDigitRangeStats(stats,value){
@@ -252,6 +252,15 @@ function updateDigitRangeStats(stats,value){
   Object.entries(next.transitions||{}).forEach(([k,m])=>{trimmedTransitions[k]=trimMap(m,6);});
   next.transitions=trimmedTransitions;
   return next;
+}
+function logDigitRangeSignals(predicted,actual,intel,exactLike,crossHit){
+  console.log("[DIGIT-MATCH]",{predicted,actual,tens_match:!!intel?.tensMatch,units_match:!!intel?.unitsMatch});
+  if(intel&&intel.rangeMatch){
+    console.log("[RANGE-MATCH]",{predicted_range:intel.predictedRange,actual_range:intel.actualRange});
+  }
+  if(!exactLike&&!crossHit&&intel&&intel.nearHit){
+    console.log("[NEAR-HIT]",predicted,actual);
+  }
 }
 function detectCrossHit(predicted,actual,col,rowActuals,rows,predRow){
   if(!ok(predicted)||!ok(actual))return{crossHit:false};
@@ -399,12 +408,30 @@ const REWARD_DIGIT_MATCH_PARTIAL=0.18;
 const REWARD_DIGIT_MATCH_FULL=0.32;
 const REWARD_RANGE_MATCH=0.12;
 const REWARD_NEAR_HIT=0.08;
+const STAR_HIT_BONUS=0.22;
+const CROSS_HIT_BONUS=0.18;
+const ENHANCED_SCORE_COMPOSITE_WEIGHT=0.12;
+const HIT_SCORE_NEAR_BASE=0.55;
+const HIT_SCORE_CLOSENESS_WEIGHT=0.25;
+const HIT_SCORE_SUPPORT_WEIGHT=0.35;
+const HIT_SCORE_CAP=1.25;
 const WEIGHT_MULT_EXACT=1.4;
 const WEIGHT_MULT_NUMBER_HIT=1.18;
 const WEIGHT_MULT_NEAR=1.1;
 const WEIGHT_MULT_MISS=0.80;
 const DIGIT_RECENT_WINDOW=24;
 const DIGIT_RANGE_ENSEMBLE_MAX_BOOST=0.12;
+const NEAR_HIT_THRESHOLD=5;
+const DIGIT_PROFILE_RECENT_TRANSITION_WEIGHT=1.2;
+const ENSEMBLE_BOOST_TENS=1.018;
+const ENSEMBLE_BOOST_UNITS=1.018;
+const ENSEMBLE_BOOST_PAIR=1.016;
+const ENSEMBLE_BOOST_RANGE=1.022;
+const ENSEMBLE_BOOST_TRANSITION=1.014;
+const WEIGHT_MULT_DIGIT_BONUS_FACTOR=0.08;
+const WEIGHT_MULT_RANGE_BONUS_FACTOR=0.06;
+const WEIGHT_MULT_NEAR_BONUS_FACTOR=0.05;
+const WEIGHT_MULT_SUPPORT_CAP=0.08;
 const MAIN_BOOST_CAP=0.45;
 const MAIN_BOOST_PER_COL=0.12;
 const BAD_STREAK_THRESHOLD=-3;
@@ -3488,7 +3515,7 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
     const intel=getDigitRangeMatch(p,actual);
     const near1=!exactLike&&M.cd(p,actual)<=1;
     const nr=!exactLike&&!crossHit&&M.nearR(p,actual,regime);
-    const close=!exactLike&&!crossHit&&intel.nearHit;
+    const close=!exactLike&&!crossHit&&M.cd(p,actual)<=5;
     const baseReward=exactLike?REWARD_EXACT:crossHit?CROSS_HIT_PARTIAL_REWARD:near1?REWARD_NEAR1:nr?REWARD_NEAR_REGIME:close?REWARD_CLOSE:REWARD_MISS;
     const supportBonus=!exactLike&&!crossHit?(intel.digitMatchBonus+intel.rangeMatchBonus+intel.nearHitBonus):0;
     // Streak tracking per algo
@@ -3543,10 +3570,10 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const ex=isExactOrReversed(predVal,actual)||!!meta.numberHit;
   const crossHit=!!meta.crossHit;
   const intel=getDigitRangeMatch(predVal,actual);
-  const nr=!ex&&!crossHit&&intel.nearHit;
+  const nr=!ex&&!crossHit&&M.near(M.mod(Math.round(predVal)),actual,NEAR_TOLERANCE);
   const closeness=clamp(1-M.cd(M.mod(Math.round(predVal)),actual)/MAX_TRACKING_ERROR,0,1);
   const supportBonus=!ex&&!crossHit?(intel.digitMatchBonus+intel.rangeMatchBonus+intel.nearHitBonus):0;
-  const hitScore=clamp((ex?1:crossHit?CROSS_HIT_PARTIAL_REWARD:nr?0.55:closeness*0.25)+supportBonus*0.35,0,1.25);
+  const hitScore=clamp((ex?1:crossHit?CROSS_HIT_PARTIAL_REWARD:nr?HIT_SCORE_NEAR_BASE:closeness*HIT_SCORE_CLOSENESS_WEIGHT)+supportBonus*HIT_SCORE_SUPPORT_WEIGHT,0,HIT_SCORE_CAP);
   const signedErr=Math.min(M.cd(M.mod(Math.round(predVal)),actual),MAX_TRACKING_ERROR);
   const rolling=[...(prev.rollingHits||[]),hitScore].slice(-PERF_ROLLING_WINDOW);
   const shortHits=[...(prev.shortHits||[]),hitScore].slice(-SHORT_WINDOW);
@@ -3559,13 +3586,14 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const longPatternScore=clamp(meta&&meta.longPatternScore!=null?meta.longPatternScore:(prev.longPatternScore||0),0,1);
   const crossHitScore=clamp(crossHit?1:(prev.crossHitScore||0)*0.92,0,1);
   const recentAccuracy=shortScore;
-  const starHitBonus=meta&&meta.numberHit?0.22:0;
-  const crossHitBonus=crossHit?0.18:0;
+  const starHitBonus=meta&&meta.numberHit?STAR_HIT_BONUS:0;
+  const crossHitBonus=crossHit?CROSS_HIT_BONUS:0;
   const digitMatchBonus=intel.digitMatchBonus;
   const rangeMatchBonus=intel.rangeMatchBonus;
   const nearHitBonus=intel.nearHitBonus;
-  const enhancedScore=recentAccuracy+starHitBonus+crossHitBonus+digitMatchBonus+rangeMatchBonus+nearHitBonus;
-  const compositeScore=(shortScore*COMPOSITE_RECENT_WEIGHT)+(midScore*COMPOSITE_MID_WEIGHT)+(longPatternScore*COMPOSITE_LONG_WEIGHT)+(crossHitScore*COMPOSITE_CROSS_WEIGHT)+(enhancedScore*0.12);
+  const bonusScore=starHitBonus+crossHitBonus+digitMatchBonus+rangeMatchBonus+nearHitBonus;
+  const enhancedScore=recentAccuracy+bonusScore;
+  const compositeScore=(shortScore*COMPOSITE_RECENT_WEIGHT)+(midScore*COMPOSITE_MID_WEIGHT)+(longPatternScore*COMPOSITE_LONG_WEIGHT)+(crossHitScore*COMPOSITE_CROSS_WEIGHT)+(bonusScore*ENHANCED_SCORE_COMPOSITE_WEIGHT);
   const globalScore=((prev.globalScore!=null?prev.globalScore:rollingAccuracy)*PERF_GLOBAL_DECAY)+hitScore*(1-PERF_GLOBAL_DECAY);
   const prevCtxScore=prev.contextScore&&prev.contextScore[context]!=null?prev.contextScore[context]:midScore;
   const contextScore={...(prev.contextScore||{}),[context]:prevCtxScore*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)};
@@ -3630,12 +3658,12 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     const ex=isExactOrReversed(p,actual),numberHit=hitSet.has(name),crossHit=crossHitSet.has(name);
     const exactLike=ex||numberHit;
     const intel=getDigitRangeMatch(p,actual);
-    const nr=!exactLike&&!crossHit&&intel.nearHit;
+    const nr=!exactLike&&!crossHit&&M.near(p,actual,2);
     updateAlgoPerformance(perf,name,p,actual,{class:info.class||classifyAlgo(name),category:info.category||classifyAlgoCategory(name),context:pred.context||"MIXED",numberHit,crossHit,longPatternScore:info.longPatternScore});
     let mult=exactLike?WEIGHT_MULT_EXACT:crossHit?1.03:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
     if(!exactLike&&!crossHit){
-      const support=(intel.digitMatchBonus*0.08)+(intel.rangeMatchBonus*0.06)+(intel.nearHitBonus*0.05);
-      mult=clamp(mult+support,WEIGHT_MULT_MISS,WEIGHT_MULT_NEAR+0.08);
+      const support=(intel.digitMatchBonus*WEIGHT_MULT_DIGIT_BONUS_FACTOR)+(intel.rangeMatchBonus*WEIGHT_MULT_RANGE_BONUS_FACTOR)+(intel.nearHitBonus*WEIGHT_MULT_NEAR_BONUS_FACTOR);
+      mult=clamp(mult+support,WEIGHT_MULT_MISS,WEIGHT_MULT_NEAR+WEIGHT_MULT_SUPPORT_CAP);
     }
     const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
     const newMom=0.75*mom+0.25*mult;
@@ -5078,17 +5106,11 @@ function AppInner(){
       const crossHitMeta=detectCrossHit(top1,actual,col,actuals,rows,S.predRow);
       const crossHit=!exactLike&&!!crossHitMeta.crossHit;
       const intel=getDigitRangeMatch(top1,actual);
-      const nr=!exactLike&&!crossHit&&intel.nearHit;
+      const nr=!exactLike&&!crossHit&&M.near(top1!=null?top1:-1,actual,2);
       const numberHit=!exTop1&&hitCtx.top5Hit;
       results[col]={predicted:top1,actual,exact:exactLike,numberHit,near:nr,crossHit,tensMatch:intel.tensMatch,unitsMatch:intel.unitsMatch,rangeMatch:intel.rangeMatch,nearHit:intel.nearHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
       predActualLog[col]={prediction:top1,actual};
-      console.log("[DIGIT-MATCH]",{predicted:top1,actual,tens_match:intel.tensMatch,units_match:intel.unitsMatch});
-      if(intel.rangeMatch){
-        console.log("[RANGE-MATCH]",{predicted_range:intel.predictedRange,actual_range:intel.actualRange});
-      }
-      if(!exactLike&&!crossHit&&intel.nearHit){
-        console.log("[NEAR-HIT]",top1,actual);
-      }
+      logDigitRangeSignals(top1,actual,intel,exactLike,crossHit);
       if(crossHit){
         console.log("[CROSS-HIT]",{predicted:top1,actual,found_in:crossHitMeta.found_in==="same_row"?"same_row":"nearby_row",column:crossHitMeta.column});
         crossHitCount++;
@@ -5419,16 +5441,10 @@ function AppInner(){
         const crossHitMeta=detectCrossHit(top1,actual,col,csvRow,tr.historyRows,csvRow.row);
         const crossHit=!exactLike&&!!crossHitMeta.crossHit;
         const intel=getDigitRangeMatch(top1,actual);
-        const nr=!exactLike&&!crossHit&&intel.nearHit;
+        const nr=!exactLike&&!crossHit&&M.near(top1??-1,actual,2);
         rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,crossHit,tensMatch:intel.tensMatch,unitsMatch:intel.unitsMatch,rangeMatch:intel.rangeMatch,nearHit:intel.nearHit,foundIn:crossHitMeta.found_in||null,crossColumn:crossHitMeta.column||null,skipped:false};
         predActualLog[col]={prediction:top1,actual};
-        console.log("[DIGIT-MATCH]",{predicted:top1,actual,tens_match:intel.tensMatch,units_match:intel.unitsMatch});
-        if(intel.rangeMatch){
-          console.log("[RANGE-MATCH]",{predicted_range:intel.predictedRange,actual_range:intel.actualRange});
-        }
-        if(!exactLike&&!crossHit&&intel.nearHit){
-          console.log("[NEAR-HIT]",top1,actual);
-        }
+        logDigitRangeSignals(top1,actual,intel,exactLike,crossHit);
         if(crossHit){
           console.log("[CROSS-HIT]",{predicted:top1,actual,found_in:crossHitMeta.found_in==="same_row"?"same_row":"nearby_row",column:crossHitMeta.column});
           rowCrossHit++;
