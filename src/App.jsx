@@ -156,6 +156,7 @@ const WEIGHT_MULT_EXACT=1.4;
 const WEIGHT_MULT_NUMBER_HIT=1.18;
 const WEIGHT_MULT_NEAR=1.1;
 const WEIGHT_MULT_MISS=0.80;
+const HIT_SCORE_NUMBER_HIT=0.72;
 const MAIN_BOOST_CAP=0.45;
 const MAIN_BOOST_PER_COL=0.12;
 const BAD_STREAK_THRESHOLD=-3;
@@ -3313,6 +3314,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
   const next={...prevScores};
   if(!pred)return next;
+  // hitSet contains algos that contributed to any top5 value matching actual (exact or reverse).
   const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
   // Adaptive learning rate by regime
   const alpha=regime==="volatile"?NEURAL_ALPHA_VOLATILE:regime==="flat"?NEURAL_ALPHA_FLAT:NEURAL_ALPHA_DEFAULT;
@@ -3379,7 +3381,7 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const numberHit=!ex&&!!meta.numberHit;
   const nr=!ex&&!numberHit&&M.near(M.mod(Math.round(predVal)),actual,NEAR_TOLERANCE);
   const closeness=clamp(1-M.cd(M.mod(Math.round(predVal)),actual)/MAX_TRACKING_ERROR,0,1);
-  const hitScore=ex?1:numberHit?0.72:nr?0.55:closeness*0.25;
+  const hitScore=ex?1:numberHit?HIT_SCORE_NUMBER_HIT:nr?0.55:closeness*0.25;
   const signedErr=Math.min(M.cd(M.mod(Math.round(predVal)),actual),MAX_TRACKING_ERROR);
   const rolling=[...(prev.rollingHits||[]),hitScore].slice(-PERF_ROLLING_WINDOW);
   const shortHits=[...(prev.shortHits||[]),hitScore].slice(-SHORT_WINDOW);
@@ -3460,6 +3462,7 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
     if(ex){
       gw["_main_"+name]=1;
+      // Keep legacy key for backward compatibility with existing saved state.
       if(ok(predRow))gw["_lastExactLikeRow_"+name]=predRow;
     }
     if(numberHit){
