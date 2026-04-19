@@ -197,6 +197,17 @@ const CONSENSUS_BOOST_FACTOR=0.08; // [ADDED]
 const CONSENSUS_MEAN_AGREE_RADIUS=5; // [ADDED]
 const CONSENSUS_MEAN_AGREE_MULT=1.07; // [ADDED]
 const SIGNATURE_MEMORY_MAX_ENTRIES=96; // [ADDED]
+const SIGNATURE_MEMORY_TOP_ALGOS=8; // [ADDED]
+const ADAPT_ACCURACY_WINDOW=32; // [ADDED]
+const ADAPT_MUTATION_RATE_HIGH=MUTATION_BUDGET_MAX; // [ADDED]
+const ADAPT_MUTATION_RATE_LOW=2; // [ADDED]
+const ADAPT_MUTATION_RATE_BALANCED=4; // [ADDED]
+const SLOPE_CALCULATION_WINDOW=16; // [ADDED]
+const MAX_PREDICTION_VALUE=99; // [ADDED]
+const TOP_PREDICTIONS_COUNT=5; // [ADDED]
+const MUTATE_TOP_CANDIDATES=16; // [ADDED]
+const PRUNE_TOP_KEEP_COUNT=50; // [ADDED]
+const PRUNE_RANDOM_KEEP_COUNT=40; // [ADDED]
 const CONTEXT_SIG_BINS={ // [ADDED]
   trend:[0.45,0.95,1.45],
   volatility:[6,12,18],
@@ -251,7 +262,7 @@ function getAlgoPerfWeight(perf){
   return clamp(consistency<0.35?base*0.8:base,PERF_WEIGHT_MIN,PERF_WEIGHT_MAX)*ev;
 }
 function getAdaptiveRawScore(perf,currentContext){
-  if(!perf)return ADAPT_ALPHA*0.25+ADAPT_BETA*0.25+ADAPT_GAMMA*0.25+ADAPT_LAMBDA*0.25;
+  if(!perf)return ADAPT_ALPHA*0.5+ADAPT_BETA*0.5+ADAPT_GAMMA*0.5+ADAPT_LAMBDA*0.5;
   const shortScore=clamp(perf.shortScore!=null?perf.shortScore:perf.rollingAccuracy||0,0,1);
   const midScore=clamp(perf.midScore!=null?perf.midScore:shortScore,0,1);
   const contextScore=clamp(perf.contextScore&&perf.contextScore[currentContext]!=null?perf.contextScore[currentContext]:midScore,0,1);
@@ -2705,7 +2716,7 @@ function buildInfluenceMatrix(data){
         if(src===target)return;
         matrix[target][src]=+clamp((matrix[target][src]||0)/rowSum,0,1).toFixed(3);
       });
-      matrix[target][target]=+clamp(1-M.mean(Object.entries(matrix[target]).filter(([k])=>k!==target).map(([,v])=>v||0)),0,1).toFixed(3);
+      matrix[target][target]=0;
     }
   });
   return matrix;
@@ -2734,7 +2745,7 @@ function classifyContext(series,data,col,influenceHint){
   const cacheStep=Math.floor((data?.length||0)/HEAVY_UPDATE_INTERVAL);
   const cacheKey=col+"_"+(data?.length||0)+"_"+cacheStep+"_"+_TC._ver;
   if(_contextCache[cacheKey])return _contextCache[cacheKey];
-  const slope=getSeriesSlope(recent.slice(-16));
+  const slope=getSeriesSlope(recent.slice(-SLOPE_CALCULATION_WINDOW));
   const volatility=M.std(recent);
   const periodicity=getPeriodicityStrength(recent);
   const entropy=getEntropySpread(recent);
@@ -3282,7 +3293,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const _ensembleVar=_allPreds.length>3?+M.std(_allPreds).toFixed(1):0;
 
   const total=Object.values(votes).reduce((a,b)=>a+b,0)||1;
-  const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,5)
+  const top5=Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,TOP_PREDICTIONS_COUNT)
     .map(([v,vt])=>{
       const contributors=_contribSets[v]?[..._contribSets[v]]:[];
       return{
@@ -3315,7 +3326,12 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const lo=sAllP[Math.floor(sAllP.length*0.1)]||top5[0]?.value||0;
   const hi=sAllP[Math.floor(sAllP.length*0.9)]||top5[0]?.value||0;
   const finalPredictionRaw=clusterStable&&clusterPeak!=null?clusterPeak:(weightedMedian!=null?weightedMedian:(top5[0]?.value));
-  const topVal=clamp(M.mod(Math.round(finalPredictionRaw!=null?finalPredictionRaw:0)),0,99);
+  const topVal=clamp(M.mod(Math.round(finalPredictionRaw!=null?finalPredictionRaw:0)),0,MAX_PREDICTION_VALUE);
+  if(!top5.length||top5[0].value!==topVal){
+    const vt=votes[topVal]||0;
+    top5.unshift({value:topVal,votes:+vt.toFixed(2),pct:Math.round(vt/total*100),algos:[],truncated:false});
+    if(top5.length>TOP_PREDICTIONS_COUNT)top5.splice(TOP_PREDICTIONS_COUNT);
+  }
   const tempSignals=Object.entries(details).filter(([,d])=>d.type==="temporal"&&ok(d.pred)).map(([name,d])=>({name,pred:M.mod(Math.round(d.pred)),w:d.w,match:topVal!=null&&M.mod(Math.round(d.pred))===topVal}));
   const tempAgree=tempSignals.filter(s=>s.match).length;
   const tempTotal=tempSignals.length;
@@ -3562,14 +3578,14 @@ function updateSignatureMemory(memory,pred,actual){ // [ADDED]
   const key=signatureKey(pred.signature);
   if(!next[key])next[key]={signature:pred.signature,algos:{},hits:0,total:0,lastSeen:Date.now()};
   const slot=next[key];
-  const topAlgos=Object.entries(pred.details||{}).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,8);
+  const topAlgos=Object.entries(pred.details||{}).sort((a,b)=>(b[1]?.w||0)-(a[1]?.w||0)).slice(0,SIGNATURE_MEMORY_TOP_ALGOS);
   topAlgos.forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const hit=isExactOrReversed(info.pred,actual)?1:0;
     const prev=slot.algos[name]||0;
     slot.algos[name]=+((prev*0.9)+hit*0.1).toFixed(4);
   });
-  slot.algos=Object.fromEntries(Object.entries(slot.algos).sort((a,b)=>(b[1]||0)-(a[1]||0)).slice(0,8));
+  slot.algos=Object.fromEntries(Object.entries(slot.algos).sort((a,b)=>(b[1]||0)-(a[1]||0)).slice(0,SIGNATURE_MEMORY_TOP_ALGOS));
   slot.total=(slot.total||0)+1;
   if(isExactOrReversed(pred.top5&&pred.top5[0]?pred.top5[0].value:null,actual))slot.hits=(slot.hits||0)+1;
   slot.lastSeen=Date.now();
@@ -3577,7 +3593,7 @@ function updateSignatureMemory(memory,pred,actual){ // [ADDED]
   return Object.fromEntries(entries);
 }
 function buildAdaptiveControl(accLog,prevControl){
-  const recent=(accLog||[]).slice(-32);
+  const recent=(accLog||[]).slice(-ADAPT_ACCURACY_WINDOW);
   if(recent.length<6)return prevControl||{mutationScale:4,pruneScale:1,status:"balanced",exploration:"mid"};
   const rates=recent.map(e=>((e.exactCount||0)+(e.numberHitCount||0)*0.5)/Math.max(1,e.knownCount||COLS.length));
   const split=Math.max(1,Math.floor(rates.length/2));
@@ -3585,17 +3601,17 @@ function buildAdaptiveControl(accLog,prevControl){
   const late=M.mean(rates.slice(split));
   const trend=+(late-early).toFixed(4);
   if(trend<0){
-    const out={mutationScale:6,pruneScale:0.9,status:"recovering",exploration:"high"};
-    console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:6,exploration:"high"}); // [UPDATED]
+    const out={mutationScale:ADAPT_MUTATION_RATE_HIGH,pruneScale:0.9,status:"recovering",exploration:"high"};
+    console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:ADAPT_MUTATION_RATE_HIGH,exploration:"high"}); // [UPDATED]
     return out;
   }
   if(trend>0){
-    const out={mutationScale:2,pruneScale:1.05,status:"stable",exploration:"low"};
-    console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:2,exploration:"low"}); // [UPDATED]
+    const out={mutationScale:ADAPT_MUTATION_RATE_LOW,pruneScale:1.05,status:"stable",exploration:"low"};
+    console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:ADAPT_MUTATION_RATE_LOW,exploration:"low"}); // [UPDATED]
     return out;
   }
-  const out={mutationScale:4,pruneScale:1,status:"balanced",exploration:"mid"};
-  console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:4,exploration:"mid"}); // [UPDATED]
+  const out={mutationScale:ADAPT_MUTATION_RATE_BALANCED,pruneScale:1,status:"balanced",exploration:"mid"};
+  console.log("[ADAPT]",{accuracy_trend:trend,mutation_rate:ADAPT_MUTATION_RATE_BALANCED,exploration:"mid"}); // [UPDATED]
   return out;
 }
 
@@ -3837,7 +3853,7 @@ function runTournament(customs,data,weights,adaptiveControl){
   }).sort((a,b)=>b.score-a.score);
   const mutationRate=adaptiveControl&&adaptiveControl.mutationScale?adaptiveControl.mutationScale:MUTATION_BUDGET_MAX;
   const mutationCap=Math.min(MUTATION_BUDGET_MAX,Math.max(2,mutationRate));
-  const top=ranked.slice(0,16).map(x=>x.ca);
+  const top=ranked.slice(0,MUTATE_TOP_CANDIDATES).map(x=>x.ca);
   const existingCodes=new Set((customs||[]).map(c=>c.code));
   const clones=[];
   top.forEach((parent,i)=>{
@@ -4011,9 +4027,9 @@ function pruneWeakAlgos(customs,weights,rows,btCache,adaptiveControl){
 
   const removed=[];
   const generatedCount=scored.length;
-  const topKeep=scored.slice(0,Math.min(50,generatedCount));
+  const topKeep=scored.slice(0,Math.min(PRUNE_TOP_KEEP_COUNT,generatedCount));
   const midPool=scored.slice(topKeep.length);
-  const randomKeep=shuffleArray(midPool).slice(0,Math.min(40,midPool.length));
+  const randomKeep=shuffleArray(midPool).slice(0,Math.min(PRUNE_RANDOM_KEEP_COUNT,midPool.length));
   const keepSet=new Set([...topKeep,...randomKeep].map(x=>x.ca.name));
   ALGO_CATEGORIES.forEach(cat=>{ // [UPDATED] minimum 3 per category
     const picks=scored.filter(x=>classifyAlgoCategory(x.ca.name,x.ca.code)===cat).slice(0,3);
