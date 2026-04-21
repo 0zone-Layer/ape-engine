@@ -157,6 +157,13 @@ const CORR_STRONG_THRESHOLD=0.92;
 const CORR_MAX_PENALTY=0.55;
 const CORR_LOOKBACK=40;
 const CALIB_BINS=10;
+const MIN_DRIFT_SERIES_LENGTH=8;
+const REGIME_VOLATILE_STD=16;
+const REGIME_BIMODAL_STD=12;
+const REGIME_VOLATILE_ENTROPY=0.84;
+const REGIME_BIMODAL_ENTROPY=0.7;
+const REGIME_VOLATILE_DRIFT=0.75;
+const REGIME_FLAT_DRIFT_MAX=0.45;
 const REWARD_EXACT=2.6;
 const REWARD_NUMBER_HIT=1.55;
 const REWARD_NEAR1=1.35;
@@ -206,6 +213,7 @@ const CONTEXT_SIG_BINS={ // [ADDED]
   periodicity:[0.28,0.5,0.7],
   entropy:[0.45,0.62,0.8]
 };
+// Disabled due to strong redundancy/correlation and weak incremental signal contribution.
 const DISABLED_ALGOS=new Set([
   "MirrorAt50","ComplementPairs","RevComplement",
   "StepDown1","StepUp1","StepDown2","StepUp2","ReverseSeq","ArithSeqDetect",
@@ -299,7 +307,7 @@ function getAlgoStabilityScore(perf){
   return clamp(err*0.45+variance*0.35+evidence*0.20,0,1);
 }
 function getCalibrationBin(prob){
-  return Math.max(0,Math.min(CALIB_BINS-1,Math.floor(clamp(prob,0,0.9999)*CALIB_BINS)));
+  return Math.max(0,Math.min(CALIB_BINS-1,Math.floor(clamp(prob,0,0.999999)*CALIB_BINS)));
 }
 function getCalibratedProb(prob,cal){
   const p=clamp(prob,0.01,0.99);
@@ -2608,7 +2616,7 @@ function getCalibMult(prob,cal){
   const stat=cal.bins[b];
   if(!stat||stat.total<5)return 1.0;
   const empirical=stat.right/stat.total;
-  const ratio=empirical/(p||0.5);
+  const ratio=empirical/p;
   return clamp(0.75+ratio*0.25,0.55,1.45);
 }
 
@@ -2706,7 +2714,7 @@ function getEntropySpread(series){
   return h/Math.log2(Math.ceil(100/ENTROPY_BIN_SIZE));
 }
 function getDriftMetric(series){
-  if(!series||series.length<8)return{signed:0,magnitude:0};
+  if(!series||series.length<MIN_DRIFT_SERIES_LENGTH)return{signed:0,magnitude:0};
   const sampled=sampleRecentSeries(series,Math.min(30,series.length));
   const half=Math.floor(sampled.length/2);
   if(half<3)return{signed:0,magnitude:0};
@@ -2782,10 +2790,10 @@ function getRegime(series){
   const volatility=M.std(series.slice(-Math.min(18,series.length)));
   const entropy=getEntropySpread(series.slice(-Math.min(24,series.length)));
   const drift=getDriftMetric(series.slice(-Math.min(30,series.length)));
-  if(periodicity>=0.55&&drift.magnitude<0.45)return"flat";
+  if(periodicity>=0.55&&drift.magnitude<REGIME_FLAT_DRIFT_MAX)return"flat";
   if(slope>=1.05&&volatility>=5)return"trending";
-  if(volatility>16||entropy>0.84||drift.magnitude>0.75)return"volatile";
-  if(volatility>12&&entropy>0.7)return"bimodal";
+  if(volatility>REGIME_VOLATILE_STD||entropy>REGIME_VOLATILE_ENTROPY||drift.magnitude>REGIME_VOLATILE_DRIFT)return"volatile";
+  if(volatility>REGIME_BIMODAL_STD&&entropy>REGIME_BIMODAL_ENTROPY)return"bimodal";
   return"normal";
 }
 // Regime-gated algo pool: FULL exclusion not just multipliers
@@ -3854,7 +3862,8 @@ function detectCorrelatedWeakGenerated(scored,rows){
       if(!ta||!tb)continue;
       const c=Math.abs(corr(ta,tb));
       if(c<CORR_STRONG_THRESHOLD)continue;
-      removed.add(a.score>=b.score?b.ca.name:a.ca.name);
+      if(a.score===b.score)removed.add(a.ca.name<=b.ca.name?b.ca.name:a.ca.name);
+      else removed.add(a.score>b.score?b.ca.name:a.ca.name);
     }
   }
   return removed;
@@ -5145,7 +5154,7 @@ function AppInner(){
         tr.logLossSum+=-(y*Math.log(pp)+(1-y)*Math.log(1-pp));
         tr.brierSum+=(pp-y)*(pp-y);
         const ebi=getCalibrationBin(pp);
-        if(tr.eceBins[ebi]){
+        if(ebi>=0&&ebi<CALIB_BINS&&tr.eceBins[ebi]){
           tr.eceBins[ebi].sumP+=pp;
           tr.eceBins[ebi].sumY+=y;
           tr.eceBins[ebi].total++;
@@ -5318,7 +5327,7 @@ function AppInner(){
     const logLoss=tr.totalKnown?+(tr.logLossSum/tr.totalKnown).toFixed(4):0;
     const brier=tr.totalKnown?+(tr.brierSum/tr.totalKnown).toFixed(4):0;
     const ece=tr.totalKnown?+(
-      tr.eceBins.reduce((s,b)=>{
+      (tr.eceBins||[]).reduce((s,b)=>{
         if(!b.total)return s;
         const conf=b.sumP/b.total;
         const acc=b.sumY/b.total;
