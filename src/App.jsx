@@ -148,6 +148,7 @@ const SCORE_WEIGHT_STREAK=0.16;
 const SCORE_WEIGHT_BT=1.8;
 const SCORE_WEIGHT_WF=1.1;
 const SCORE_WEIGHT_NEAR1=1.8;
+// Unified score weights intentionally sum to 1.0.
 const UNIFIED_SCORE_WF_WEIGHT=0.34;
 const UNIFIED_SCORE_RECENT_WEIGHT=0.28;
 const UNIFIED_SCORE_REGIME_WEIGHT=0.20;
@@ -157,6 +158,7 @@ const CORR_STRONG_THRESHOLD=0.92;
 const CORR_MAX_PENALTY=0.55;
 const CORR_LOOKBACK=40;
 const CALIB_BINS=10;
+const WEAK_TAIL_STRONG_POOL_MIN=6;
 const MIN_DRIFT_SERIES_LENGTH=8;
 const REGIME_VOLATILE_STD=16;
 const REGIME_BIMODAL_STD=12;
@@ -2877,7 +2879,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const algoCache={};
   const perf={btMs:0,builtinMs:0,crossMs:0,dateMs:0,customMs:0,totalMs:0};
   const lightweight=!!W._lightweight;
-  const allowedAlgos=ALGO_NAMES.filter(n=>!DISABLED_ALGOS.has(n)&&algoAllowed(n,regime));
+  const allowedAlgos=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
   const autoBudget=lightweight?12:series.length>140?20:series.length>80?28:HEAVY_TOPK_EVAL;
   const algoBudget=Math.max(8,Math.min(W._algoBudget||autoBudget,HEAVY_TOPK_EVAL,allowedAlgos.length));
   const evalNames=selectAlgoNames(allowedAlgos,regime,algoBudget);
@@ -3628,7 +3630,7 @@ function filterGeneratedAlgos(candidates,data){
   const strong=scored.filter(ca=>ca._genScore>=AUTO_GENERATED_MIN_SCORE);
   const weak=scored.filter(ca=>ca._genScore<AUTO_GENERATED_MIN_SCORE);
   // Strict pruning: keep only a very small weak tail and only when strong pool is thin.
-  const weakKeepCount=strong.length>=6?0:Math.min(1,weak.length);
+  const weakKeepCount=strong.length>=WEAK_TAIL_STRONG_POOL_MIN?0:Math.min(1,weak.length);
   const selected=[...strong,...shuffleArray(weak).slice(0,weakKeepCount)];
   const seenCode=new Set();
   const out=[];
