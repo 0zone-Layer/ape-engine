@@ -3010,7 +3010,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     perf.btMs+=PERF_NOW()-btT0;
   }
   const builtInStrength={};
-  evalNames.forEach(name=>{
+  preEvalNames.forEach(name=>{
     const cached=algoCache[name]||{bt:0.05,wfBoost:1.0};
     const wfRate=clamp((cached.wfBoost-0.6)/0.8,0,1);
     const recentPerf=clamp(perfMap[name]?.rollingAccuracy||0,0,1);
@@ -5806,7 +5806,7 @@ function AppInner(){
                     <span style={{fontSize:9,opacity:.8,display:"block"}}>CSV with known outcomes</span>
                     <input type="file" accept=".csv,.txt" onChange={doAutoTrain} style={{display:"none"}}/>
                   </label>
-                  {autoTrainStatus?.running&&<button onClick={()=>{autoTrainRef.current=true;}} style={{background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#f87171",padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>⛔ Stop</button>}
+                  {autoTrainStatus?.running&&<button onClick={()=>{autoTrainRef.current=false;}} style={{background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#f87171",padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>⛔ Stop</button>}
                 </div>
               </div>
               {/* Progress */}
