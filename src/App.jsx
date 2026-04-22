@@ -4132,6 +4132,23 @@ function doExportJSON(state){
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v13-backup-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
+function doExportRowsJSON(data){
+  const payload=(data||[]).map(r=>({
+    row:r?.row??null,
+    A:r?.A??null,
+    B:r?.B??null,
+    C:r?.C??null,
+    D:r?.D??null,
+    E:r?.E??null,
+    F:r?.F??null,
+    G:r?.G??null,
+    date:r?.date??null
+  }));
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download="ape-v13-rows-"+Date.now()+".json";
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+}
 
 // ── WEIGHTS IMPORT/EXPORT ─────────────────────
 function doExportWeights(state){
@@ -4697,7 +4714,8 @@ function AppInner(){
           const exist=existIdx>=0?existingRows[existIdx]:null;
           const newlyKnownCols=COLS.filter(c=>inc[c]!=null&&(exist?.[c]==null));
           if(exist===null){
-            const entry={row:inc.row,A:inc.A,B:inc.B,C:inc.C,D:inc.D};
+            const entry={row:inc.row};
+            COLS.forEach(c=>{entry[c]=inc[c]??null;});
             if(inc.date)entry.date=inc.date;
             existingRows.push(entry);added++;
           } else {
@@ -5831,7 +5849,7 @@ function AppInner(){
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               <GB onClick={()=>setShowBulk(!showBulk)}>{showBulk?"▲":"▼"} Bulk Paste</GB>
               <GB onClick={()=>doExportCSV(rows,S.preds,S.predRow)}>📥 Export CSV</GB>
-              <GB onClick={()=>doExportJSON(S)}>📦 Export JSON</GB>
+              <GB onClick={()=>doExportRowsJSON(rows)}>📦 Export JSON</GB>
               <button onClick={()=>runValidationAudit(false)} style={{background:"rgba(96,165,250,.08)",border:"1px solid rgba(96,165,250,.25)",color:"#60a5fa",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>📊 Run Audit</button>
               <button onClick={()=>runValidationAudit(true)} style={{background:"rgba(52,211,153,.08)",border:"1px solid rgba(52,211,153,.25)",color:"#34d399",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>🧊 Freeze Baseline</button>
               <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>📂 Import JSON<input type="file" accept=".json" onChange={doImport} style={{display:"none"}}/></label>
