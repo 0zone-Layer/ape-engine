@@ -82,11 +82,11 @@ const MAX_BT_SERIES=160;
 const ROLLING_WINDOW_ROWS=100; // [UPDATED] strict rolling-window cap (50–100)
 const HEAVY_SAMPLE_POINTS=30;
 const HEAVY_UPDATE_INTERVAL=4;
-const HEAVY_TOPK_EVAL=40; // [UPDATED] evaluate top-K in 30–50 band
+const HEAVY_TOPK_EVAL=36; // [UPDATED] evaluate top-K in 20–40 band
 const HEAVY_TOPK_CUSTOM=20;
-const ACTIVE_ALGO_MIN=15;
-const ACTIVE_ALGO_MAX=24;
-const MAX_GENERATED_ALGOS=150;
+const ACTIVE_ALGO_MIN=20;
+const ACTIVE_ALGO_MAX=32;
+const MAX_GENERATED_ALGOS=120;
 const MUTATION_BUDGET_MAX=8;
 const MAX_WEIGHT_HISTORY_KEYS=180;
 const MAX_WEIGHT_ALGO_ENTRIES=180;
@@ -157,14 +157,14 @@ const SCORE_WEIGHT_BT=1.8;
 const SCORE_WEIGHT_WF=1.1;
 const SCORE_WEIGHT_NEAR1=1.8;
 // Unified score weights intentionally sum to 1.0.
-const UNIFIED_SCORE_WF_WEIGHT=0.28;
-const UNIFIED_SCORE_RECENT_WEIGHT=0.22;
-const UNIFIED_SCORE_REGIME_WEIGHT=0.18;
-const UNIFIED_SCORE_LOGLOSS_WEIGHT=0.16;
-const UNIFIED_SCORE_STABILITY_WEIGHT=0.16;
-const CORR_PENALTY_THRESHOLD=0.84;
+const UNIFIED_SCORE_WF_WEIGHT=0.45;
+const UNIFIED_SCORE_RECENT_WEIGHT=0.25;
+const UNIFIED_SCORE_REGIME_WEIGHT=0.15;
+const UNIFIED_SCORE_STABILITY_WEIGHT=0.10;
+const UNIFIED_SCORE_LOGLOSS_WEIGHT=0.05;
 const CORR_STRONG_THRESHOLD=0.92;
-const CORR_MAX_PENALTY=0.55;
+const CORR_SOFT_PENALTY=0.3;
+const CORR_MAX_PENALTY=0.40;
 const CORR_LOOKBACK=40;
 const CALIB_BINS=10;
 const CALIB_TEMP_DEFAULT=1;
@@ -172,6 +172,7 @@ const CALIB_TEMP_MIN=0.65;
 const CALIB_TEMP_MAX=2.2;
 const CALIB_TEMP_ADAPT_RATE=0.18;
 const CALIB_OVERCONF_MULTIPLIER=1.8;
+const CALIB_CONFIDENCE_BLEND=0.25;
 const UNCERTAINTY_CONF_SUPPRESS=0.35;
 const CONFIDENCE_PROB_DEFAULT=0.5;
 const AUDIT_ACCLOG_LOOKBACK=12;
@@ -212,6 +213,7 @@ const EVOLUTION_INSTABILITY_BETA=0.35;
 const EVOLUTION_NS_BLEND_WEIGHT=0.12;
 const EVOLUTION_STREAK_BLEND_WEIGHT=0.04;
 const EVOLUTION_NEAR1_BLEND_WEIGHT=0.08;
+const AUTO_GENERATED_MIN_EVAL_WINDOW=4;
 const LOGLOSS_EMA_DEFAULT=1.2;
 const LOGLOSS_EMA_DECAY=0.9;
 const LOGLOSS_EMA_WEIGHT=0.1;
@@ -236,6 +238,11 @@ const CONTROL_MUTATION_MAX=1.75;
 const CONTROL_MUTATION_MIN=0.55;
 const CONTROL_PRUNE_RELAX=0.55;
 const CONTROL_PRUNE_STRICT=1.2;
+const VALIDATION_ROLLING_WINDOW=24;
+const VALIDATION_WF_DROP_TOL=0.006;
+const VALIDATION_ROLLING_DROP_TOL=0.01;
+const VALIDATION_REGIME_DROP_TOL=0.03;
+const VALIDATION_DRAWDOWN_RISE_TOL=0.025;
 const DENSE_CLUSTER_RADIUS=4;
 const DENSE_CLUSTER_MASS_WEIGHT=0.12;
 const ENTROPY_BIN_SIZE=10;
@@ -278,6 +285,14 @@ function classifyAlgoCategory(name,code){
   if(/lcg|xor|prng|random|lfsr|mersenne|bbs|pcg|rule|wichmann|park|cong|fib/.test(src))return"STOCHASTIC";
   return"HEURISTIC";
 }
+function classifyEnsembleQuotaCategory(name,code){
+  const src=((name||"")+" "+(code||"")).toLowerCase();
+  const base=classifyAlgoCategory(name,code);
+  if(/moment|diff|gap|drift|trend|lin|quad|ar|step|lag|recur|slope|velocity/.test(src))return"MOMENTUM";
+  if(/markov|pattern|sticky|mem|phase|period|cycle|autocorr|hash|knn|cluster|pair|mirror|complement/.test(src)||base==="SEQUENCE")return"PATTERN";
+  if(base==="STATISTICAL")return"STATISTICAL";
+  return"MOMENTUM";
+}
 function getCategoryContextRole(category){
   if(category==="STATISTICAL")return new Set(["TREND","STABLE"]);
   if(category==="SEQUENCE")return new Set(["CYCLIC","MIXED"]);
@@ -313,6 +328,43 @@ function normalizeAdaptiveWeights(names,perfMap,currentContext){
   const normalized={};
   Object.entries(raw).forEach(([name,v])=>{normalized[name]=v/total;});
   return normalized;
+}
+function getAlgoSoftRegimeMultiplier(name,regime,category){
+  const rg=normalizeRegimeLabel(regime);
+  const src=((name||"")+" "+(category||"")).toLowerCase();
+  let mult=1;
+  if(rg==="CHAOTIC"){
+    if(category==="STATISTICAL")mult+=0.2;
+    if(/markov|pattern|sticky|mem|phase|period/.test(src))mult-=0.1;
+  }else if(rg==="CYCLIC"){
+    if(/markov|pattern|sticky|period|phase|cycle|autocorr/.test(src))mult+=0.2;
+    if(/trend|moment|diff|gap|lin|quad/.test(src))mult-=0.1;
+  }else if(rg==="TRENDING"){
+    if(/trend|moment|diff|gap|lin|quad|ar|step|lag|recur/.test(src))mult+=0.2;
+    if(/random|lcg|xor|rule|mersenne|bbs/.test(src))mult-=0.1;
+  }else{
+    if(category==="STATISTICAL")mult+=0.1;
+    if(/random|lcg|xor|rule|mersenne|bbs/.test(src))mult-=0.1;
+  }
+  return clamp(mult,0.7,1.3);
+}
+function selectAlgorithmsWithQuotas(names,strength,budget,codeByName){
+  const ranked=[...(names||[])].sort((a,b)=>(strength[b]||0)-(strength[a]||0));
+  if(!ranked.length||budget<=0)return[];
+  const cap=Math.min(Math.max(ACTIVE_ALGO_MIN,budget),Math.min(ACTIVE_ALGO_MAX,ranked.length));
+  const minPerBucket=Math.max(2,Math.floor(cap*0.12));
+  const buckets={STATISTICAL:[],PATTERN:[],MOMENTUM:[]};
+  ranked.forEach(name=>{
+    const bucket=classifyEnsembleQuotaCategory(name,codeByName&&codeByName[name]);
+    (buckets[bucket]||buckets.MOMENTUM).push(name);
+  });
+  const picked=new Set();
+  Object.values(buckets).forEach(list=>list.slice(0,minPerBucket).forEach(name=>picked.add(name)));
+  ranked.forEach(name=>{
+    if(picked.size>=cap)return;
+    picked.add(name);
+  });
+  return ranked.filter(name=>picked.has(name)).slice(0,cap);
 }
 function computeUnifiedAlgoScore({wfRate,recentPerf,regimeMatch,logLossScore,stability}){
   const wf=clamp(wfRate!=null?wfRate:0.05,0,1);
@@ -406,26 +458,36 @@ function pickDiverseAlgorithms(names,strength,matrix,cap){
   const selected=[];
   ranked.forEach(name=>{
     if(selected.length>=cap)return;
-    const tooClose=selected.some(prev=>Math.abs((matrix[prev]&&matrix[prev][name])||0)>=CORR_STRONG_THRESHOLD);
-    if(!tooClose){selected.push(name);return;}
-    if(selected.length<Math.max(4,Math.floor(cap*0.45)))selected.push(name);
+    const strongestCorr=selected.reduce((m,prev)=>Math.max(m,Math.abs((matrix[prev]&&matrix[prev][name])||0)),0);
+    if(strongestCorr<CORR_STRONG_THRESHOLD||selected.length<Math.max(6,Math.floor(cap*0.75))){
+      selected.push(name);
+    }
   });
-  return selected.length?selected:ranked.slice(0,cap);
+  if(selected.length<Math.min(cap,ranked.length)){
+    ranked.forEach(name=>{
+      if(selected.length>=cap)return;
+      if(!selected.includes(name))selected.push(name);
+    });
+  }
+  return selected.length?selected.slice(0,cap):ranked.slice(0,cap);
 }
 function getAlgoCorrelationPenalty(col,names,accLog,algoStrength){
   const penalties=Object.fromEntries((names||[]).map(n=>[n,0]));
   if(!accLog||accLog.length<8||!names||names.length<2)return penalties;
   const traces=buildAlgoTraceMap(col,names,accLog);
   for(let i=0;i<names.length;i++){
-    for(let j=i+1;j<names.length;j++){
-      const a=names[i],b=names[j];
+    const a=names[i];
+    let corrSum=0,corrCount=0;
+    for(let j=0;j<names.length;j++){
+      if(i===j)continue;
+      const b=names[j];
       const c=Math.abs(traceCorr(traces[a],traces[b]));
-      if(c<CORR_PENALTY_THRESHOLD)continue;
-      const pa=algoStrength[a]||0,pb=algoStrength[b]||0;
-      const weaker=pa>=pb?b:a;
-      const p=clamp((c-CORR_PENALTY_THRESHOLD)/(1-CORR_PENALTY_THRESHOLD),0,1)*CORR_MAX_PENALTY;
-      penalties[weaker]=Math.max(penalties[weaker]||0,p);
+      if(!Number.isFinite(c))continue;
+      corrSum+=c;
+      corrCount++;
     }
+    const avgCorr=corrCount?corrSum/corrCount:0;
+    penalties[a]=clamp(CORR_SOFT_PENALTY*avgCorr,0,CORR_MAX_PENALTY);
   }
   return penalties;
 }
@@ -452,6 +514,33 @@ function computePmfEntropy(votes){
   const maxH=Math.log2(vals.length||1);
   if(maxH<=0)return 0;
   return clamp(h/maxH,0,1);
+}
+function computeWalkForwardValidationMetrics(accLog,regimeStats){
+  const entries=(accLog||[]).filter(e=>(e?.knownCount||0)>0);
+  if(!entries.length)return{walkForwardAccuracy:0,rollingHitRate:0,drawdown:1,regimeConsistency:0};
+  const rates=entries.map(e=>clamp((e.exactCount||0)/Math.max(1,e.knownCount||0),0,1));
+  const walkForwardAccuracy=clamp(M.mean(rates),0,1);
+  const rollingHitRate=clamp(M.mean(rates.slice(-VALIDATION_ROLLING_WINDOW)),0,1);
+  let cumulativeExact=0,cumulativeKnown=0,peak=0,maxDrop=0;
+  entries.forEach(e=>{
+    cumulativeExact+=(e.exactCount||0);
+    cumulativeKnown+=Math.max(1,e.knownCount||0);
+    const running=clamp(cumulativeExact/cumulativeKnown,0,1);
+    peak=Math.max(peak,running);
+    maxDrop=Math.max(maxDrop,peak-running);
+  });
+  const regimeRates=Object.values(regimeStats||{})
+    .filter(v=>(v?.total||0)>=3)
+    .map(v=>clamp((v.exact||0)/Math.max(1,v.total||0),0,1));
+  const regimeConsistency=regimeRates.length>=2
+    ?clamp(1-(M.std(regimeRates)/(Math.max(0.05,M.mean(regimeRates)))),0,1)
+    :0.7;
+  return{
+    walkForwardAccuracy:+walkForwardAccuracy.toFixed(4),
+    rollingHitRate:+rollingHitRate.toFixed(4),
+    drawdown:+clamp(maxDrop,0,1).toFixed(4),
+    regimeConsistency:+regimeConsistency.toFixed(4)
+  };
 }
 function estimateAlgoComplexity(code){
   if(!code||typeof code!=="string")return 0.4;
@@ -2898,7 +2987,7 @@ function getRegime(series){
   if(volatility>REGIME_CHAOTIC_STD_ALT&&entropy>REGIME_CHAOTIC_ENTROPY_ALT)return"CHAOTIC";
   return REGIME_DEFAULT;
 }
-// Regime-gated algo pool: FULL exclusion not just multipliers
+// Soft regime hints: no hard exclusions.
 const REGIME_POOLS={
   CHAOTIC:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","MirrorNumber"]),
   CYCLIC:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod","MirrorNumber","MirrorAt50","ComplementPairs","ReverseSeq"]),
@@ -2906,9 +2995,7 @@ const REGIME_POOLS={
   STABLE:null
 };
 function algoAllowed(name,regime){
-  const pool=REGIME_POOLS[normalizeRegimeLabel(regime)];
-  if(!pool)return true;
-  return pool.has(name);
+  return true;
 }
 function rankAlgoForRegime(name,regime){
   const rg=normalizeRegimeLabel(regime);
@@ -2961,6 +3048,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const gw=W.global||{},rw=W.perRow||{},rnw=W.perRange||{};
   const perfMap=W.performance||{};
   const ns=W.neuralScores||{};
+  const adaptiveControl=W._adaptiveControl||{status:"balanced"};
   const maxRow=data.length?data.reduce((m,r)=>r.row>m?r.row:m,0)||1:1;
   const predRow=maxRow+1;
   const curRange=Math.floor((series[series.length-1]||0)/25);
@@ -2980,9 +3068,10 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const perf={btMs:0,builtinMs:0,crossMs:0,dateMs:0,customMs:0,totalMs:0};
   const lightweight=!!W._lightweight;
   const allowedAlgos=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
-  const autoBudget=lightweight?ACTIVE_ALGO_MIN:series.length>140?ACTIVE_ALGO_MAX:series.length>80?Math.min(ACTIVE_ALGO_MAX,20):ACTIVE_ALGO_MAX;
+  const autoBudget=lightweight?ACTIVE_ALGO_MIN:series.length>140?ACTIVE_ALGO_MAX:series.length>80?Math.min(ACTIVE_ALGO_MAX,26):ACTIVE_ALGO_MAX;
   const algoBudget=Math.max(Math.min(ACTIVE_ALGO_MIN,allowedAlgos.length),Math.min(W._algoBudget||autoBudget,ACTIVE_ALGO_MAX,allowedAlgos.length));
-  const preEvalNames=selectAlgoNames(allowedAlgos,regime,algoBudget);
+  const preEvalCap=Math.min(allowedAlgos.length,Math.max(algoBudget+8,Math.round(algoBudget*1.5)));
+  const preEvalNames=selectAlgoNames(allowedAlgos,regime,preEvalCap);
 
   // ── Pre-cache: use globalSeries for btScore to leverage all historical data ──
   if(btSeries.length>=5){
@@ -3020,8 +3109,9 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     const regimeMatch=getAlgoRegimeMatchScore(name,currentContext,category);
     builtInStrength[name]=computeUnifiedAlgoScore({wfRate,recentPerf,regimeMatch,logLossScore,stability});
   });
-  const corrMatrix=buildAlgoCorrelationMatrix(col,preEvalNames,W._accLog||[]);
-  const evalNames=pickDiverseAlgorithms(preEvalNames,builtInStrength,corrMatrix,algoBudget);
+  const quotaSelected=selectAlgorithmsWithQuotas(preEvalNames,builtInStrength,algoBudget,A);
+  const corrMatrix=buildAlgoCorrelationMatrix(col,quotaSelected,W._accLog||[]);
+  const evalNames=pickDiverseAlgorithms(quotaSelected,builtInStrength,corrMatrix,algoBudget);
   const builtInCorrPenalty=getAlgoCorrelationPenalty(col,evalNames,W._accLog||[],builtInStrength);
 
   // built-in algos — predictions run on LOCAL series (recent context), scored on global
@@ -3038,11 +3128,13 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const category=classifyAlgoCategory(name);
       const stateWeight=clamp((Math.max(0.05,lw)+Math.max(0.1,rowW)+Math.max(0.1,ranW)+Math.max(0.1,regW))/4,0.08,3.2);
       const baseScore=builtInStrength[name]||0.05;
-      const corrPenalty=builtInCorrPenalty[name]||0;
-      const w=Math.max(0.02,stateWeight*baseScore*(1-corrPenalty));
+      const corrPenalty=(builtInCorrPenalty[name]||0)*(adaptiveControl.status==="recovering"?0.7:1);
+      const regimeMult=getAlgoSoftRegimeMultiplier(name,regime,category);
+      const coreBoost=adaptiveControl.status==="recovering"&&CORE_ALGO_PRIORITY.includes(name)?1.08:1;
+      const w=Math.max(0.02,stateWeight*baseScore*(1-corrPenalty)*regimeMult*coreBoost);
       const preds=fn(series);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
-      details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin",class:classifyAlgo(name),category,context:currentContext,perf:+(perfMap[name]?.rollingAccuracy||0).toFixed(3),corrPenalty:+corrPenalty.toFixed(3),unifiedScore:+baseScore.toFixed(3),wf:+clamp((wfBoost-0.6)/0.8,0,1).toFixed(3)};
+      details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin",class:classifyAlgo(name),category,context:currentContext,perf:+(perfMap[name]?.rollingAccuracy||0).toFixed(3),corrPenalty:+corrPenalty.toFixed(3),regimeMult:+regimeMult.toFixed(3),unifiedScore:+baseScore.toFixed(3),wf:+clamp((wfBoost-0.6)/0.8,0,1).toFixed(3)};
     }catch(e){}
   });
   perf.builtinMs+=PERF_NOW()-builtinT0;
@@ -3199,9 +3291,11 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     const stability=getAlgoStabilityScore(perfMap[ca.name]);
     customStrength[ca.name]=computeUnifiedAlgoScore({wfRate,recentPerf,regimeMatch,logLossScore,stability});
   });
-  const customCorrPenalty=getAlgoCorrelationPenalty(col,scopedCustoms.map(c=>c.name),W._accLog||[],customStrength);
+  const customEvalNames=selectAlgorithmsWithQuotas(scopedCustoms.map(c=>c.name),customStrength,customBudget,Object.fromEntries(scopedCustoms.map(c=>[c.name,c.code])));
+  const scopedCustomEval=scopedCustoms.filter(c=>customEvalNames.includes(c.name));
+  const customCorrPenalty=getAlgoCorrelationPenalty(col,customEvalNames,W._accLog||[],customStrength);
   // custom algos — run predictions on local series
-  scopedCustoms.forEach(ca=>{
+  scopedCustomEval.forEach(ca=>{
     if(!ca.enabled||!ca.code)return;
     try{
       const cached=algoCache[ca.name];if(!cached)return;
@@ -3214,11 +3308,12 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const category=classifyAlgoCategory(ca.name,ca.code);
       const stateWeight=clamp((Math.max(0.05,lw)+Math.max(0.1,rowW)+Math.max(0.1,ranW)+Math.max(0.1,regW))/4,0.08,3.2);
       const baseScore=customStrength[ca.name]||0.05;
-      const corrPenalty=customCorrPenalty[ca.name]||0;
-      const w=Math.max(0.02,stateWeight*baseScore*(1-corrPenalty));
+      const corrPenalty=(customCorrPenalty[ca.name]||0)*(adaptiveControl.status==="recovering"?0.7:1);
+      const regimeMult=getAlgoSoftRegimeMultiplier(ca.name,regime,category);
+      const w=Math.max(0.02,stateWeight*baseScore*(1-corrPenalty)*regimeMult);
       const preds=fn(series);
       preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1)));
-      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom",class:ca.class||classifyAlgo(ca.name,ca.code),category,context:currentContext,perf:+(perfMap[ca.name]?.rollingAccuracy||0).toFixed(3),corrPenalty:+corrPenalty.toFixed(3),unifiedScore:+baseScore.toFixed(3),wf:+clamp((wfBoost-0.6)/0.8,0,1).toFixed(3)};
+      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom",class:ca.class||classifyAlgo(ca.name,ca.code),category,context:currentContext,perf:+(perfMap[ca.name]?.rollingAccuracy||0).toFixed(3),corrPenalty:+corrPenalty.toFixed(3),regimeMult:+regimeMult.toFixed(3),unifiedScore:+baseScore.toFixed(3),wf:+clamp((wfBoost-0.6)/0.8,0,1).toFixed(3)};
     }catch(e){}
   });
   perf.customMs+=PERF_NOW()-customT0;
@@ -3282,7 +3377,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const pmfEntropy=computePmfEntropy(votes);
   const rawProb=clamp(total?topVote/total:0,0.01,0.99);
   const calibratedProb=getCalibratedProb(rawProb,W._calibration||null);
-  const confProb=clamp(calibratedProb*(1-UNCERTAINTY_CONF_SUPPRESS*pmfEntropy),0.01,0.99);
+  const blendedProb=clamp(rawProb*(1-CALIB_CONFIDENCE_BLEND)+calibratedProb*CALIB_CONFIDENCE_BLEND,0.01,0.99);
+  const confProb=clamp(blendedProb*(1-UNCERTAINTY_CONF_SUPPRESS*pmfEntropy),0.01,0.99);
   const confPct=Math.round(confProb*100);
   const conf=confPct+"%";
   const confClr=confPct>=65?"#34d399":confPct>=45?"#fbbf24":"#f87171";
@@ -3446,7 +3542,7 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
     byContext:{...catPrev.byContext,[context]:+(catCtxPrev*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)).toFixed(4)}
   };
 }
-function stabilizeMult(mult,upCap=1.18,downCap=0.86){
+function stabilizeMult(mult,upCap=1.12,downCap=0.9){
   return clamp(mult,downCap,upCap);
 }
 
@@ -3474,7 +3570,7 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     updateAlgoPerformance(perf,name,p,actual,{class:info.class||classifyAlgo(name),category:info.category||classifyAlgoCategory(name),context:pred.context||"MIXED",numberHit});
     const mult=exactLike?WEIGHT_MULT_EXACT:nr?WEIGHT_MULT_NEAR:WEIGHT_MULT_MISS;
     const mom=gw["_m_"+name]!=null?gw["_m_"+name]:1.0;
-    const newMom=0.75*mom+0.25*mult;
+    const newMom=0.82*mom+0.18*mult;
     gw["_m_"+name]=Math.min(2.0,Math.max(0.3,newMom));
     if(exactLike){
       gw["_main_"+name]=1;
@@ -3484,10 +3580,10 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
       if(ok(predRow))gw["_lastTop5HitRow_"+name]=predRow;
     }
     const prev=gw[name]!=null?gw[name]:1;
-    const decay=prev>1?0.96:0.98;
+    const decay=prev>1?0.965:0.985;
     // Cold-streak dampening: if momentum < 0.85 for 2+ misses, increase decay speed
-    const coldDamp=newMom<0.82?0.92:decay;
-    gw[name]=Math.min(6,Math.max(0.04,prev*stabilizeMult(newMom,1.16,0.88)))*coldDamp+(1-coldDamp);
+    const coldDamp=newMom<0.82?0.94:decay;
+    gw[name]=Math.min(6,Math.max(0.04,prev*stabilizeMult(newMom,1.12,0.9)))*coldDamp+(1-coldDamp);
     const rp=rw[predRow][name]!=null?rw[predRow][name]:1;
     rw[predRow][name]=Math.min(5,Math.max(0.05,rp*stabilizeMult(exactLike?1.5:nr?1.15:0.75)));
     const rn=rnw[cr][name]!=null?rnw[cr][name]:1;
@@ -3745,12 +3841,13 @@ function scoreGeneratedAlgoCandidate(ca,data){
   const col=generatedAlgoTargetCol(ca.name);
   if(!col)return null;
   const s=getSeries(col,data);
-  if(s.length<AUTO_GENERATED_SCORE_MIN_SERIES)return null;
+  if(s.length<Math.max(AUTO_GENERATED_SCORE_MIN_SERIES,AUTO_GENERATED_MIN_EVAL_WINDOW+2))return null;
   const bt=btScore(fn,s);
   let wfRate=bt;
   if(s.length>=10){
     const wf=walkFwd(fn,s);
-    if(wf&&wf.total>=2)wfRate=(wf.exact+wf.near*0.4)/wf.total;
+    if(!wf||wf.total<AUTO_GENERATED_MIN_EVAL_WINDOW)return null;
+    wfRate=(wf.exact+wf.near*0.4)/wf.total;
   }
   const accuracy=bt*AUTO_GENERATED_SCORE_BT_WEIGHT+wfRate*AUTO_GENERATED_SCORE_WF_WEIGHT;
   const complexity=estimateAlgoComplexity(ca.code);
@@ -3768,10 +3865,33 @@ function filterGeneratedAlgos(candidates,data){
   const weakKeepCount=strong.length>=WEAK_TAIL_STRONG_POOL_MIN?0:Math.min(1,weak.length);
   const selected=[...strong,...shuffleArray(weak).slice(0,weakKeepCount)];
   const seenCode=new Set();
+  const seenBehavior=new Set();
   const out=[];
+  const behaviorSignature=ca=>{
+    const fn=makeCustomFn(ca.code);
+    const col=generatedAlgoTargetCol(ca.name);
+    if(!fn||!col)return null;
+    const s=getSeries(col,data||[]);
+    if(!s||s.length<8)return null;
+    const start=Math.max(4,s.length-12);
+    const sig=[];
+    for(let i=start;i<s.length;i+=2){
+      const hist=s.slice(0,i);
+      if(hist.length<4)continue;
+      try{
+        const p=fn(hist)||[];
+        sig.push(ok(p[0])?M.mod(Math.round(p[0])):"x");
+      }catch(e){sig.push("x");}
+    }
+    return sig.length?col+"|"+sig.join(","):null;
+  };
   selected.forEach(ca=>{
-    if(seenCode.has(ca.code))return;
-    seenCode.add(ca.code);
+    const codeKey=(ca.code||"").replace(/\s+/g," ").trim();
+    if(seenCode.has(codeKey))return;
+    const sig=behaviorSignature(ca);
+    if(sig&&seenBehavior.has(sig))return;
+    seenCode.add(codeKey);
+    if(sig)seenBehavior.add(sig);
     const {_genScore,...clean}=ca;
     out.push(clean);
   });
@@ -4846,7 +4966,7 @@ function AppInner(){
     const _sharedMeta=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     const _slimAccLog=(S.accLog||[]).slice(-10);
     COLS.forEach(col=>{
-      const W={...S.weights[col],_metaModel:_sharedMeta,_accLog:_slimAccLog,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null};
+      const W={...S.weights[col],_metaModel:_sharedMeta,_accLog:_slimAccLog,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null,_adaptiveControl:S.adaptiveControl||{status:"balanced"}};
       result[col]=predictCol(col,scopedRows,W,S.customs,tDate,S.datasets,S.patternBank);
     });
     // Joint column hint
@@ -4915,7 +5035,7 @@ function AppInner(){
       COLS.forEach(col=>{
         const actual=row[col];
         if(!ok(actual))return;
-        const W={...S.weights[col],_accLog:(S.accLog||[]).slice(-AUDIT_ACCLOG_LOOKBACK),_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null};
+        const W={...S.weights[col],_accLog:(S.accLog||[]).slice(-AUDIT_ACCLOG_LOOKBACK),_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null,_adaptiveControl:S.adaptiveControl||{status:"balanced"}};
         const pred=predictCol(col,getWindowRows(hist,ROLLING_WINDOW_ROWS),W,S.customs,row.date||"",S.datasets,S.patternBank);
         if(!pred||!pred.top5||!pred.top5.length)return;
         const top1=pred.top5[0].value;
@@ -5015,7 +5135,7 @@ function AppInner(){
     while(unresolved.length){
       let best=null;
       unresolved.forEach(col=>{
-        const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null},S.customs,S.predDate||"",S.datasets,S.patternBank);
+        const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null,_adaptiveControl:S.adaptiveControl||{status:"balanced"}},S.customs,S.predDate||"",S.datasets,S.patternBank);
         if(!pred||!pred.top5||!pred.top5[0])return;
         const score=computePredictionStrength(pred);
         if(!best||score>best.score)best={col,pred,score};
@@ -5359,7 +5479,8 @@ function AppInner(){
           _leaderboard:tr.leaderboard[col]||{},
           _contextMemory:tr.contextMemory||{},
           _calibration:tr.calibration[col]||null,
-          _algoBudget:tr.lightweight?10:HEAVY_TOPK_EVAL,
+          _algoBudget:tr.lightweight?Math.max(16,ACTIVE_ALGO_MIN):HEAVY_TOPK_EVAL,
+          _adaptiveControl:tr.adaptiveControl||{status:"balanced"},
           _lightweight:tr.lightweight};
         rowPreds[col]=predictCol(col,scopedHistory,W,tr.customs,csvRow.date||"",tr.allDs,tr.patternBank);
       });
