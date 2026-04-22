@@ -13,9 +13,10 @@ const M={
   near:(p,a,t)=>M.cd(p,a)<=(t||2),
   nearR:(p,a,regime)=>{
     const rg=(regime||"").toString().toUpperCase();
-    if(rg==="CHAOTIC"||rg==="VOLATILE"||rg==="BIMODAL")return M.cd(p,a)<=4;
-    if(rg==="STABLE"||rg==="FLAT"||rg==="NORMAL")return M.cd(p,a)<=1;
-    return M.cd(p,a)<=2;
+    // Legacy aliases are kept for imported older state snapshots.
+    if(rg==="CHAOTIC"||rg==="VOLATILE"||rg==="BIMODAL")return M.cd(p,a)<=NEARR_THRESHOLD_CHAOTIC;
+    if(rg==="STABLE"||rg==="FLAT"||rg==="NORMAL")return M.cd(p,a)<=NEARR_THRESHOLD_STABLE;
+    return M.cd(p,a)<=NEARR_THRESHOLD_DEFAULT;
   },
   std:a=>{if(a.length<2)return 0;const avg=M.mean(a);return Math.sqrt(a.reduce((s,v)=>s+(v-avg)**2,0)/(a.length-1));},
   median:a=>{const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;},
@@ -166,16 +167,24 @@ const CORR_STRONG_THRESHOLD=0.92;
 const CORR_MAX_PENALTY=0.55;
 const CORR_LOOKBACK=40;
 const CALIB_BINS=10;
+const CALIB_TEMP_DEFAULT=1;
 const CALIB_TEMP_MIN=0.65;
 const CALIB_TEMP_MAX=2.2;
 const CALIB_TEMP_ADAPT_RATE=0.18;
+const CALIB_OVERCONF_MULTIPLIER=1.8;
 const UNCERTAINTY_CONF_SUPPRESS=0.35;
+const CONFIDENCE_PROB_DEFAULT=0.5;
+const AUDIT_ACCLOG_LOOKBACK=12;
 const WEAK_TAIL_STRONG_POOL_MIN=6;
 const MIN_DRIFT_SERIES_LENGTH=8;
+const REGIME_DEFAULT="STABLE";
+const NEARR_THRESHOLD_CHAOTIC=4;
+const NEARR_THRESHOLD_STABLE=1;
+const NEARR_THRESHOLD_DEFAULT=2;
 const REGIME_VOLATILE_STD=16;
-const REGIME_BIMODAL_STD=12;
+const REGIME_CHAOTIC_STD_ALT=12;
 const REGIME_VOLATILE_ENTROPY=0.84;
-const REGIME_BIMODAL_ENTROPY=0.7;
+const REGIME_CHAOTIC_ENTROPY_ALT=0.7;
 const REGIME_VOLATILE_DRIFT=0.75;
 const REGIME_FLAT_DRIFT_MAX=0.45;
 const REWARD_EXACT=2.6;
@@ -200,6 +209,13 @@ const AUTO_GENERATED_SCORE_BT_WEIGHT=0.72;
 const AUTO_GENERATED_SCORE_WF_WEIGHT=0.28;
 const EVOLUTION_COMPLEXITY_ALPHA=0.22;
 const EVOLUTION_INSTABILITY_BETA=0.35;
+const EVOLUTION_NS_BLEND_WEIGHT=0.12;
+const EVOLUTION_STREAK_BLEND_WEIGHT=0.04;
+const EVOLUTION_NEAR1_BLEND_WEIGHT=0.08;
+const LOGLOSS_EMA_DEFAULT=1.2;
+const LOGLOSS_EMA_DECAY=0.9;
+const LOGLOSS_EMA_WEIGHT=0.1;
+const LOGLOSS_GATE_TOLERANCE=0.005;
 const CONTEXT_WINDOW_MIN=50;
 const CONTEXT_WINDOW_MAX=100; // [UPDATED] strict context window cap
 const CONTEXTS=["TREND","CYCLIC","STABLE","CHAOTIC","MIXED"];
@@ -326,7 +342,7 @@ function getAlgoStabilityScore(perf){
 }
 function getAlgoLogLossScore(perf){
   if(!perf)return 0.45;
-  const ll=perf.logLossEMA!=null?perf.logLossEMA:1.1;
+  const ll=perf.logLossEMA!=null?perf.logLossEMA:LOGLOSS_EMA_DEFAULT;
   return clamp(1-(ll/4),0,1);
 }
 function getCalibrationBin(prob){
@@ -334,13 +350,13 @@ function getCalibrationBin(prob){
 }
 function applyTemperatureScaling(prob,temperature){
   const p=clamp(prob,0.01,0.99);
-  const t=clamp(temperature!=null?temperature:1,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
+  const t=clamp(temperature!=null?temperature:CALIB_TEMP_DEFAULT,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
   const logit=Math.log(p/(1-p));
   return clamp(1/(1+Math.exp(-(logit/t))),0.01,0.99);
 }
 function getCalibratedProb(prob,cal){
   const p=clamp(prob,0.01,0.99);
-  const temp=cal&&ok(cal.temperature)?cal.temperature:1;
+  const temp=cal&&ok(cal.temperature)?cal.temperature:CALIB_TEMP_DEFAULT;
   return applyTemperatureScaling(p,temp);
 }
 function buildAlgoTraceMap(col,names,accLog){
@@ -418,14 +434,14 @@ function mapContextToRegime(context){
   if(context==="CYCLIC")return"CYCLIC";
   if(context==="STABLE")return"STABLE";
   if(context==="CHAOTIC")return"CHAOTIC";
-  return"STABLE";
+  return REGIME_DEFAULT;
 }
 function normalizeRegimeLabel(regime){
   const r=(regime||"").toString().toUpperCase();
   if(r==="TRENDING"||r==="TREND")return"TRENDING";
   if(r==="CYCLIC"||r==="FLAT")return"CYCLIC";
   if(r==="CHAOTIC"||r==="VOLATILE"||r==="BIMODAL")return"CHAOTIC";
-  return"STABLE";
+  return REGIME_DEFAULT;
 }
 function computePmfEntropy(votes){
   const vals=Object.values(votes||{}).filter(v=>v>0);
@@ -544,7 +560,7 @@ const normalizeCalibrationModel=cal=>{
   if(cal&&Array.isArray(cal.bins)){
     return{
       ...cal,
-      temperature:clamp(ok(cal.temperature)?cal.temperature:1,CALIB_TEMP_MIN,CALIB_TEMP_MAX),
+      temperature:clamp(ok(cal.temperature)?cal.temperature:CALIB_TEMP_DEFAULT,CALIB_TEMP_MIN,CALIB_TEMP_MAX),
       sumProb:ok(cal.sumProb)?cal.sumProb:0,
       sumOutcome:ok(cal.sumOutcome)?cal.sumOutcome:0
     };
@@ -559,7 +575,7 @@ const normalizeCalibrationModel=cal=>{
     });
   }
   const total=bins.reduce((s,b)=>s+(b.total||0),0);
-  return{bins,total,brierSum:0,temperature:1,sumProb:0,sumOutcome:0};
+  return{bins,total,brierSum:0,temperature:CALIB_TEMP_DEFAULT,sumProb:0,sumOutcome:0};
 };
 const normalizeCalibrationMap=map=>Object.fromEntries(COLS.map(c=>[c,normalizeCalibrationModel(map&&map[c]?map[c]:{})]));
 // Cached algo count — avoids Object.keys(A) in every render
@@ -2697,7 +2713,7 @@ function buildMetaModel(accLog){
 // Calibration accuracy → learning-rate multiplier for numeric probabilities
 function getCalibMult(prob,cal){
   if(!cal||!Array.isArray(cal.bins))return 1.0;
-  const p=clamp(prob!=null?prob:0.5,0.01,0.99);
+  const p=clamp(prob!=null?prob:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
   const b=getCalibrationBin(p);
   const stat=cal.bins[b];
   if(!stat||stat.total<5)return 1.0;
@@ -2870,7 +2886,7 @@ function classifyContext(series,data,col){
 }
 // ── REGIME DETECTION ──────────────────────────
 function getRegime(series){
-  if(series.length<6)return"STABLE";
+  if(series.length<6)return REGIME_DEFAULT;
   const slope=Math.abs(getSeriesSlope(series.slice(-Math.min(24,series.length))));
   const periodicity=getPeriodicityStrength(series.slice(-Math.min(30,series.length)));
   const volatility=M.std(series.slice(-Math.min(18,series.length)));
@@ -2879,8 +2895,8 @@ function getRegime(series){
   if(periodicity>=0.55&&drift.magnitude<REGIME_FLAT_DRIFT_MAX)return"CYCLIC";
   if(slope>=1.05&&volatility>=5)return"TRENDING";
   if(volatility>REGIME_VOLATILE_STD||entropy>REGIME_VOLATILE_ENTROPY||drift.magnitude>REGIME_VOLATILE_DRIFT)return"CHAOTIC";
-  if(volatility>REGIME_BIMODAL_STD&&entropy>REGIME_BIMODAL_ENTROPY)return"CHAOTIC";
-  return"STABLE";
+  if(volatility>REGIME_CHAOTIC_STD_ALT&&entropy>REGIME_CHAOTIC_ENTROPY_ALT)return"CHAOTIC";
+  return REGIME_DEFAULT;
 }
 // Regime-gated algo pool: FULL exclusion not just multipliers
 const REGIME_POOLS={
@@ -3287,7 +3303,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     gatedOutAlgorithms:allowedAlgos.filter(n=>!evalNames.includes(n)),
     unifiedScores:Object.fromEntries(evalNames.map(n=>[n,+((builtInStrength[n]||0)).toFixed(4)])),
     correlation:corrMatrix,
-    calibration:{rawProb:+rawProb.toFixed(4),calibratedProb:+calibratedProb.toFixed(4),temperature:+clamp(W?._calibration?.temperature??1,CALIB_TEMP_MIN,CALIB_TEMP_MAX).toFixed(3)},
+    calibration:{rawProb:+rawProb.toFixed(4),calibratedProb:+calibratedProb.toFixed(4),temperature:+clamp(W?._calibration?.temperature??CALIB_TEMP_DEFAULT,CALIB_TEMP_MIN,CALIB_TEMP_MAX).toFixed(3)},
     uncertainty:{pmfEntropy:+pmfEntropy.toFixed(4)}
   };
   perf.totalMs=PERF_NOW()-tStart;
@@ -3347,14 +3363,14 @@ function updateAlgoLeaderboard(lb,col,pred){
 
 // ── CALIBRATION TRACKER ─────────────────────────
 function updateCalibration(prob,wasExact,prevCal){
-  const base=prevCal&&Array.isArray(prevCal.bins)?prevCal:{bins:Array.from({length:CALIB_BINS},()=>({right:0,total:0})),total:0,brierSum:0,temperature:1,sumProb:0,sumOutcome:0};
+  const base=prevCal&&Array.isArray(prevCal.bins)?prevCal:{bins:Array.from({length:CALIB_BINS},()=>({right:0,total:0})),total:0,brierSum:0,temperature:CALIB_TEMP_DEFAULT,sumProb:0,sumOutcome:0};
   const bins=base.bins.map(b=>({right:b.right||0,total:b.total||0}));
-  const bi=getCalibrationBin(prob!=null?prob:0.5);
+  const bi=getCalibrationBin(prob!=null?prob:CONFIDENCE_PROB_DEFAULT);
   bins[bi].total++;
   if(wasExact)bins[bi].right++;
   const total=(base.total||0)+1;
   const brierPrev=base.brierSum||0;
-  const p=clamp(prob!=null?prob:0.5,0.01,0.99);
+  const p=clamp(prob!=null?prob:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
   const outcome=wasExact?1:0;
   const brierSum=brierPrev+(p-outcome)*(p-outcome);
   const sumProb=(base.sumProb||0)+p;
@@ -3362,14 +3378,14 @@ function updateCalibration(prob,wasExact,prevCal){
   const avgProb=sumProb/total;
   const avgOutcome=sumOutcome/total;
   const overConf=avgProb-avgOutcome;
-  const prevTemp=clamp(ok(base.temperature)?base.temperature:1,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
-  const targetTemp=clamp(1+overConf*1.8,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
+  const prevTemp=clamp(ok(base.temperature)?base.temperature:CALIB_TEMP_DEFAULT,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
+  const targetTemp=clamp(CALIB_TEMP_DEFAULT+overConf*CALIB_OVERCONF_MULTIPLIER,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
   const temperature=clamp(prevTemp*(1-CALIB_TEMP_ADAPT_RATE)+targetTemp*CALIB_TEMP_ADAPT_RATE,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
   const cal={bins,total,brierSum,sumProb,sumOutcome,temperature};
   return cal;
 }
 function getCalibrationLabel(prob,cal){
-  const p=clamp(prob!=null?prob:0.5,0.01,0.99);
+  const p=clamp(prob!=null?prob:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
   const calibrated=getCalibratedProb(p,cal);
   return Math.round(calibrated*100)+"%";
 }
@@ -3399,7 +3415,7 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const contextScore={...(prev.contextScore||{}),[context]:prevCtxScore*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)};
   const errMean=errSeries.length?M.mean(errSeries):0;
   const errorVariance=errSeries.length?errSeries.reduce((s,v)=>s+(v-errMean)**2,0)/errSeries.length:0;
-  const logLossEMA=((prev.logLossEMA!=null?prev.logLossEMA:1.2)*0.9)+(logLoss*0.1);
+  const logLossEMA=((prev.logLossEMA!=null?prev.logLossEMA:LOGLOSS_EMA_DEFAULT)*LOGLOSS_EMA_DECAY)+(logLoss*LOGLOSS_EMA_WEIGHT);
   perf[name]={
     ...prev,
     class:prev.class||meta.class||classifyAlgo(name),
@@ -3910,7 +3926,7 @@ function scoreAlgo(ca,weights,rows,btCache){
   const instability=clamp(Math.abs(avgBt-avgWf)+(1-clamp(avgNear1,0,1))*0.35,0,1);
   const fitness=computeEvolutionFitness(accuracy,complexity,instability);
   return{
-    score:fitness+avgNs*0.12+avgStreak*0.04+avgNear1*0.08,
+    score:fitness+avgNs*EVOLUTION_NS_BLEND_WEIGHT+avgStreak*EVOLUTION_STREAK_BLEND_WEIGHT+avgNear1*EVOLUTION_NEAR1_BLEND_WEIGHT,
     fitness,accuracy,complexity,instability,avgNs,avgStreak,avgBt,avgWf,avgNear1,nsCount,btCnt
   };
 }
@@ -4881,12 +4897,12 @@ function AppInner(){
       COLS.forEach(col=>{
         const actual=row[col];
         if(!ok(actual))return;
-        const W={...S.weights[col],_accLog:(S.accLog||[]).slice(-12),_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null};
+        const W={...S.weights[col],_accLog:(S.accLog||[]).slice(-AUDIT_ACCLOG_LOOKBACK),_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null};
         const pred=predictCol(col,getWindowRows(hist,ROLLING_WINDOW_ROWS),W,S.customs,row.date||"",S.datasets,S.patternBank);
         if(!pred||!pred.top5||!pred.top5.length)return;
         const top1=pred.top5[0].value;
         const hit=isExactOrReversed(top1,actual);
-        const p=clamp(pred.confProb!=null?pred.confProb:0.5,0.01,0.99);
+        const p=clamp(pred.confProb!=null?pred.confProb:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
         const y=hit?1:0;
         const ll=-(y*Math.log(p)+(1-y)*Math.log(1-p));
         const rg=normalizeRegimeLabel(pred.regime);
@@ -5353,7 +5369,7 @@ function AppInner(){
         rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,skipped:false};
         if(exactLike)rowExact++;rowKnown++;
         const regime=normalizeRegimeLabel(pred.regime||"STABLE");
-        const pp=clamp(pred.confProb!=null?pred.confProb:0.5,0.01,0.99);
+        const pp=clamp(pred.confProb!=null?pred.confProb:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
         const y=exactLike?1:0;
         tr.logLossSum+=-(y*Math.log(pp)+(1-y)*Math.log(1-pp));
         tr.brierSum+=(pp-y)*(pp-y);
@@ -5558,12 +5574,14 @@ function AppInner(){
     ];
 
     let rejectedByGate=false;
+    let gateReason="";
     // Single atomic React state commit
     setS(prev=>{
       const baseline=prev.validationBaseline;
-      const rejectByLogLossGate=!!(baseline&&exactPct>baseline.exactPct&&logLoss>baseline.logLoss+0.005);
-      if(rejectByLogLossGate){
+      const isRejectedByLogLossGate=!!(baseline&&exactPct>baseline.exactPct&&logLoss>baseline.logLoss+LOGLOSS_GATE_TOLERANCE);
+      if(isRejectedByLogLossGate){
         rejectedByGate=true;
+        gateReason="accuracy "+exactPct+"% > baseline "+baseline.exactPct+"% but log-loss "+logLoss+" > baseline "+baseline.logLoss;
         return prev;
       }
       const saved={...prev,
@@ -5580,7 +5598,7 @@ function AppInner(){
       return saved;
     });
     if(rejectedByGate){
-      finalLog.push("🚫 Validation gate: rejected (accuracy improved but log-loss worsened vs frozen baseline)");
+      finalLog.push("🚫 Validation gate: rejected ("+gateReason+")");
     }
     setAutoTrainStatus(s=>({...s,running:false,done:true,progress:tr.total,
       log:[...(s?.log||[]).filter(l=>!l.startsWith("━")),...finalLog],
