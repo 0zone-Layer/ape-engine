@@ -191,6 +191,24 @@ const CONTROL_PRUNE_STRICT=1.2;
 const DENSE_CLUSTER_RADIUS=4;
 const DENSE_CLUSTER_MASS_WEIGHT=0.12;
 const ENTROPY_BIN_SIZE=10;
+const TRUST_EVIDENCE_TARGET=80;
+const TRUST_EVIDENCE_MAX_BOOST=12;
+const TRUST_WEIGHT_ROLLING=50;
+const TRUST_WEIGHT_SHORT=25;
+const TRUST_WEIGHT_MID=10;
+const TRUST_WEIGHT_STREAK=3;
+const TRUST_WEIGHT_LEADERBOARD=4;
+const TRUST_WEIGHT_RECENT_ERROR=1.6;
+const TRUST_WEIGHT_ERR_VARIANCE=0.9;
+const TRUST_HIGH_EVAL_MIN=12;
+const TRUST_HIGH_SCORE_MIN=52;
+const TRUST_MED_EVAL_MIN=6;
+const TRUST_MED_SCORE_MIN=34;
+const TODAY_SCORE_SOLO_STREAK_MULT=2;
+const TODAY_SCORE_HIGH_TRUST_BONUS=4;
+const TODAY_SCORE_MED_TRUST_BONUS=2;
+const MIN_SOLO_STREAK_ON_FIRE=2;
+const MAX_ON_FIRE_DISPLAY=10;
 const CONTEXT_SIG_BINS={ // [ADDED]
   trend:[0.45,0.95,1.45],
   volatility:[6,12,18],
@@ -3283,15 +3301,18 @@ function computeSoloAlgoStreak(accLog,col,name){
   let n=0;
   for(let i=accLog.length-1;i>=0;i--){
     const entry=accLog[i];
-    const actual=entry&&entry.actuals?entry.actuals[col]:null;
+    const actual=entry?.actuals?.[col]??null;
     if(!ok(actual))continue;
-    const pred=entry&&entry.algoDetails&&entry.algoDetails[col]?entry.algoDetails[col][name]:null;
+    const pred=entry?.algoDetails?.[col]?.[name]??null;
     if(!ok(pred))break;
     if(isExactOrReversed(pred,actual))n++;
     else break;
   }
   return n;
 }
+// Builds a bounded trust score (0-100) and label from per-algo performance,
+// current neural streak, and leaderboard signal; penalties reduce trust when
+// recent error/variance rises. Labels require both score and evidence count.
 function buildAlgoTrust(perf,streak,lbScore){
   const rolling=(perf&&ok(perf.rollingAccuracy))?perf.rollingAccuracy:0;
   const short=(perf&&ok(perf.shortScore))?perf.shortScore:rolling;
@@ -3299,10 +3320,15 @@ function buildAlgoTrust(perf,streak,lbScore){
   const evalCount=(perf&&ok(perf.evalCount))?perf.evalCount:0;
   const recentError=(perf&&ok(perf.recentError))?perf.recentError:0;
   const errVar=(perf&&ok(perf.errorVariance))?perf.errorVariance:0;
-  const evidenceBoost=Math.min(1,evalCount/80)*12;
-  const scoreRaw=rolling*50+short*25+mid*10+evidenceBoost+streak*3+Math.min(3,lbScore||0)*4-recentError*1.6-errVar*0.9;
+  const evidenceBoost=Math.min(1,evalCount/TRUST_EVIDENCE_TARGET)*TRUST_EVIDENCE_MAX_BOOST;
+  const accuracyComponent=rolling*TRUST_WEIGHT_ROLLING+short*TRUST_WEIGHT_SHORT+mid*TRUST_WEIGHT_MID;
+  const momentumComponent=streak*TRUST_WEIGHT_STREAK+Math.min(3,lbScore||0)*TRUST_WEIGHT_LEADERBOARD;
+  const penaltyComponent=recentError*TRUST_WEIGHT_RECENT_ERROR+errVar*TRUST_WEIGHT_ERR_VARIANCE;
+  const scoreRaw=accuracyComponent+evidenceBoost+momentumComponent-penaltyComponent;
   const score=Math.max(0,Math.min(100,Math.round(scoreRaw)));
-  const label=evalCount>=12&&score>=52?"HIGH":evalCount>=6&&score>=34?"MED":"LOW";
+  let label="LOW";
+  if(evalCount>=TRUST_HIGH_EVAL_MIN&&score>=TRUST_HIGH_SCORE_MIN)label="HIGH";
+  else if(evalCount>=TRUST_MED_EVAL_MIN&&score>=TRUST_MED_SCORE_MIN)label="MED";
   return{score,label,evalCount};
 }
 
@@ -5380,11 +5406,12 @@ function AppInner(){
         const algoStreak=getAlgoNeuralStreak(ns,name);
         const soloStreak=computeSoloAlgoStreak(accLog,col,name);
         const trust=buildAlgoTrust(perf,algoStreak,lb);
-        const probable=ok(info?.pred)?M.mod(Math.round(info.pred)):M.mod(Math.round(pred.top5&&pred.top5[0]?pred.top5[0].value:0));
+        const top1Pred=pred&&pred.top5&&pred.top5[0]?pred.top5[0].value:0;
+        const probable=M.mod(Math.round(ok(info?.pred)?info.pred:top1Pred));
         return{
           col,name,probable,algoStreak,soloStreak,lb,
           trustScore:trust.score,trustLabel:trust.label,evalCount:trust.evalCount,
-          score:trust.score+soloStreak*2+(trust.label==="HIGH"?4:trust.label==="MED"?2:0),
+          score:trust.score+soloStreak*TODAY_SCORE_SOLO_STREAK_MULT+(trust.label==="HIGH"?TODAY_SCORE_HIGH_TRUST_BONUS:trust.label==="MED"?TODAY_SCORE_MED_TRUST_BONUS:0),
           perfRolling:+((perf&&perf.rollingAccuracy)||0).toFixed(3)
         };
       }).sort((a,b)=>b.score-a.score);
@@ -5407,7 +5434,7 @@ function AppInner(){
       perCol,
       globalTop:all.slice(0,14),
       strongestAlgo:all[0]||null,
-      onFire:all.filter(x=>x.soloStreak>=2).sort((a,b)=>b.soloStreak-a.soloStreak||b.score-a.score).slice(0,10),
+      onFire:all.filter(x=>x.soloStreak>=MIN_SOLO_STREAK_ON_FIRE).sort((a,b)=>b.soloStreak-a.soloStreak||b.score-a.score).slice(0,MAX_ON_FIRE_DISPLAY),
       topNumber
     };
   },[S.preds,S.weights,S.algoLeaderboard,accLog]);
