@@ -198,6 +198,7 @@ const TRUST_WEIGHT_SHORT=25;
 const TRUST_WEIGHT_MID=10;
 const TRUST_WEIGHT_STREAK=3;
 const TRUST_WEIGHT_LEADERBOARD=4;
+const TRUST_LEADERBOARD_CAP=3;
 const TRUST_WEIGHT_RECENT_ERROR=1.6;
 const TRUST_WEIGHT_ERR_VARIANCE=0.9;
 const TRUST_HIGH_EVAL_MIN=12;
@@ -3322,7 +3323,7 @@ function buildAlgoTrust(perf,streak,lbScore){
   const errVar=(perf&&ok(perf.errorVariance))?perf.errorVariance:0;
   const evidenceBoost=Math.min(1,evalCount/TRUST_EVIDENCE_TARGET)*TRUST_EVIDENCE_MAX_BOOST;
   const accuracyComponent=rolling*TRUST_WEIGHT_ROLLING+short*TRUST_WEIGHT_SHORT+mid*TRUST_WEIGHT_MID;
-  const momentumComponent=streak*TRUST_WEIGHT_STREAK+Math.min(3,lbScore||0)*TRUST_WEIGHT_LEADERBOARD;
+  const momentumComponent=streak*TRUST_WEIGHT_STREAK+Math.min(TRUST_LEADERBOARD_CAP,lbScore||0)*TRUST_WEIGHT_LEADERBOARD;
   const penaltyComponent=recentError*TRUST_WEIGHT_RECENT_ERROR+errVar*TRUST_WEIGHT_ERR_VARIANCE;
   const scoreRaw=accuracyComponent+evidenceBoost+momentumComponent-penaltyComponent;
   const score=Math.max(0,Math.min(100,Math.round(scoreRaw)));
@@ -5407,7 +5408,8 @@ function AppInner(){
         const soloStreak=computeSoloAlgoStreak(accLog,col,name);
         const trust=buildAlgoTrust(perf,algoStreak,lb);
         const top1Pred=pred&&pred.top5&&pred.top5[0]?pred.top5[0].value:0;
-        const probable=M.mod(Math.round(ok(info?.pred)?info.pred:top1Pred));
+        const selectedPred=ok(info?.pred)?info.pred:top1Pred;
+        const probable=M.mod(Math.round(selectedPred));
         return{
           col,name,probable,algoStreak,soloStreak,lb,
           trustScore:trust.score,trustLabel:trust.label,evalCount:trust.evalCount,
@@ -5878,7 +5880,7 @@ function AppInner(){
                   <td style={{padding:"4px 7px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(entry.targetRow||0)}</td>
                   {COLS.map(c=><td key={c} style={{padding:"4px 7px",color:CLR[c],textAlign:"center",fontWeight:700}}>{pad2(entry.preds[c]||0)}</td>)}
                   {COLS.map(c=><td key={c} style={{padding:"4px 7px",color:entry.actuals[c]!=null?"#c8d0e8":"#2d3158",textAlign:"center"}}>{entry.actuals[c]!=null?pad2(entry.actuals[c]):"XX"}</td>)}
-                  <td style={{padding:"4px 7px",textAlign:"center"}}><span style={{color:entry.exactCount>=(entry.knownCount||COLS.length)*0.75?"#34d399":entry.exactCount>=1?"#fbbf24":"#f87171",fontWeight:700}}>{entry.exactCount}/{entry.knownCount||COLS.length}</span></td>
+                  <td style={{padding:"4px 7px",textAlign:"center"}}><span style={{color:entry.exactCount>=(entry.knownCount||4)*0.75?"#34d399":entry.exactCount>=1?"#fbbf24":"#f87171",fontWeight:700}}>{entry.exactCount}/{entry.knownCount||4}</span></td>
                 </tr>)}</tbody>
               </table>
             </div>
