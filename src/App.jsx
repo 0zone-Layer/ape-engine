@@ -3273,6 +3273,38 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
     byContext:{...catPrev.byContext,[context]:+(catCtxPrev*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)).toFixed(4)}
   };
 }
+function getAlgoNeuralStreak(scores,name){
+  if(!scores||!name)return 0;
+  const raw=scores["_s_"+name];
+  return typeof raw==="number"?raw:0;
+}
+function computeSoloAlgoStreak(accLog,col,name){
+  if(!Array.isArray(accLog)||!col||!name)return 0;
+  let n=0;
+  for(let i=accLog.length-1;i>=0;i--){
+    const entry=accLog[i];
+    const actual=entry&&entry.actuals?entry.actuals[col]:null;
+    if(!ok(actual))continue;
+    const pred=entry&&entry.algoDetails&&entry.algoDetails[col]?entry.algoDetails[col][name]:null;
+    if(!ok(pred))break;
+    if(isExactOrReversed(pred,actual))n++;
+    else break;
+  }
+  return n;
+}
+function buildAlgoTrust(perf,streak,lbScore){
+  const rolling=(perf&&ok(perf.rollingAccuracy))?perf.rollingAccuracy:0;
+  const short=(perf&&ok(perf.shortScore))?perf.shortScore:rolling;
+  const mid=(perf&&ok(perf.midScore))?perf.midScore:rolling;
+  const evalCount=(perf&&ok(perf.evalCount))?perf.evalCount:0;
+  const recentError=(perf&&ok(perf.recentError))?perf.recentError:0;
+  const errVar=(perf&&ok(perf.errorVariance))?perf.errorVariance:0;
+  const evidenceBoost=Math.min(1,evalCount/80)*12;
+  const scoreRaw=rolling*50+short*25+mid*10+evidenceBoost+streak*3+Math.min(3,lbScore||0)*4-recentError*1.6-errVar*0.9;
+  const score=Math.max(0,Math.min(100,Math.round(scoreRaw)));
+  const label=evalCount>=12&&score>=52?"HIGH":evalCount>=6&&score>=34?"MED":"LOW";
+  return{score,label,evalCount};
+}
 
 // Fix 4+9: updateW now takes regime+calibration, maintains perRegime weights
 function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
@@ -4730,6 +4762,7 @@ function AppInner(){
     upd(prev=>{
       const nw={...prev.weights};
       const nc={...(prev.calibration||mkColMapDefaults())};
+      let nlb={...(prev.algoLeaderboard||mkColMapDefaults())};
       // Bug 2 fix: compute dateCtx BEFORE the loop that uses it
       const _datePd=prev.predDate?parseDate(prev.predDate):null;
       const dateCtx=_datePd?{dow:_datePd.dow,lunar:_datePd.lunarPhase,month:_datePd.m,season:_datePd.season}:null;
@@ -4764,6 +4797,7 @@ function AppInner(){
         nw[col]=updated;
         const pred=prev.preds[col];
         if(pred){
+          nlb=updateAlgoLeaderboard(nlb,col,pred);
           const colHitCtx=getTop5HitContext(pred,actuals[col]);
           const wasExactLike=isExactLikePrediction(pred,actuals[col],colHitCtx);
           nc[col]=updateCalibration(pred.conf,wasExactLike,nc[col]||{});
@@ -4834,7 +4868,7 @@ function AppInner(){
         }
       });
 
-      return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,contextMemory:newContextMemory,adaptiveControl,accLog:newFullLog,lastAutoGenRows:newRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
+      return{...prev,weights:nw,algoLeaderboard:nlb,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,contextMemory:newContextMemory,adaptiveControl,accLog:newFullLog,lastAutoGenRows:newRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
     });
     st("Learned! "+exactCount+"/"+knownCols.length+" exact · "+numberHitCount+" top5 hits — weights saved ✓");
     const pct=Math.round(exactCount/knownCols.length*100);
@@ -5332,6 +5366,52 @@ function AppInner(){
     return s;
   },[accLog]);
 
+  const todayLeaderboard=useMemo(()=>{
+    if(!S.preds)return null;
+    const perCol={};
+    const all=[];
+    COLS.forEach(col=>{
+      const pred=S.preds[col];
+      if(!pred||!pred.details)return;
+      const details=Object.entries(pred.details).map(([name,info])=>{
+        const perf=S.weights&&S.weights[col]&&S.weights[col].performance?S.weights[col].performance[name]||{}:{};
+        const ns=S.weights&&S.weights[col]&&S.weights[col].neuralScores?S.weights[col].neuralScores:{};
+        const lb=S.algoLeaderboard&&S.algoLeaderboard[col]?S.algoLeaderboard[col][name]||0:0;
+        const algoStreak=getAlgoNeuralStreak(ns,name);
+        const soloStreak=computeSoloAlgoStreak(accLog,col,name);
+        const trust=buildAlgoTrust(perf,algoStreak,lb);
+        const probable=ok(info?.pred)?M.mod(Math.round(info.pred)):M.mod(Math.round(pred.top5&&pred.top5[0]?pred.top5[0].value:0));
+        return{
+          col,name,probable,algoStreak,soloStreak,lb,
+          trustScore:trust.score,trustLabel:trust.label,evalCount:trust.evalCount,
+          score:trust.score+soloStreak*2+(trust.label==="HIGH"?4:trust.label==="MED"?2:0),
+          perfRolling:+((perf&&perf.rollingAccuracy)||0).toFixed(3)
+        };
+      }).sort((a,b)=>b.score-a.score);
+      if(!details.length)return;
+      perCol[col]={
+        best:details[0],
+        trusted:details.filter(x=>x.trustLabel!=="LOW").slice(0,5),
+        ranked:details
+      };
+      all.push(...details);
+    });
+    if(!all.length)return null;
+    all.sort((a,b)=>b.score-a.score);
+    const topNumber=COLS.map(col=>{
+      const p=S.preds&&S.preds[col]&&S.preds[col].top5&&S.preds[col].top5[0]?S.preds[col].top5[0]:null;
+      if(!p)return null;
+      return{col,value:p.value,pct:p.pct||0};
+    }).filter(Boolean).sort((a,b)=>b.pct-a.pct)[0]||null;
+    return{
+      perCol,
+      globalTop:all.slice(0,14),
+      strongestAlgo:all[0]||null,
+      onFire:all.filter(x=>x.soloStreak>=2).sort((a,b)=>b.soloStreak-a.soloStreak||b.score-a.score).slice(0,10),
+      topNumber
+    };
+  },[S.preds,S.weights,S.algoLeaderboard,accLog]);
+
   const missingRows=useMemo(()=>{
     const nums=rows.map(r=>r.row).sort((a,b)=>a-b);
     const missing=[];
@@ -5363,7 +5443,7 @@ function AppInner(){
         </div>
 
         <div style={{display:"flex",borderBottom:"1px solid #12152a",marginBottom:14,overflowX:"auto"}}>
-          {[{id:"data",l:"📊 Data ("+rows.length+")"},{id:"predict",l:"🔮 Predict"},{id:"learn",l:"✅ Learn"+(accLog.length?" ("+accLog.length+")":"")},{id:"analysis",l:"📈 Analysis"},{id:"algos",l:"⚙ Algos ("+(ALGO_COUNT+customs.length)+")"}].map(function(t){
+          {[{id:"data",l:"📊 Data ("+rows.length+")"},{id:"predict",l:"🔮 Predict"},{id:"leaderboard",l:"🏆 Today Leaderboard"},{id:"learn",l:"✅ Learn"+(accLog.length?" ("+accLog.length+")":"")},{id:"analysis",l:"📈 Analysis"},{id:"algos",l:"⚙ Algos ("+(ALGO_COUNT+customs.length)+")"}].map(function(t){
             return <button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"rgba(167,139,250,.1)":"transparent",border:"none",borderBottom:tab===t.id?"2px solid #a78bfa":"2px solid transparent",color:tab===t.id?"#a78bfa":"#4a4e6a",padding:"8px 12px",cursor:"pointer",fontSize:11,fontFamily:"inherit",whiteSpace:"nowrap",marginBottom:-1}}>{t.l}</button>;
           })}
           <div style={{flex:1}}/>
@@ -5472,7 +5552,7 @@ function AppInner(){
           {rows.length>0?<Card>
             <div style={{overflowX:"auto",maxHeight:320,overflowY:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date","A","B","C","D",""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date",...COLS,""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
                 <tbody>{rows.map((r,i)=>{const dp=r.date?parseDate(r.date):null;const DAYS=["Su","Mo","Tu","We","Th","Fr","Sa"];return<tr key={r.row} style={{background:i%2?"rgba(255,255,255,.01)":"transparent",borderBottom:"1px solid rgba(255,255,255,.02)"}}>
                   <td style={{padding:"5px 10px",color:"#252840",textAlign:"center"}}>{i+1}</td>
                   <td style={{padding:"5px 10px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(r.row)}</td>
@@ -5625,6 +5705,89 @@ function AppInner(){
           </div>}
         </div>}
 
+        {tab==="leaderboard"&&<div>
+          {!S.preds||!todayLeaderboard?<Card><div style={{fontSize:11,color:"#4a4e6a"}}>Run prediction first to build today leaderboard.</div></Card>:<div>
+            <Card style={{marginBottom:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                <SL style={{margin:0}}>🏆 Best of Best — Today</SL>
+                <div style={{fontSize:10,color:"#4a4e6a"}}>
+                  {todayLeaderboard.strongestAlgo?<span>Top Algo: <b style={{color:"#34d399"}}>{todayLeaderboard.strongestAlgo.name}</b> ({todayLeaderboard.strongestAlgo.col})</span>:<span>—</span>}
+                  {todayLeaderboard.topNumber&&<span> · Strongest Number: <b style={{color:"#a78bfa"}}>{pad2(todayLeaderboard.topNumber.value)}</b> ({todayLeaderboard.topNumber.col}, {todayLeaderboard.topNumber.pct}%)</span>}
+                </div>
+              </div>
+            </Card>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10,marginBottom:14}}>
+              {COLS.map(col=>{
+                const item=todayLeaderboard.perCol[col]&&todayLeaderboard.perCol[col].best;
+                if(!item)return <Card key={col}><div style={{fontSize:10,color:"#2d3158"}}>Col {col}: no data</div></Card>;
+                const trustClr=item.trustLabel==="HIGH"?"#34d399":item.trustLabel==="MED"?"#fbbf24":"#f87171";
+                return <div key={col} style={{background:"#0c0e1a",border:"1px solid #1a1e35",borderTop:"3px solid "+CLR[col],borderRadius:10,padding:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <div style={{fontSize:10,color:CLR[col],letterSpacing:2}}>COL {col}</div>
+                    <div style={{fontSize:9,color:trustClr,fontWeight:800}}>{item.trustLabel} TRUST</div>
+                  </div>
+                  <div style={{fontSize:18,fontWeight:900,color:"#c8d0e8",marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</div>
+                  <div style={{fontSize:11,color:"#4a4e6a",marginBottom:6}}>Most probable: <b style={{color:CLR[col]}}>{pad2(item.probable)}</b></div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:9}}>
+                    <div style={{background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.2)",borderRadius:6,padding:"4px 6px"}}>Trust <b style={{color:"#a78bfa"}}>{item.trustScore}</b></div>
+                    <div style={{background:"rgba(96,165,250,.08)",border:"1px solid rgba(96,165,250,.2)",borderRadius:6,padding:"4px 6px"}}>Eval <b style={{color:"#60a5fa"}}>{item.evalCount}</b></div>
+                    <div style={{background:"rgba(52,211,153,.08)",border:"1px solid rgba(52,211,153,.2)",borderRadius:6,padding:"4px 6px"}}>Algo streak <b style={{color:"#34d399"}}>{item.algoStreak}</b></div>
+                    <div style={{background:"rgba(251,191,36,.08)",border:"1px solid rgba(251,191,36,.2)",borderRadius:6,padding:"4px 6px"}}>Solo streak <b style={{color:"#fbbf24"}}>{item.soloStreak}</b></div>
+                  </div>
+                </div>;
+              })}
+            </div>
+            <Card style={{marginBottom:14}}>
+              <SL>Trusted Now</SL>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:8}}>
+                {COLS.map(col=>{
+                  const trusted=todayLeaderboard.perCol[col]&&todayLeaderboard.perCol[col].trusted?todayLeaderboard.perCol[col].trusted:[];
+                  return <div key={col} style={{background:"rgba(255,255,255,.02)",border:"1px solid #1a1e35",borderRadius:8,padding:"8px 10px"}}>
+                    <div style={{fontSize:9,color:CLR[col],letterSpacing:2,marginBottom:5}}>COL {col}</div>
+                    {trusted.length?trusted.slice(0,3).map(t=><div key={t.name} style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:6,fontSize:9,marginBottom:3}}>
+                      <span style={{color:"#c8d0e8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
+                      <span style={{color:"#a78bfa"}}>{pad2(t.probable)}</span>
+                      <span style={{color:t.trustLabel==="HIGH"?"#34d399":"#fbbf24",fontWeight:700}}>{t.trustScore}</span>
+                    </div>):<div style={{fontSize:9,color:"#2d3158"}}>No trusted algo yet</div>}
+                  </div>;
+                })}
+              </div>
+            </Card>
+            <Card style={{marginBottom:14}}>
+              <SL>🔥 On Fire (Solo Streak)</SL>
+              {todayLeaderboard.onFire.length?<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:8}}>
+                {todayLeaderboard.onFire.map(item=><div key={item.col+"_"+item.name} style={{background:"rgba(52,211,153,.05)",border:"1px solid rgba(52,211,153,.18)",borderRadius:8,padding:"8px 10px",fontSize:10}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{color:"#34d399",fontWeight:700}}>{item.name}</span>
+                    <span style={{color:CLR[item.col]}}>Col {item.col}</span>
+                  </div>
+                  <div style={{marginTop:4,color:"#4a4e6a"}}>Solo streak <b style={{color:"#34d399"}}>{item.soloStreak}</b> · probable {pad2(item.probable)}</div>
+                </div>)}
+              </div>:<div style={{fontSize:10,color:"#2d3158"}}>No active solo streaks yet.</div>}
+            </Card>
+            <Card>
+              <SL>Global Ranking</SL>
+              <div style={{overflowX:"auto"}}>
+                <table style={{borderCollapse:"collapse",width:"100%",fontSize:10}}>
+                  <thead><tr>{["#","Algo","Col","Probable","Trust","Solo","Algo Streak","Eval"].map((h,i)=><th key={i} style={{padding:"4px 6px",color:"#252840",fontSize:9,borderBottom:"1px solid #1a1e35",textAlign:"center",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {todayLeaderboard.globalTop.map((r,i)=><tr key={r.col+"_"+r.name} style={{borderBottom:"1px solid rgba(255,255,255,.02)"}}>
+                      <td style={{padding:"4px 6px",textAlign:"center",color:"#4a4e6a"}}>{i+1}</td>
+                      <td style={{padding:"4px 6px",color:"#c8d0e8"}}>{r.name}</td>
+                      <td style={{padding:"4px 6px",textAlign:"center",color:CLR[r.col]}}>{r.col}</td>
+                      <td style={{padding:"4px 6px",textAlign:"center",color:"#a78bfa"}}>{pad2(r.probable)}</td>
+                      <td style={{padding:"4px 6px",textAlign:"center",color:r.trustLabel==="HIGH"?"#34d399":r.trustLabel==="MED"?"#fbbf24":"#f87171"}}>{r.trustScore}</td>
+                      <td style={{padding:"4px 6px",textAlign:"center",color:"#34d399"}}>{r.soloStreak}</td>
+                      <td style={{padding:"4px 6px",textAlign:"center",color:"#60a5fa"}}>{r.algoStreak}</td>
+                      <td style={{padding:"4px 6px",textAlign:"center",color:"#4a4e6a"}}>{r.evalCount}</td>
+                    </tr>)}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>}
+        </div>}
+
         {tab==="learn"&&<div>
           <Card style={{marginBottom:14}}>
             <SL>{S.preds?"Enter Actual for Row "+pad2(S.predRow||0):"Run prediction first"}</SL>
@@ -5682,13 +5845,13 @@ function AppInner(){
             </div>
             <div style={{overflowX:"auto",maxHeight:240,overflowY:"auto"}}>
               <table style={{borderCollapse:"collapse",width:"100%",fontSize:11}}>
-                <thead><tr>{["Time","Row","PA","PB","PC","PD","AA","AB","AC","AD","Hit"].map((h,i)=><th key={i} style={{padding:"4px 7px",color:"#252840",fontSize:9,borderBottom:"1px solid #1a1e35",textAlign:"center",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Time","Row",...COLS.map(c=>"P"+c),...COLS.map(c=>"A"+c),"Hit"].map((h,i)=><th key={i} style={{padding:"4px 7px",color:"#252840",fontSize:9,borderBottom:"1px solid #1a1e35",textAlign:"center",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                 <tbody>{[...accLog].reverse().map((entry,i)=><tr key={i} style={{borderBottom:"1px solid rgba(255,255,255,.015)"}}>
                   <td style={{padding:"4px 7px",color:"#252840",fontSize:9,textAlign:"center"}}>{new Date(entry.at).toLocaleTimeString()}</td>
                   <td style={{padding:"4px 7px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(entry.targetRow||0)}</td>
                   {COLS.map(c=><td key={c} style={{padding:"4px 7px",color:CLR[c],textAlign:"center",fontWeight:700}}>{pad2(entry.preds[c]||0)}</td>)}
                   {COLS.map(c=><td key={c} style={{padding:"4px 7px",color:entry.actuals[c]!=null?"#c8d0e8":"#2d3158",textAlign:"center"}}>{entry.actuals[c]!=null?pad2(entry.actuals[c]):"XX"}</td>)}
-                  <td style={{padding:"4px 7px",textAlign:"center"}}><span style={{color:entry.exactCount>=(entry.knownCount||4)*0.75?"#34d399":entry.exactCount>=1?"#fbbf24":"#f87171",fontWeight:700}}>{entry.exactCount}/{entry.knownCount||4}</span></td>
+                  <td style={{padding:"4px 7px",textAlign:"center"}}><span style={{color:entry.exactCount>=(entry.knownCount||COLS.length)*0.75?"#34d399":entry.exactCount>=1?"#fbbf24":"#f87171",fontWeight:700}}>{entry.exactCount}/{entry.knownCount||COLS.length}</span></td>
                 </tr>)}</tbody>
               </table>
             </div>
