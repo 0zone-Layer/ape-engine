@@ -11,7 +11,13 @@ const M={
   mean:a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0,
   cd:(a,b)=>Math.min(Math.abs(a-b),100-Math.abs(a-b)),
   near:(p,a,t)=>M.cd(p,a)<=(t||2),
-  nearR:(p,a,regime)=>M.cd(p,a)<=(regime==="volatile"?4:regime==="flat"?1:2),
+  nearR:(p,a,regime)=>{
+    const rg=(regime||"").toString().toUpperCase();
+    // Legacy aliases are kept for imported older state snapshots.
+    if(rg==="CHAOTIC"||rg==="VOLATILE"||rg==="BIMODAL")return M.cd(p,a)<=NEARR_THRESHOLD_CHAOTIC;
+    if(rg==="STABLE"||rg==="FLAT"||rg==="NORMAL")return M.cd(p,a)<=NEARR_THRESHOLD_STABLE;
+    return M.cd(p,a)<=NEARR_THRESHOLD_DEFAULT;
+  },
   std:a=>{if(a.length<2)return 0;const avg=M.mean(a);return Math.sqrt(a.reduce((s,v)=>s+(v-avg)**2,0)/(a.length-1));},
   median:a=>{const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;},
 };
@@ -78,6 +84,8 @@ const HEAVY_SAMPLE_POINTS=30;
 const HEAVY_UPDATE_INTERVAL=4;
 const HEAVY_TOPK_EVAL=40; // [UPDATED] evaluate top-K in 30–50 band
 const HEAVY_TOPK_CUSTOM=20;
+const ACTIVE_ALGO_MIN=15;
+const ACTIVE_ALGO_MAX=24;
 const MAX_GENERATED_ALGOS=150;
 const MUTATION_BUDGET_MAX=8;
 const MAX_WEIGHT_HISTORY_KEYS=180;
@@ -148,6 +156,37 @@ const SCORE_WEIGHT_STREAK=0.16;
 const SCORE_WEIGHT_BT=1.8;
 const SCORE_WEIGHT_WF=1.1;
 const SCORE_WEIGHT_NEAR1=1.8;
+// Unified score weights intentionally sum to 1.0.
+const UNIFIED_SCORE_WF_WEIGHT=0.28;
+const UNIFIED_SCORE_RECENT_WEIGHT=0.22;
+const UNIFIED_SCORE_REGIME_WEIGHT=0.18;
+const UNIFIED_SCORE_LOGLOSS_WEIGHT=0.16;
+const UNIFIED_SCORE_STABILITY_WEIGHT=0.16;
+const CORR_PENALTY_THRESHOLD=0.84;
+const CORR_STRONG_THRESHOLD=0.92;
+const CORR_MAX_PENALTY=0.55;
+const CORR_LOOKBACK=40;
+const CALIB_BINS=10;
+const CALIB_TEMP_DEFAULT=1;
+const CALIB_TEMP_MIN=0.65;
+const CALIB_TEMP_MAX=2.2;
+const CALIB_TEMP_ADAPT_RATE=0.18;
+const CALIB_OVERCONF_MULTIPLIER=1.8;
+const UNCERTAINTY_CONF_SUPPRESS=0.35;
+const CONFIDENCE_PROB_DEFAULT=0.5;
+const AUDIT_ACCLOG_LOOKBACK=12;
+const WEAK_TAIL_STRONG_POOL_MIN=6;
+const MIN_DRIFT_SERIES_LENGTH=8;
+const REGIME_DEFAULT="STABLE";
+const NEARR_THRESHOLD_CHAOTIC=4;
+const NEARR_THRESHOLD_STABLE=1;
+const NEARR_THRESHOLD_DEFAULT=2;
+const REGIME_VOLATILE_STD=16;
+const REGIME_CHAOTIC_STD_ALT=12;
+const REGIME_VOLATILE_ENTROPY=0.84;
+const REGIME_CHAOTIC_ENTROPY_ALT=0.7;
+const REGIME_VOLATILE_DRIFT=0.75;
+const REGIME_FLAT_DRIFT_MAX=0.45;
 const REWARD_EXACT=2.6;
 const REWARD_NUMBER_HIT=1.55;
 const REWARD_NEAR1=1.35;
@@ -168,6 +207,15 @@ const AUTO_GENERATED_MIN_SCORE=0.16;
 const AUTO_GENERATED_SCORE_MIN_SERIES=6;
 const AUTO_GENERATED_SCORE_BT_WEIGHT=0.72;
 const AUTO_GENERATED_SCORE_WF_WEIGHT=0.28;
+const EVOLUTION_COMPLEXITY_ALPHA=0.22;
+const EVOLUTION_INSTABILITY_BETA=0.35;
+const EVOLUTION_NS_BLEND_WEIGHT=0.12;
+const EVOLUTION_STREAK_BLEND_WEIGHT=0.04;
+const EVOLUTION_NEAR1_BLEND_WEIGHT=0.08;
+const LOGLOSS_EMA_DEFAULT=1.2;
+const LOGLOSS_EMA_DECAY=0.9;
+const LOGLOSS_EMA_WEIGHT=0.1;
+const LOGLOSS_GATE_TOLERANCE=0.005;
 const CONTEXT_WINDOW_MIN=50;
 const CONTEXT_WINDOW_MAX=100; // [UPDATED] strict context window cap
 const CONTEXTS=["TREND","CYCLIC","STABLE","CHAOTIC","MIXED"];
@@ -191,31 +239,20 @@ const CONTROL_PRUNE_STRICT=1.2;
 const DENSE_CLUSTER_RADIUS=4;
 const DENSE_CLUSTER_MASS_WEIGHT=0.12;
 const ENTROPY_BIN_SIZE=10;
-const TRUST_EVIDENCE_TARGET=80;
-const TRUST_EVIDENCE_MAX_BOOST=12;
-const TRUST_WEIGHT_ROLLING=50;
-const TRUST_WEIGHT_SHORT=25;
-const TRUST_WEIGHT_MID=10;
-const TRUST_WEIGHT_STREAK=3;
-const TRUST_WEIGHT_LEADERBOARD=4;
-const TRUST_LEADERBOARD_CAP=3;
-const TRUST_WEIGHT_RECENT_ERROR=1.6;
-const TRUST_WEIGHT_ERR_VARIANCE=0.9;
-const TRUST_HIGH_EVAL_MIN=12;
-const TRUST_HIGH_SCORE_MIN=52;
-const TRUST_MED_EVAL_MIN=6;
-const TRUST_MED_SCORE_MIN=34;
-const TODAY_SCORE_SOLO_STREAK_MULT=2;
-const TODAY_SCORE_HIGH_TRUST_BONUS=4;
-const TODAY_SCORE_MED_TRUST_BONUS=2;
-const MIN_SOLO_STREAK_ON_FIRE=2;
-const MAX_ON_FIRE_DISPLAY=10;
 const CONTEXT_SIG_BINS={ // [ADDED]
   trend:[0.45,0.95,1.45],
   volatility:[6,12,18],
   periodicity:[0.28,0.5,0.7],
   entropy:[0.45,0.62,0.8]
 };
+// Disabled due to strong redundancy/correlation and weak incremental signal contribution.
+const DISABLED_ALGOS=new Set([
+  "MirrorAt50","ComplementPairs","RevComplement",
+  "StepDown1","StepUp1","StepDown2","StepUp2","ReverseSeq","ArithSeqDetect",
+  "Bigram","Trigram","SequenceHash","NgramVoting",
+  "PolyCong","CombinedLCG","TruncLCG","ParkMiller","RowSeedLCG",
+  "EpisodicMemory"
+]);
 
 const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 const shuffleArray=a=>{
@@ -277,12 +314,154 @@ function normalizeAdaptiveWeights(names,perfMap,currentContext){
   Object.entries(raw).forEach(([name,v])=>{normalized[name]=v/total;});
   return normalized;
 }
+function computeUnifiedAlgoScore({wfRate,recentPerf,regimeMatch,logLossScore,stability}){
+  const wf=clamp(wfRate!=null?wfRate:0.05,0,1);
+  const rp=clamp(recentPerf!=null?recentPerf:0.05,0,1);
+  const rm=clamp(regimeMatch!=null?regimeMatch:0.5,0,1);
+  const ll=clamp(logLossScore!=null?logLossScore:0.45,0,1);
+  const st=clamp(stability!=null?stability:0.5,0,1);
+  return clamp(
+    wf*UNIFIED_SCORE_WF_WEIGHT+
+    rp*UNIFIED_SCORE_RECENT_WEIGHT+
+    rm*UNIFIED_SCORE_REGIME_WEIGHT+
+    ll*UNIFIED_SCORE_LOGLOSS_WEIGHT+
+    st*UNIFIED_SCORE_STABILITY_WEIGHT,
+    0.02,1
+  );
+}
+function getAlgoRegimeMatchScore(name,context,category){
+  const roleMult=getContextRoleMult(category||classifyAlgoCategory(name),context);
+  return clamp((roleMult-0.9)/0.4,0,1);
+}
+function getAlgoStabilityScore(perf){
+  if(!perf)return 0.45;
+  const err=clamp(1-((perf.recentError!=null?perf.recentError:MAX_TRACKING_ERROR)/MAX_TRACKING_ERROR),0,1);
+  const variance=clamp(1-((perf.errorVariance||0)/(MAX_TRACKING_ERROR*MAX_TRACKING_ERROR)),0,1);
+  const evidence=clamp((perf.evalCount||0)/PERF_ROLLING_WINDOW,0,1);
+  return clamp(err*0.45+variance*0.35+evidence*0.20,0,1);
+}
+function getAlgoLogLossScore(perf){
+  if(!perf)return 0.45;
+  const ll=perf.logLossEMA!=null?perf.logLossEMA:LOGLOSS_EMA_DEFAULT;
+  return clamp(1-(ll/4),0,1);
+}
+function getCalibrationBin(prob){
+  return Math.max(0,Math.min(CALIB_BINS-1,Math.floor(clamp(prob,0,0.999999)*CALIB_BINS)));
+}
+function applyTemperatureScaling(prob,temperature){
+  const p=clamp(prob,0.01,0.99);
+  const t=clamp(temperature!=null?temperature:CALIB_TEMP_DEFAULT,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
+  const logit=Math.log(p/(1-p));
+  return clamp(1/(1+Math.exp(-(logit/t))),0.01,0.99);
+}
+function getCalibratedProb(prob,cal){
+  const p=clamp(prob,0.01,0.99);
+  const temp=cal&&ok(cal.temperature)?cal.temperature:CALIB_TEMP_DEFAULT;
+  return applyTemperatureScaling(p,temp);
+}
+function buildAlgoTraceMap(col,names,accLog){
+  const traces={};
+  (names||[]).forEach(name=>{traces[name]=[];});
+  if(!accLog||accLog.length<8||!names||names.length<2)return traces;
+  const recent=accLog.slice(-CORR_LOOKBACK);
+  recent.forEach(entry=>{
+    const details=entry&&entry.algoDetails&&entry.algoDetails[col]?entry.algoDetails[col]:null;
+    names.forEach(name=>{
+      const pv=details&&ok(details[name])?M.mod(Math.round(details[name])):null;
+      traces[name].push(pv);
+    });
+  });
+  return traces;
+}
+function traceCorr(a,b){
+  const xa=[],xb=[];
+  for(let i=0;i<a.length;i++){
+    if(!ok(a[i])||!ok(b[i]))continue;
+    xa.push(a[i]);xb.push(b[i]);
+  }
+  if(xa.length<6)return 0;
+  const ax=M.mean(xa),bx=M.mean(xb);
+  let num=0,da=0,db=0;
+  for(let i=0;i<xa.length;i++){
+    num+=(xa[i]-ax)*(xb[i]-bx);
+    da+=(xa[i]-ax)**2;
+    db+=(xb[i]-bx)**2;
+  }
+  return (da*db)>0?num/Math.sqrt(da*db):0;
+}
+function buildAlgoCorrelationMatrix(col,names,accLog){
+  const matrix={};
+  const traces=buildAlgoTraceMap(col,names,accLog);
+  (names||[]).forEach(a=>{
+    matrix[a]={};
+    (names||[]).forEach(b=>{
+      if(a===b){matrix[a][b]=1;return;}
+      matrix[a][b]=traceCorr(traces[a]||[],traces[b]||[]);
+    });
+  });
+  return matrix;
+}
+function pickDiverseAlgorithms(names,strength,matrix,cap){
+  const ranked=[...(names||[])].sort((a,b)=>(strength[b]||0)-(strength[a]||0));
+  const selected=[];
+  ranked.forEach(name=>{
+    if(selected.length>=cap)return;
+    const tooClose=selected.some(prev=>Math.abs((matrix[prev]&&matrix[prev][name])||0)>=CORR_STRONG_THRESHOLD);
+    if(!tooClose){selected.push(name);return;}
+    if(selected.length<Math.max(4,Math.floor(cap*0.45)))selected.push(name);
+  });
+  return selected.length?selected:ranked.slice(0,cap);
+}
+function getAlgoCorrelationPenalty(col,names,accLog,algoStrength){
+  const penalties=Object.fromEntries((names||[]).map(n=>[n,0]));
+  if(!accLog||accLog.length<8||!names||names.length<2)return penalties;
+  const traces=buildAlgoTraceMap(col,names,accLog);
+  for(let i=0;i<names.length;i++){
+    for(let j=i+1;j<names.length;j++){
+      const a=names[i],b=names[j];
+      const c=Math.abs(traceCorr(traces[a],traces[b]));
+      if(c<CORR_PENALTY_THRESHOLD)continue;
+      const pa=algoStrength[a]||0,pb=algoStrength[b]||0;
+      const weaker=pa>=pb?b:a;
+      const p=clamp((c-CORR_PENALTY_THRESHOLD)/(1-CORR_PENALTY_THRESHOLD),0,1)*CORR_MAX_PENALTY;
+      penalties[weaker]=Math.max(penalties[weaker]||0,p);
+    }
+  }
+  return penalties;
+}
 function mapContextToRegime(context){
-  if(context==="TREND")return"trending";
-  if(context==="CYCLIC")return"flat";
-  if(context==="STABLE")return"normal";
-  if(context==="CHAOTIC")return"volatile";
-  return"bimodal";
+  if(context==="TREND")return"TRENDING";
+  if(context==="CYCLIC")return"CYCLIC";
+  if(context==="STABLE")return"STABLE";
+  if(context==="CHAOTIC")return"CHAOTIC";
+  return REGIME_DEFAULT;
+}
+function normalizeRegimeLabel(regime){
+  const r=(regime||"").toString().toUpperCase();
+  if(r==="TRENDING"||r==="TREND")return"TRENDING";
+  if(r==="CYCLIC"||r==="FLAT")return"CYCLIC";
+  if(r==="CHAOTIC"||r==="VOLATILE"||r==="BIMODAL")return"CHAOTIC";
+  return REGIME_DEFAULT;
+}
+function computePmfEntropy(votes){
+  const vals=Object.values(votes||{}).filter(v=>v>0);
+  if(!vals.length)return 1;
+  const total=vals.reduce((s,v)=>s+v,0)||1;
+  const probs=vals.map(v=>v/total);
+  const h=-probs.reduce((s,p)=>s+p*Math.log2(Math.max(1e-12,p)),0);
+  const maxH=Math.log2(vals.length||1);
+  if(maxH<=0)return 0;
+  return clamp(h/maxH,0,1);
+}
+function estimateAlgoComplexity(code){
+  if(!code||typeof code!=="string")return 0.4;
+  const len=code.length;
+  const ops=(code.match(/[\+\-\*\/\^%&|<>]/g)||[]).length;
+  const cond=(code.match(/\?/g)||[]).length;
+  return clamp((len/480)+(ops/90)+(cond/30),0.05,1);
+}
+function computeEvolutionFitness(accuracy,complexity,instability){
+  return accuracy-EVOLUTION_COMPLEXITY_ALPHA*complexity-EVOLUTION_INSTABILITY_BETA*instability;
 }
 
 function buildPredictionBenchmark(preds){
@@ -377,6 +556,28 @@ const HASH_WEIGHTS=[3,5,7,11,13,17,19];
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
 const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{},performance:{}}]));
+const normalizeCalibrationModel=cal=>{
+  if(cal&&Array.isArray(cal.bins)){
+    return{
+      ...cal,
+      temperature:clamp(ok(cal.temperature)?cal.temperature:CALIB_TEMP_DEFAULT,CALIB_TEMP_MIN,CALIB_TEMP_MAX),
+      sumProb:ok(cal.sumProb)?cal.sumProb:0,
+      sumOutcome:ok(cal.sumOutcome)?cal.sumOutcome:0
+    };
+  }
+  const bins=Array.from({length:CALIB_BINS},()=>({right:0,total:0}));
+  if(cal&&typeof cal==="object"){
+    const legacyMap={HIGH:7,MED:5,LOW:2};
+    Object.entries(legacyMap).forEach(([k,i])=>{
+      const d=cal[k];
+      if(!d||!d.total)return;
+      bins[i]={right:d.right||0,total:d.total||0};
+    });
+  }
+  const total=bins.reduce((s,b)=>s+(b.total||0),0);
+  return{bins,total,brierSum:0,temperature:CALIB_TEMP_DEFAULT,sumProb:0,sumOutcome:0};
+};
+const normalizeCalibrationMap=map=>Object.fromEntries(COLS.map(c=>[c,normalizeCalibrationModel(map&&map[c]?map[c]:{})]));
 // Cached algo count — avoids Object.keys(A) in every render
 let ALGO_COUNT=0; // filled after A{} definition
 
@@ -1659,7 +1860,7 @@ const A={
     return topVals.length?topVals:[M.mod(Math.round(M.mean(decVals)))];
   },
 };
-const ALGO_NAMES=Object.keys(A);
+const ALGO_NAMES=Object.keys(A).filter(name=>!DISABLED_ALGOS.has(name));
 const ALGO_COUNT_CONST=ALGO_NAMES.length;
 ALGO_COUNT=ALGO_COUNT_CONST;
 console.log("Algo count:",ALGO_COUNT);
@@ -2509,12 +2710,16 @@ function buildMetaModel(accLog){
   return{weights,trained:log.length,alpha};
 }
 
-// Fix 9: calibration accuracy → learning rate multiplier
-function getCalibMult(conf,cal){
-  if(!cal||!cal[conf]||cal[conf].total<5)return 1.0;
-  const rate=cal[conf].right/cal[conf].total;
-  const baseline=conf==="HIGH"?0.40:conf==="MED"?0.25:0.10;
-  return Math.max(0.4,Math.min(1.8,0.5+rate/baseline*0.5));
+// Calibration accuracy → learning-rate multiplier for numeric probabilities
+function getCalibMult(prob,cal){
+  if(!cal||!Array.isArray(cal.bins))return 1.0;
+  const p=clamp(prob!=null?prob:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
+  const b=getCalibrationBin(p);
+  const stat=cal.bins[b];
+  if(!stat||stat.total<5)return 1.0;
+  const empirical=stat.right/stat.total;
+  const ratio=empirical/p;
+  return clamp(0.75+ratio*0.25,0.55,1.45);
 }
 
 // ── JOINT COLUMN PREDICTOR ─────────────────────
@@ -2610,6 +2815,19 @@ function getEntropySpread(series){
   const h=-probs.reduce((s,p)=>s+p*Math.log2(p+1e-9),0);
   return h/Math.log2(Math.ceil(100/ENTROPY_BIN_SIZE));
 }
+function getDriftMetric(series){
+  if(!series||series.length<MIN_DRIFT_SERIES_LENGTH)return{signed:0,magnitude:0};
+  const sampled=sampleRecentSeries(series,Math.min(30,series.length));
+  const half=Math.floor(sampled.length/2);
+  if(half<3)return{signed:0,magnitude:0};
+  const first=M.mean(sampled.slice(0,half));
+  const second=M.mean(sampled.slice(half));
+  let drift=second-first;
+  if(drift>50)drift-=100;
+  if(drift<-50)drift+=100;
+  const mag=clamp(Math.abs(drift)/25,0,1);
+  return{signed:+drift.toFixed(3),magnitude:+mag.toFixed(3)};
+}
 function buildInfluenceMatrix(data){
   const matrix={};
   COLS.forEach(target=>{
@@ -2651,6 +2869,7 @@ function classifyContext(series,data,col){
   const volatility=M.std(recent);
   const periodicity=getPeriodicityStrength(recent);
   const entropy=getEntropySpread(recent);
+  const drift=getDriftMetric(recent);
   const boundedData=getWindowRows(data,ROLLING_WINDOW_ROWS);
   const corr=buildCorr(boundedData);
   const influence=buildInfluenceMatrix(boundedData);
@@ -2661,40 +2880,43 @@ function classifyContext(series,data,col){
   else if(Math.abs(slope)>=1.05&&volatility>=5)context="TREND";
   else if(volatility<6&&entropy<0.62)context="STABLE";
   else if(volatility>16||entropy>0.86)context="CHAOTIC";
-  const result={context,metrics:{slope:+slope.toFixed(3),volatility:+volatility.toFixed(3),periodicity:+periodicity.toFixed(3),entropy:+entropy.toFixed(3),crossCorr:+crossCorr.toFixed(3)},corr,influence};
+  const result={context,metrics:{slope:+slope.toFixed(3),volatility:+volatility.toFixed(3),periodicity:+periodicity.toFixed(3),entropy:+entropy.toFixed(3),drift:drift.signed,driftMag:drift.magnitude,crossCorr:+crossCorr.toFixed(3)},corr,influence};
   _contextCache[cacheKey]=result;
   return result;
 }
 // ── REGIME DETECTION ──────────────────────────
 function getRegime(series){
-  if(series.length<6)return"normal";
+  if(series.length<6)return REGIME_DEFAULT;
   const slope=Math.abs(getSeriesSlope(series.slice(-Math.min(24,series.length))));
   const periodicity=getPeriodicityStrength(series.slice(-Math.min(30,series.length)));
   const volatility=M.std(series.slice(-Math.min(18,series.length)));
-  if(periodicity>=0.55)return"flat";
-  if(slope>=1.05&&volatility>=5)return"trending";
-  if(volatility>16)return"volatile";
-  return"normal";
+  const entropy=getEntropySpread(series.slice(-Math.min(24,series.length)));
+  const drift=getDriftMetric(series.slice(-Math.min(30,series.length)));
+  if(periodicity>=0.55&&drift.magnitude<REGIME_FLAT_DRIFT_MAX)return"CYCLIC";
+  if(slope>=1.05&&volatility>=5)return"TRENDING";
+  if(volatility>REGIME_VOLATILE_STD||entropy>REGIME_VOLATILE_ENTROPY||drift.magnitude>REGIME_VOLATILE_DRIFT)return"CHAOTIC";
+  if(volatility>REGIME_CHAOTIC_STD_ALT&&entropy>REGIME_CHAOTIC_ENTROPY_ALT)return"CHAOTIC";
+  return REGIME_DEFAULT;
 }
 // Regime-gated algo pool: FULL exclusion not just multipliers
 const REGIME_POOLS={
-  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","MirrorNumber"]),
-  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod","MirrorNumber","MirrorAt50","ComplementPairs","ReverseSeq"]),
-  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG","BestStep","ArithSeqDetect"]),
-  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5","MirrorNumber","MirrorAt50","ComplementPairs"]),
-  normal:null
+  CHAOTIC:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","MirrorNumber"]),
+  CYCLIC:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod","MirrorNumber","MirrorAt50","ComplementPairs","ReverseSeq"]),
+  TRENDING:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG","BestStep","ArithSeqDetect"]),
+  STABLE:null
 };
 function algoAllowed(name,regime){
-  const pool=REGIME_POOLS[regime];
+  const pool=REGIME_POOLS[normalizeRegimeLabel(regime)];
   if(!pool)return true;
   return pool.has(name);
 }
 function rankAlgoForRegime(name,regime){
+  const rg=normalizeRegimeLabel(regime);
   let sc=CORE_ALGO_PRIORITY.includes(name)?2.5:1.0;
-  if(regime==="flat"&&/Markov|Pattern|Sticky|KNN|CrossLag|Mode|Recency/i.test(name))sc+=1.4;
-  if(regime==="volatile"&&/Mean|Median|Smooth|Entropy|Band|Cluster/i.test(name))sc+=1.4;
-  if(regime==="trending"&&/Momentum|Gap|Lin|Quad|Theil|AR|Diff|Cyclic/i.test(name))sc+=1.4;
-  if(regime==="bimodal"&&/Bimodal|Decade|Sticky|Cluster|Pattern/i.test(name))sc+=1.4;
+  if(rg==="CYCLIC"&&/Markov|Pattern|Sticky|KNN|CrossLag|Mode|Recency/i.test(name))sc+=1.4;
+  if(rg==="CHAOTIC"&&/Mean|Median|Smooth|Entropy|Band|Cluster/i.test(name))sc+=1.4;
+  if(rg==="TRENDING"&&/Momentum|Gap|Lin|Quad|Theil|AR|Diff|Cyclic/i.test(name))sc+=1.4;
+  if(rg==="STABLE"&&/Mode|Markov|Pattern|Cluster|Median|Sticky/i.test(name))sc+=1.2;
   return sc;
 }
 function selectAlgoNames(names,regime,budget){
@@ -2744,7 +2966,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const curRange=Math.floor((series[series.length-1]||0)/25);
   const contextInfo=classifyContext(series,analysisData,col);
   const currentContext=contextInfo.context;
-  const regime=mapContextToRegime(currentContext);
+  const regime=normalizeRegimeLabel(getRegime(series));
   const influenceRow=contextInfo.influence&&contextInfo.influence[col]?contextInfo.influence[col]:{};
   const votes={},_contribSets={},details={};
   const cast=(name,val,w)=>{
@@ -2758,15 +2980,14 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const perf={btMs:0,builtinMs:0,crossMs:0,dateMs:0,customMs:0,totalMs:0};
   const lightweight=!!W._lightweight;
   const allowedAlgos=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
-  const autoBudget=lightweight?12:series.length>140?20:series.length>80?28:HEAVY_TOPK_EVAL;
-  const algoBudget=Math.max(8,Math.min(W._algoBudget||autoBudget,HEAVY_TOPK_EVAL,allowedAlgos.length));
-  const evalNames=selectAlgoNames(allowedAlgos,regime,algoBudget);
-  const adaptiveNorm=normalizeAdaptiveWeights(evalNames,perfMap,currentContext);
+  const autoBudget=lightweight?ACTIVE_ALGO_MIN:series.length>140?ACTIVE_ALGO_MAX:series.length>80?Math.min(ACTIVE_ALGO_MAX,20):ACTIVE_ALGO_MAX;
+  const algoBudget=Math.max(Math.min(ACTIVE_ALGO_MIN,allowedAlgos.length),Math.min(W._algoBudget||autoBudget,ACTIVE_ALGO_MAX,allowedAlgos.length));
+  const preEvalNames=selectAlgoNames(allowedAlgos,regime,algoBudget);
 
   // ── Pre-cache: use globalSeries for btScore to leverage all historical data ──
   if(btSeries.length>=5){
     const btT0=PERF_NOW();
-    evalNames.forEach(name=>{
+    preEvalNames.forEach(name=>{
       const fn=A[name];
       try{
         const cacheKey=col+"__"+name;
@@ -2788,6 +3009,20 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     });
     perf.btMs+=PERF_NOW()-btT0;
   }
+  const builtInStrength={};
+  preEvalNames.forEach(name=>{
+    const cached=algoCache[name]||{bt:0.05,wfBoost:1.0};
+    const wfRate=clamp((cached.wfBoost-0.6)/0.8,0,1);
+    const recentPerf=clamp(perfMap[name]?.rollingAccuracy||0,0,1);
+    const stability=getAlgoStabilityScore(perfMap[name]);
+    const logLossScore=getAlgoLogLossScore(perfMap[name]);
+    const category=classifyAlgoCategory(name);
+    const regimeMatch=getAlgoRegimeMatchScore(name,currentContext,category);
+    builtInStrength[name]=computeUnifiedAlgoScore({wfRate,recentPerf,regimeMatch,logLossScore,stability});
+  });
+  const corrMatrix=buildAlgoCorrelationMatrix(col,preEvalNames,W._accLog||[]);
+  const evalNames=pickDiverseAlgorithms(preEvalNames,builtInStrength,corrMatrix,algoBudget);
+  const builtInCorrPenalty=getAlgoCorrelationPenalty(col,evalNames,W._accLog||[],builtInStrength);
 
   // built-in algos — predictions run on LOCAL series (recent context), scored on global
   const builtinT0=PERF_NOW();
@@ -2800,20 +3035,14 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const rowW=rw[predRow]?rw[predRow][name]!=null?rw[predRow][name]:1:1;
       const ranW=rnw[curRange]?rnw[curRange][name]!=null?rnw[curRange][name]:1:1;
       const regW=rgw[name]!=null?rgw[name]:1;
-      const nScore=ns[name]!=null?ns[name]:0;
-      const lb=W._leaderboard&&W._leaderboard[name]!=null?W._leaderboard[name]:0;
       const category=classifyAlgoCategory(name);
-      const lbMult=lb>2?1.35:lb>1?1.2:lb>0.4?1.08:lb<0.05?0.85:1.0;
-      const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
-      const btFactor=0.2+Math.sqrt(bt)*3.5;
-      const perfW=getAlgoPerfWeight(perfMap[name]);
-      const adaptMult=0.35+(adaptiveNorm[name]||0)*Math.max(1,evalNames.length)*1.65;
-      const roleMult=getContextRoleMult(category,currentContext);
-      const memoryBoost=clamp((W._contextMemory&&W._contextMemory[currentContext]&&W._contextMemory[currentContext][name])?1.18:1.0,1,1.22);
-      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult*Math.max(0.45,perfW)*adaptMult*roleMult*memoryBoost;
+      const stateWeight=clamp((Math.max(0.05,lw)+Math.max(0.1,rowW)+Math.max(0.1,ranW)+Math.max(0.1,regW))/4,0.08,3.2);
+      const baseScore=builtInStrength[name]||0.05;
+      const corrPenalty=builtInCorrPenalty[name]||0;
+      const w=Math.max(0.02,stateWeight*baseScore*(1-corrPenalty));
       const preds=fn(series);
       preds.forEach((p,i)=>cast(name,p,w/(i*0.6+1)));
-      details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin",class:classifyAlgo(name),category,context:currentContext,perf:+(perfMap[name]?.rollingAccuracy||0).toFixed(3)};
+      details[name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"builtin",class:classifyAlgo(name),category,context:currentContext,perf:+(perfMap[name]?.rollingAccuracy||0).toFixed(3),corrPenalty:+corrPenalty.toFixed(3),unifiedScore:+baseScore.toFixed(3),wf:+clamp((wfBoost-0.6)/0.8,0,1).toFixed(3)};
     }catch(e){}
   });
   perf.builtinMs+=PERF_NOW()-builtinT0;
@@ -2944,7 +3173,6 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const scopedCustoms=activeCustoms
     .map(ca=>({ca,score:(gw[ca.name]||1)+(ns[ca.name]||0)}))
     .sort((a,b)=>b.score-a.score).slice(0,customBudget).map(x=>x.ca);
-  const customAdaptiveNorm=normalizeAdaptiveWeights(scopedCustoms.map(c=>c.name),perfMap,currentContext);
   scopedCustoms.forEach(ca=>{
     if(algoCache[ca.name])return;
     try{
@@ -2960,6 +3188,18 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       algoCache[ca.name]={bt,wfBoost,fn};
     }catch(e){}
   });
+  const customStrength={};
+  scopedCustoms.forEach(ca=>{
+    const cached=algoCache[ca.name];
+    if(!cached)return;
+    const wfRate=clamp((cached.wfBoost-0.6)/0.8,0,1);
+    const recentPerf=clamp(perfMap[ca.name]?.rollingAccuracy||0,0,1);
+    const regimeMatch=getAlgoRegimeMatchScore(ca.name,currentContext,classifyAlgoCategory(ca.name,ca.code));
+    const logLossScore=getAlgoLogLossScore(perfMap[ca.name]);
+    const stability=getAlgoStabilityScore(perfMap[ca.name]);
+    customStrength[ca.name]=computeUnifiedAlgoScore({wfRate,recentPerf,regimeMatch,logLossScore,stability});
+  });
+  const customCorrPenalty=getAlgoCorrelationPenalty(col,scopedCustoms.map(c=>c.name),W._accLog||[],customStrength);
   // custom algos — run predictions on local series
   scopedCustoms.forEach(ca=>{
     if(!ca.enabled||!ca.code)return;
@@ -2971,20 +3211,14 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const rowW=rw[predRow]?rw[predRow][ca.name]!=null?rw[predRow][ca.name]:1:1;
       const ranW=rnw[curRange]?rnw[curRange][ca.name]!=null?rnw[curRange][ca.name]:1:1;
       const regW=rgw[ca.name]!=null?rgw[ca.name]:1;
-      const nScore=ns[ca.name]!=null?ns[ca.name]:0;
-      const lb=W._leaderboard&&W._leaderboard[ca.name]!=null?W._leaderboard[ca.name]:0;
       const category=classifyAlgoCategory(ca.name,ca.code);
-      const lbMult=lb>2?1.35:lb>1?1.2:lb>0.4?1.08:lb<0.05?0.85:1.0;
-      const nMult=nScore>2.5?2.0:nScore>1.5?1.7:nScore>0.5?1.3:nScore>0?1.1:nScore<-1.5?0.35:nScore<-1?0.5:nScore<-0.3?0.75:1.0;
-      const btFactor=0.2+Math.sqrt(bt)*3.5;
-      const perfW=getAlgoPerfWeight(perfMap[ca.name]);
-      const adaptMult=0.35+(customAdaptiveNorm[ca.name]||0)*Math.max(1,scopedCustoms.length)*1.65;
-      const roleMult=getContextRoleMult(category,currentContext);
-      const memoryBoost=clamp((W._contextMemory&&W._contextMemory[currentContext]&&W._contextMemory[currentContext][ca.name])?1.2:1.0,1,1.24);
-      const w=btFactor*wfBoost*Math.max(0.05,lw)*Math.max(0.1,rowW)*Math.max(0.1,ranW)*Math.max(0.1,regW)*nMult*lbMult*Math.max(0.45,perfW)*adaptMult*roleMult*memoryBoost;
+      const stateWeight=clamp((Math.max(0.05,lw)+Math.max(0.1,rowW)+Math.max(0.1,ranW)+Math.max(0.1,regW))/4,0.08,3.2);
+      const baseScore=customStrength[ca.name]||0.05;
+      const corrPenalty=customCorrPenalty[ca.name]||0;
+      const w=Math.max(0.02,stateWeight*baseScore*(1-corrPenalty));
       const preds=fn(series);
       preds.forEach((p,i)=>cast(ca.name,p,w/(i*0.6+1)));
-      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom",class:ca.class||classifyAlgo(ca.name,ca.code),category,context:currentContext,perf:+(perfMap[ca.name]?.rollingAccuracy||0).toFixed(3)};
+      details[ca.name]={pred:preds[0],bt:Math.round(bt*100),lw:+lw.toFixed(2),rw:+rowW.toFixed(2),w:+w.toFixed(2),type:"custom",class:ca.class||classifyAlgo(ca.name,ca.code),category,context:currentContext,perf:+(perfMap[ca.name]?.rollingAccuracy||0).toFixed(3),corrPenalty:+corrPenalty.toFixed(3),unifiedScore:+baseScore.toFixed(3),wf:+clamp((wfBoost-0.6)/0.8,0,1).toFixed(3)};
     }catch(e){}
   });
   perf.customMs+=PERF_NOW()-customT0;
@@ -3002,130 +3236,21 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const maxVote=Math.max(...Object.values(votes));
   Object.keys(votes).forEach(v=>{if(votes[v]<maxVote*0.01)delete votes[v];});
 
-  // ── FAMILY DIVERSITY BONUS ────────────────────────────────────────────
   const votesByFamily={};
+  const signalTypeSupport={};
   Object.entries(details).forEach(([name,info])=>{
     const v=info.pred!=null?M.mod(Math.round(info.pred)):-1;
     if(v<0||!votes[v])return;
-    const fam=_getFamily(name);
     if(!votesByFamily[v])votesByFamily[v]=new Set();
-    votesByFamily[v].add(fam);
+    votesByFamily[v].add(_getFamily(name));
+    if(!signalTypeSupport[v])signalTypeSupport[v]=new Set();
+    signalTypeSupport[v].add(info.type||"builtin");
   });
-  Object.keys(votesByFamily).forEach(v=>{
-    const vi=parseInt(v);
-    const nFam=votesByFamily[v].size;
-    if(nFam>=2&&votes[vi])votes[vi]*=FAMILY_HARMONY_MULT[Math.min(nFam,5)];
-  });
-
-  // ── MULTI-LAYER HARMONY AMPLIFIER ─────────────────────────────────────
-  // The deepest insight: when INDEPENDENT evidence streams (algo families, date signals,
-  // pattern bank, cross-dataset history, cross-col temporal) ALL point to the same value,
-  // that convergence is exponentially more reliable than any one stream alone.
-  // This is the "all algos working in harmony" mechanism.
-  const signalTypeSupport={}; // value → Set of evidence stream types
-  {
-    Object.entries(details).forEach(([,info])=>{
-      if(!ok(info.pred))return;
-      const v=M.mod(Math.round(info.pred));
-      if(!signalTypeSupport[v])signalTypeSupport[v]=new Set();
-      signalTypeSupport[v].add(info.type||"builtin");
-    });
-    // Multi-layer multipliers — each additional independent stream adds compounding confidence
-    // 2 types → 1.5x, 3 → 2.1x, 4 → 2.9x, 5+ → 3.8x
-    Object.entries(signalTypeSupport).forEach(([v,types])=>{
-      const vi=parseInt(v);
-      if(!votes[vi])return;
-      const n=types.size;
-      if(n>=2)votes[vi]*=LAYER_HARMONY_MULT[Math.min(n,5)];
-    });
-  }
-
-  // ── CONSENSUS FILTER: weighted agreement ──────────────────────────────
-  const algoAgreement={};
-  Object.entries(details).forEach(([,info])=>{
-    const v=info.pred!=null?M.mod(Math.round(info.pred)):-1;
-    if(v>=0)algoAgreement[v]=(algoAgreement[v]||0)+(info.w||1);
-  });
-  const maxAgree=Math.max(1,...Object.values(algoAgreement));
-  Object.entries(algoAgreement).forEach(([v,wt])=>{
-    const agreeRatio=wt/maxAgree;
-    if(agreeRatio>CONSENSUS_MIN_AGREEMENT_RATIO&&votes[parseInt(v)])votes[parseInt(v)]*=1+clamp(agreeRatio*CONSENSUS_MAX_BOOST,0,CONSENSUS_MAX_BOOST);
-  });
-
-  // Meta-learner
-  const metaModel=W._metaModel||null;
-  if(metaModel){
-    Object.keys(votes).forEach(v=>{
-      const vInt=parseInt(v);
-      const supporters=Object.entries(details).filter(([,d])=>ok(d.pred)&&M.mod(Math.round(d.pred))===vInt);
-      const mults=[];
-      supporters.forEach(([name])=>{
-        const rate=metaModel.weights[name];
-        if(rate==null)return;
-        mults.push(rate>0.55?1.35:rate>0.40?1.18:rate>0.25?1.04:rate<0.08?0.6:0.82);
-      });
-      if(mults.length){
-        votes[vInt]*=clamp(M.mean(mults),0.78,1.38);
-      }
-    });
-  }
-
-  // ── HISTORICAL FREQ FILTER ────────────────────────────────────────────
-  // Uses globalSeries frequency for more accurate "has this value ever appeared?"
-  const freqMap={};
-  btSeries.forEach(v=>{freqMap[v]=(freqMap[v]||0)+1;});
-  Object.keys(votes).forEach(v=>{
-    const vInt=parseInt(v);
-    const seenCount=freqMap[vInt]||0;
-    if(seenCount===0)votes[vInt]*=0.35;
-    else if(seenCount===1)votes[vInt]*=0.7;
-  });
-
-  // ── DEAD-ZONE BIAS CORRECTION ─────────────────────────────────────────
-  if(W._accLog&&W._accLog.length>=4){
-    const recentErrs=W._accLog.slice(-6).map(e=>{
-      const pred=e.preds&&e.preds[col];const act=e.actuals&&e.actuals[col];
-      if(!ok(pred)||!ok(act))return null;
-      let err=act-pred;if(err>50)err-=100;if(err<-50)err+=100;
-      return err;
-    }).filter(e=>e!=null);
-    if(recentErrs.length>=4){
-      const posCount=recentErrs.filter(e=>e>2).length;
-      const negCount=recentErrs.filter(e=>e<-2).length;
-      const n=recentErrs.length;
-      if(posCount>=Math.ceil(n*0.66)||negCount>=Math.ceil(n*0.66)){
-        const consistencyRatio=Math.max(posCount,negCount)/n;
-        const avgErr=Math.round(M.mean(recentErrs)*0.5*consistencyRatio);
-        Object.keys(votes).forEach(v=>{
-          const shifted=M.mod(parseInt(v)+avgErr);
-          if(votes[parseInt(v)]&&shifted!==parseInt(v)){
-            votes[shifted]=(votes[shifted]||0)+votes[parseInt(v)]*0.5;
-          }
-        });
-      }
-    }
-  }
   {
     const maxVote=Math.max(1,...Object.values(votes));
     Object.keys(votes).forEach(v=>{
       votes[v]=Math.min(votes[v],maxVote*MAX_VOTE_DOMINANCE_MULT);
     });
-  }
-  // Densest-region fallback/boost: cluster weighted predictions in circular number space.
-  const weightedPreds=Object.values(details).filter(d=>ok(d.pred)).map(d=>({v:M.mod(Math.round(d.pred)),w:Math.max(0.01,d.w||1)}));
-  if(weightedPreds.length>=5){
-    let bestCluster={center:weightedPreds[0].v,mass:0};
-    weightedPreds.forEach(seed=>{
-      let mass=0,sum=0;
-      weightedPreds.forEach(p=>{
-        if(M.cd(seed.v,p.v)<=DENSE_CLUSTER_RADIUS){mass+=p.w;sum+=p.v*p.w;}
-      });
-      if(mass>bestCluster.mass){
-        bestCluster={center:M.mod(Math.round(sum/(mass||1))),mass};
-      }
-    });
-    const boost=1+clamp(bestCluster.mass/(weightedPreds.reduce((s,p)=>s+p.w,0)||1),0.08,0.35);
-    votes[bestCluster.center]=(votes[bestCluster.center]||0)*boost+bestCluster.mass*DENSE_CLUSTER_MASS_WEIGHT;
   }
 
   // ── ENSEMBLE VARIANCE → CONFIDENCE DOWNGRADE ─────────────────────────
@@ -3152,15 +3277,15 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 
   const ac=Object.keys(details).length;
   const consensus=top5[0]?Math.round(top5[0].algos.length/ac*100):0;
-  const t1pct=top5[0]?top5[0].pct:0;
-  const highThr=Math.max(12,40-ac*0.18);
-  const medThr=Math.max(6,20-ac*0.09);
   const top1FamSupport=top5[0]?((votesByFamily[top5[0].value]||new Set()).size):0;
-  const conf=_ensembleVar>25?"LOW"
-    :t1pct>highThr&&_ensembleVar<12&&top1FamSupport>=2?"HIGH"
-    :t1pct>medThr||top1FamSupport>=3?"MED"
-    :"LOW";
-  const confClr=conf==="HIGH"?"#34d399":conf==="MED"?"#fbbf24":"#f87171";
+  const topVote=top5[0]?top5[0].votes:0;
+  const pmfEntropy=computePmfEntropy(votes);
+  const rawProb=clamp(total?topVote/total:0,0.01,0.99);
+  const calibratedProb=getCalibratedProb(rawProb,W._calibration||null);
+  const confProb=clamp(calibratedProb*(1-UNCERTAINTY_CONF_SUPPRESS*pmfEntropy),0.01,0.99);
+  const confPct=Math.round(confProb*100);
+  const conf=confPct+"%";
+  const confClr=confPct>=65?"#34d399":confPct>=45?"#fbbf24":"#f87171";
   const allP=Object.values(details).map(d=>d.pred).filter(ok);
   const sAllP=[...allP].sort((a,b)=>a-b);
   const lo=sAllP[Math.floor(sAllP.length*0.1)]||top5[0]?.value||0;
@@ -3173,8 +3298,16 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
   const dateAgree=dateSigList.filter(s=>s.match).length;
   const dateTotal=dateSigList.length;
   const layerSupport=topVal!=null&&signalTypeSupport[topVal]?signalTypeSupport[topVal].size:1;
+  const why={
+    selectedAlgorithms:evalNames,
+    gatedOutAlgorithms:allowedAlgos.filter(n=>!evalNames.includes(n)),
+    unifiedScores:Object.fromEntries(evalNames.map(n=>[n,+((builtInStrength[n]||0)).toFixed(4)])),
+    correlation:corrMatrix,
+    calibration:{rawProb:+rawProb.toFixed(4),calibratedProb:+calibratedProb.toFixed(4),temperature:+clamp(W?._calibration?.temperature??CALIB_TEMP_DEFAULT,CALIB_TEMP_MIN,CALIB_TEMP_MAX).toFixed(3)},
+    uncertainty:{pmfEntropy:+pmfEntropy.toFixed(4)}
+  };
   perf.totalMs=PERF_NOW()-tStart;
-  return{top5,details,consensus,algoCount:ac,conf,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,regime,context:currentContext,contextMetrics:contextInfo.metrics,corrMatrix:contextInfo.corr,influenceMatrix:contextInfo.influence,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,layerSupport,perf,algoBudget,lightweight};
+  return{top5,details,consensus,algoCount:ac,conf,confProb,rawProb,confClr,variance:allP.length>1?+M.std(allP).toFixed(1):0,pmfEntropy:+pmfEntropy.toFixed(4),regime,context:currentContext,contextMetrics:contextInfo.metrics,corrMatrix:contextInfo.corr,influenceMatrix:contextInfo.influence,bandLo:lo,bandHi:hi,tempSignals,tempAgree,tempTotal,dateSigList,dateAgree,dateTotal,familyAgreement:top1FamSupport,layerSupport,perf,algoBudget,lightweight,why};
 }
 
 // ── NEURAL RUNNING SCORE (per-algo accuracy tracker) ──
@@ -3184,7 +3317,8 @@ function updateNeuralScores(pred,actual,prevScores,regime,learnCtx){
   if(!pred)return next;
   const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
   // Adaptive learning rate by regime
-  const alpha=regime==="volatile"?NEURAL_ALPHA_VOLATILE:regime==="flat"?NEURAL_ALPHA_FLAT:NEURAL_ALPHA_DEFAULT;
+  const rg=normalizeRegimeLabel(regime);
+  const alpha=rg==="CHAOTIC"?NEURAL_ALPHA_VOLATILE:rg==="STABLE"?NEURAL_ALPHA_FLAT:NEURAL_ALPHA_DEFAULT;
   // Streak counters stored with _ prefix
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
@@ -3228,17 +3362,32 @@ function updateAlgoLeaderboard(lb,col,pred){
 }
 
 // ── CALIBRATION TRACKER ─────────────────────────
-function updateCalibration(conf,wasExact,prevCal){
-  const cal={...prevCal};
-  if(!cal[conf])cal[conf]={right:0,total:0};
-  cal[conf].total++;
-  if(wasExact)cal[conf].right++;
+function updateCalibration(prob,wasExact,prevCal){
+  const base=prevCal&&Array.isArray(prevCal.bins)?prevCal:{bins:Array.from({length:CALIB_BINS},()=>({right:0,total:0})),total:0,brierSum:0,temperature:CALIB_TEMP_DEFAULT,sumProb:0,sumOutcome:0};
+  const bins=base.bins.map(b=>({right:b.right||0,total:b.total||0}));
+  const bi=getCalibrationBin(prob!=null?prob:CONFIDENCE_PROB_DEFAULT);
+  bins[bi].total++;
+  if(wasExact)bins[bi].right++;
+  const total=(base.total||0)+1;
+  const brierPrev=base.brierSum||0;
+  const p=clamp(prob!=null?prob:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
+  const outcome=wasExact?1:0;
+  const brierSum=brierPrev+(p-outcome)*(p-outcome);
+  const sumProb=(base.sumProb||0)+p;
+  const sumOutcome=(base.sumOutcome||0)+outcome;
+  const avgProb=sumProb/total;
+  const avgOutcome=sumOutcome/total;
+  const overConf=avgProb-avgOutcome;
+  const prevTemp=clamp(ok(base.temperature)?base.temperature:CALIB_TEMP_DEFAULT,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
+  const targetTemp=clamp(CALIB_TEMP_DEFAULT+overConf*CALIB_OVERCONF_MULTIPLIER,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
+  const temperature=clamp(prevTemp*(1-CALIB_TEMP_ADAPT_RATE)+targetTemp*CALIB_TEMP_ADAPT_RATE,CALIB_TEMP_MIN,CALIB_TEMP_MAX);
+  const cal={bins,total,brierSum,sumProb,sumOutcome,temperature};
   return cal;
 }
-function getCalibrationLabel(conf,cal){
-  if(!cal||!cal[conf]||cal[conf].total<3)return conf;
-  const rate=Math.round(cal[conf].right/cal[conf].total*100);
-  return conf+"("+rate+"%)";
+function getCalibrationLabel(prob,cal){
+  const p=clamp(prob!=null?prob:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
+  const calibrated=getCalibratedProb(p,cal);
+  return Math.round(calibrated*100)+"%";
 }
 
 function updateAlgoPerformance(perf,name,predVal,actual,meta){
@@ -3250,6 +3399,9 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const closeness=clamp(1-M.cd(M.mod(Math.round(predVal)),actual)/MAX_TRACKING_ERROR,0,1);
   const hitScore=ex?1:nr?0.55:closeness*0.25;
   const signedErr=Math.min(M.cd(M.mod(Math.round(predVal)),actual),MAX_TRACKING_ERROR);
+  const pHat=clamp(1-signedErr/MAX_TRACKING_ERROR,0.01,0.99);
+  const y=ex?1:0;
+  const logLoss=-(y*Math.log(pHat)+(1-y)*Math.log(1-pHat));
   const rolling=[...(prev.rollingHits||[]),hitScore].slice(-PERF_ROLLING_WINDOW);
   const shortHits=[...(prev.shortHits||[]),hitScore].slice(-SHORT_WINDOW);
   const midHits=[...(prev.midHits||[]),hitScore].slice(-MID_WINDOW);
@@ -3263,6 +3415,7 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
   const contextScore={...(prev.contextScore||{}),[context]:prevCtxScore*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)};
   const errMean=errSeries.length?M.mean(errSeries):0;
   const errorVariance=errSeries.length?errSeries.reduce((s,v)=>s+(v-errMean)**2,0)/errSeries.length:0;
+  const logLossEMA=((prev.logLossEMA!=null?prev.logLossEMA:LOGLOSS_EMA_DEFAULT)*LOGLOSS_EMA_DECAY)+(logLoss*LOGLOSS_EMA_WEIGHT);
   perf[name]={
     ...prev,
     class:prev.class||meta.class||classifyAlgo(name),
@@ -3278,6 +3431,7 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
     contextScore,
     totalScore:+((prev.totalScore||0)+(hitScore-PERF_BASELINE_PENALTY)).toFixed(4),
     lastError:+signedErr.toFixed(3),
+    logLossEMA:+logLossEMA.toFixed(4),
     errorVariance:+errorVariance.toFixed(4),
     recentError:+recentError.toFixed(3),
     evalCount:(prev.evalCount||0)+1,
@@ -3292,45 +3446,8 @@ function updateAlgoPerformance(perf,name,predVal,actual,meta){
     byContext:{...catPrev.byContext,[context]:+(catCtxPrev*PERF_CONTEXT_DECAY+hitScore*(1-PERF_CONTEXT_DECAY)).toFixed(4)}
   };
 }
-function getAlgoNeuralStreak(scores,name){
-  if(!scores||!name)return 0;
-  const raw=scores["_s_"+name];
-  return typeof raw==="number"?raw:0;
-}
-function computeSoloAlgoStreak(accLog,col,name){
-  if(!Array.isArray(accLog)||!col||!name)return 0;
-  let n=0;
-  for(let i=accLog.length-1;i>=0;i--){
-    const entry=accLog[i];
-    const actual=entry?.actuals?.[col]??null;
-    if(!ok(actual))continue;
-    const pred=entry?.algoDetails?.[col]?.[name]??null;
-    if(!ok(pred))break;
-    if(isExactOrReversed(pred,actual))n++;
-    else break;
-  }
-  return n;
-}
-// Builds a bounded trust score (0-100) and label from per-algo performance,
-// current neural streak, and leaderboard signal; penalties reduce trust when
-// recent error/variance rises. Labels require both score and evidence count.
-function buildAlgoTrust(perf,streak,lbScore){
-  const rolling=(perf&&ok(perf.rollingAccuracy))?perf.rollingAccuracy:0;
-  const short=(perf&&ok(perf.shortScore))?perf.shortScore:rolling;
-  const mid=(perf&&ok(perf.midScore))?perf.midScore:rolling;
-  const evalCount=(perf&&ok(perf.evalCount))?perf.evalCount:0;
-  const recentError=(perf&&ok(perf.recentError))?perf.recentError:0;
-  const errVar=(perf&&ok(perf.errorVariance))?perf.errorVariance:0;
-  const evidenceBoost=Math.min(1,evalCount/TRUST_EVIDENCE_TARGET)*TRUST_EVIDENCE_MAX_BOOST;
-  const accuracyComponent=rolling*TRUST_WEIGHT_ROLLING+short*TRUST_WEIGHT_SHORT+mid*TRUST_WEIGHT_MID;
-  const momentumComponent=streak*TRUST_WEIGHT_STREAK+Math.min(TRUST_LEADERBOARD_CAP,lbScore||0)*TRUST_WEIGHT_LEADERBOARD;
-  const penaltyComponent=recentError*TRUST_WEIGHT_RECENT_ERROR+errVar*TRUST_WEIGHT_ERR_VARIANCE;
-  const scoreRaw=accuracyComponent+evidenceBoost+momentumComponent-penaltyComponent;
-  const score=Math.max(0,Math.min(100,Math.round(scoreRaw)));
-  let label="LOW";
-  if(evalCount>=TRUST_HIGH_EVAL_MIN&&score>=TRUST_HIGH_SCORE_MIN)label="HIGH";
-  else if(evalCount>=TRUST_MED_EVAL_MIN&&score>=TRUST_MED_SCORE_MIN)label="MED";
-  return{score,label,evalCount};
+function stabilizeMult(mult,upCap=1.18,downCap=0.86){
+  return clamp(mult,downCap,upCap);
 }
 
 // Fix 4+9: updateW now takes regime+calibration, maintains perRegime weights
@@ -3341,12 +3458,13 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
   const rgw={...(W.perRegime||{})};
   const perf={...(W.performance||{})};
   const hitSet=learnCtx&&learnCtx.hitAlgos instanceof Set?learnCtx.hitAlgos:new Set();
-  if(!rgw[regime])rgw[regime]={};
+  const normalizedRegime=normalizeRegimeLabel(regime);
+  if(!rgw[normalizedRegime])rgw[normalizedRegime]={};
   if(!pred)return{global:gw,perRow:rw,perRange:rnw,perRegime:rgw,performance:perf};
   const cr=Math.floor(actual/25);
   if(!rw[predRow])rw[predRow]={};
   if(!rnw[cr])rnw[cr]={};
-  const calMult=calibration?getCalibMult(pred.conf,calibration):1.0;
+  const calMult=calibration?getCalibMult(pred.confProb,calibration):1.0;
   Object.entries(pred.details).forEach(([name,info])=>{
     if(!ok(info.pred))return;
     const p=M.mod(Math.round(info.pred));
@@ -3369,14 +3487,14 @@ function updateW(pred,actual,W,predRow,regime,calibration,learnCtx){
     const decay=prev>1?0.96:0.98;
     // Cold-streak dampening: if momentum < 0.85 for 2+ misses, increase decay speed
     const coldDamp=newMom<0.82?0.92:decay;
-    gw[name]=Math.min(6,Math.max(0.04,prev*newMom))*coldDamp+(1-coldDamp);
+    gw[name]=Math.min(6,Math.max(0.04,prev*stabilizeMult(newMom,1.16,0.88)))*coldDamp+(1-coldDamp);
     const rp=rw[predRow][name]!=null?rw[predRow][name]:1;
-    rw[predRow][name]=Math.min(5,Math.max(0.05,rp*(exactLike?1.5:nr?1.15:0.75)));
+    rw[predRow][name]=Math.min(5,Math.max(0.05,rp*stabilizeMult(exactLike?1.5:nr?1.15:0.75)));
     const rn=rnw[cr][name]!=null?rnw[cr][name]:1;
-    rnw[cr][name]=Math.min(5,Math.max(0.05,rn*mult));
+    rnw[cr][name]=Math.min(5,Math.max(0.05,rn*stabilizeMult(mult)));
     // Fix 4: per-regime weight track
-    const rv=rgw[regime][name]!=null?rgw[regime][name]:1;
-    rgw[regime][name]=Math.min(5,Math.max(0.05,rv*(exactLike?1.45*calMult:nr?1.1:0.82)));
+    const rv=rgw[normalizedRegime][name]!=null?rgw[normalizedRegime][name]:1;
+    rgw[normalizedRegime][name]=Math.min(5,Math.max(0.05,rv*stabilizeMult(exactLike?1.45*calMult:nr?1.1:0.82)));
   });
   // Fix 8: per-DOW and per-lunar weight update (passed via extra param from checkAndLearn)
   return{
@@ -3634,7 +3752,10 @@ function scoreGeneratedAlgoCandidate(ca,data){
     const wf=walkFwd(fn,s);
     if(wf&&wf.total>=2)wfRate=(wf.exact+wf.near*0.4)/wf.total;
   }
-  return bt*AUTO_GENERATED_SCORE_BT_WEIGHT+wfRate*AUTO_GENERATED_SCORE_WF_WEIGHT;
+  const accuracy=bt*AUTO_GENERATED_SCORE_BT_WEIGHT+wfRate*AUTO_GENERATED_SCORE_WF_WEIGHT;
+  const complexity=estimateAlgoComplexity(ca.code);
+  const instability=clamp(Math.abs(bt-wfRate),0,1);
+  return computeEvolutionFitness(accuracy,complexity,instability);
 }
 function filterGeneratedAlgos(candidates,data){
   if(!Array.isArray(candidates)||candidates.length===0)return[];
@@ -3643,8 +3764,8 @@ function filterGeneratedAlgos(candidates,data){
     .sort((a,b)=>b._genScore-a._genScore);
   const strong=scored.filter(ca=>ca._genScore>=AUTO_GENERATED_MIN_SCORE);
   const weak=scored.filter(ca=>ca._genScore<AUTO_GENERATED_MIN_SCORE);
-  // Keep a weak tail for diversity instead of deleting low/degenerate forms too early.
-  const weakKeepCount=Math.min(weak.length,Math.max(WEAK_DIVERSITY_MIN_KEEP,Math.ceil(candidates.length*WEAK_DIVERSITY_RATIO)));
+  // Strict pruning: keep only a very small weak tail and only when strong pool is thin.
+  const weakKeepCount=strong.length>=WEAK_TAIL_STRONG_POOL_MIN?0:Math.min(1,weak.length);
   const selected=[...strong,...shuffleArray(weak).slice(0,weakKeepCount)];
   const seenCode=new Set();
   const out=[];
@@ -3800,9 +3921,13 @@ function scoreAlgo(ca,weights,rows,btCache){
   const avgBt=btCnt?totalBt/btCnt:0.05;
   const avgWf=btCnt?totalWf/btCnt:0.05;
   const avgNear1=btCnt?totalNear1/btCnt:0;
+  const accuracy=clamp(avgBt*0.55+avgWf*0.45,0,1);
+  const complexity=estimateAlgoComplexity(ca.code);
+  const instability=clamp(Math.abs(avgBt-avgWf)+(1-clamp(avgNear1,0,1))*0.35,0,1);
+  const fitness=computeEvolutionFitness(accuracy,complexity,instability);
   return{
-    score:avgNs*SCORE_WEIGHT_NS+avgStreak*SCORE_WEIGHT_STREAK+avgBt*SCORE_WEIGHT_BT+avgWf*SCORE_WEIGHT_WF+avgNear1*SCORE_WEIGHT_NEAR1,
-    avgNs,avgStreak,avgBt,avgWf,avgNear1,nsCount,btCnt
+    score:fitness+avgNs*EVOLUTION_NS_BLEND_WEIGHT+avgStreak*EVOLUTION_STREAK_BLEND_WEIGHT+avgNear1*EVOLUTION_NEAR1_BLEND_WEIGHT,
+    fitness,accuracy,complexity,instability,avgNs,avgStreak,avgBt,avgWf,avgNear1,nsCount,btCnt
   };
 }
 
@@ -3828,6 +3953,61 @@ function detectRedundant(customs,rows){
     }
   });
   return redundant;
+}
+function detectCorrelatedWeakGenerated(scored,rows){
+  if(!Array.isArray(scored)||scored.length<3)return new Set();
+  const candidates=scored.slice(0,Math.min(80,scored.length));
+  const traces={};
+  const buildTrace=ca=>{
+    const fn=makeCustomFn(ca.code);
+    if(!fn)return null;
+    const out=[];
+    COLS.forEach(col=>{
+      const s=getSeries(col,rows);
+      if(s.length<10)return;
+      const start=Math.max(5,s.length-18);
+      for(let i=start;i<s.length;i+=2){
+        const hist=s.slice(0,i);
+        if(hist.length<5)continue;
+        try{
+          const p=fn(hist)||[];
+          out.push(ok(p[0])?M.mod(Math.round(p[0])):0);
+        }catch(e){out.push(0);}
+      }
+    });
+    return out.length>=10?out:null;
+  };
+  const corr=(a,b)=>{
+    const n=Math.min(a.length,b.length);
+    if(n<10)return 0;
+    const xa=a.slice(0,n),xb=b.slice(0,n);
+    const ma=M.mean(xa),mb=M.mean(xb);
+    let num=0,da=0,db=0;
+    for(let i=0;i<n;i++){
+      num+=(xa[i]-ma)*(xb[i]-mb);
+      da+=(xa[i]-ma)**2;
+      db+=(xb[i]-mb)**2;
+    }
+    return (da*db)>0?num/Math.sqrt(da*db):0;
+  };
+  candidates.forEach(({ca})=>{
+    const tr=buildTrace(ca);
+    if(tr)traces[ca.name]=tr;
+  });
+  const removed=new Set();
+  for(let i=0;i<candidates.length;i++){
+    for(let j=i+1;j<candidates.length;j++){
+      const a=candidates[i],b=candidates[j];
+      if(removed.has(a.ca.name)||removed.has(b.ca.name))continue;
+      const ta=traces[a.ca.name],tb=traces[b.ca.name];
+      if(!ta||!tb)continue;
+      const c=Math.abs(corr(ta,tb));
+      if(c<CORR_STRONG_THRESHOLD)continue;
+      if(a.score===b.score)removed.add(a.ca.name<=b.ca.name?b.ca.name:a.ca.name);
+      else removed.add(a.score>b.score?b.ca.name:a.ca.name);
+    }
+  }
+  return removed;
 }
 
 function pruneWeakAlgos(customs,weights,rows,btCache,adaptiveControl){
@@ -3899,6 +4079,12 @@ function pruneWeakAlgos(customs,weights,rows,btCache,adaptiveControl){
     prunedNow++;
   });
   const removedSet=new Set(removed.map(r=>r.name));
+  const corrWeak=detectCorrelatedWeakGenerated(scored,rows);
+  corrWeak.forEach(name=>{
+    if(removedSet.has(name))return;
+    removed.push({name,reason:"high_corr_weaker_peer"});
+    removedSet.add(name);
+  });
   const keptGenerated=generated
     .filter(ca=>!redundant.has(ca.name)&&!removedSet.has(ca.name))
     .map(ca=>({...ca,class:ca.class||classifyAlgo(ca.name,ca.code),enabled:true,benched:false}));
@@ -3945,6 +4131,23 @@ function doExportCSV(data,preds,predRow){
 function doExportJSON(state){
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ape-v13-backup-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+}
+function doExportRowsJSON(data){
+  const payload=(data||[]).map(r=>({
+    row:r?.row??null,
+    A:r?.A??null,
+    B:r?.B??null,
+    C:r?.C??null,
+    D:r?.D??null,
+    E:r?.E??null,
+    F:r?.F??null,
+    G:r?.G??null,
+    date:r?.date??null
+  }));
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download="ape-v13-rows-"+Date.now()+".json";
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 
 // ── WEIGHTS IMPORT/EXPORT ─────────────────────
@@ -4194,9 +4397,10 @@ function fresh(){
     active:"def",
     weights:mkColWeightDefaults(),
     algoLeaderboard:mkColMapDefaults(),
-    calibration:mkColMapDefaults(),
+    calibration:normalizeCalibrationMap(mkColMapDefaults()),
     patternBank:mkColMapDefaults(),
     contextMemory:{},
+    validationBaseline:null,
     adaptiveControl:{mutationScale:1,pruneScale:1,status:"balanced"},
     customs:[],accLog:[],preds:null,predRow:null,predDate:null,genN:0,tourN:0,lastAutoGenRows:0,lastAutoEvolveRows:0,pruneLog:[]
   };
@@ -4242,6 +4446,7 @@ function AppInner(){
   const[genMsg,setGenMsg]=useState("");
   const[wfRes,setWfRes]=useState(null);
   const[corrM,setCorrM]=useState(null);
+  const[auditRes,setAuditRes]=useState(null);
   const[dsName,setDsName]=useState("");
   const[copyMsg,setCopyMsg]=useState("");
   const[predictCopyMsg,setPredictCopyMsg]=useState("");
@@ -4304,10 +4509,11 @@ function AppInner(){
         if(!saved.weights||!saved.weights[COLS[0]]||!saved.weights[COLS[0]].global)saved.weights=mkColWeightDefaults();
         // Migrate all weight tables (uses same logic as import)
         saved.weights=migrateWeights(saved.weights);
-        if(!saved.calibration)saved.calibration=mkColMapDefaults();
+        saved.calibration=normalizeCalibrationMap(saved.calibration||mkColMapDefaults());
         if(!saved.patternBank)saved.patternBank=mkColMapDefaults();
         if(!saved.algoLeaderboard)saved.algoLeaderboard=mkColMapDefaults();
         if(!saved.contextMemory)saved.contextMemory={};
+        if(!saved.validationBaseline)saved.validationBaseline=null;
         if(!saved.adaptiveControl)saved.adaptiveControl={mutationScale:1,pruneScale:1,status:"balanced"};
         if(!saved.customs)saved.customs=[];
         if(!saved.genN)saved.genN=0;
@@ -4457,6 +4663,7 @@ function AppInner(){
         if(parsed.dataset&&!parsed.datasets){parsed.datasets={def:{name:"Imported",rows:parsed.dataset}};parsed.active="def";}
         parsed.weights=migrateWeights(parsed.weights||{});
         if(!parsed.customs)parsed.customs=[];
+        parsed.calibration=normalizeCalibrationMap(parsed.calibration||mkColMapDefaults());
         if(!parsed.patternBank)parsed.patternBank=mkColMapDefaults();
         if(!parsed.contextMemory)parsed.contextMemory={};
         if(!parsed.adaptiveControl)parsed.adaptiveControl={mutationScale:1,pruneScale:1,status:"balanced"};
@@ -4497,7 +4704,7 @@ function AppInner(){
         const dsKey=prev.active;
         const existingRows=[...(prev.datasets[dsKey]?.rows||[])];
         let nw={...prev.weights};
-        let nc={...(prev.calibration||mkColMapDefaults())};
+        let nc=normalizeCalibrationMap(prev.calibration||mkColMapDefaults());
         let newCustoms=[...(prev.customs||[])];
         const newAccLog=[...(prev.accLog||[])];
         let newContextMemory={...(prev.contextMemory||{})};
@@ -4507,7 +4714,8 @@ function AppInner(){
           const exist=existIdx>=0?existingRows[existIdx]:null;
           const newlyKnownCols=COLS.filter(c=>inc[c]!=null&&(exist?.[c]==null));
           if(exist===null){
-            const entry={row:inc.row,A:inc.A,B:inc.B,C:inc.C,D:inc.D};
+            const entry={row:inc.row};
+            COLS.forEach(c=>{entry[c]=inc[c]??null;});
             if(inc.date)entry.date=inc.date;
             existingRows.push(entry);added++;
           } else {
@@ -4523,7 +4731,7 @@ function AppInner(){
             const dateCtx=inc.date?parseDate(inc.date):null;
             const dtCtx=dateCtx?{dow:dateCtx.dow,lunar:dateCtx.lunarPhase,month:dateCtx.m,season:dateCtx.season}:null;
             newlyKnownCols.forEach(col=>{
-              const colRegime=prev.preds[col]?prev.preds[col].regime:"normal";
+              const colRegime=normalizeRegimeLabel(prev.preds[col]?prev.preds[col].regime:"STABLE");
               const hitCtx=getTop5HitContext(prev.preds[col],actuals[col]);
               let uw=updateW(prev.preds[col],actuals[col],nw[col],inc.row,colRegime,nc[col],hitCtx);
               uw.global=applyForgetting(uw.global,newAccLog);
@@ -4531,7 +4739,7 @@ function AppInner(){
               nw[col]=uw;
               if(prev.preds[col]){
                 const wasExactLike=isExactLikePrediction(prev.preds[col],actuals[col],hitCtx);
-                nc[col]=updateCalibration(prev.preds[col].conf,wasExactLike,nc[col]||{});
+                nc[col]=updateCalibration(prev.preds[col].confProb,wasExactLike,nc[col]||{});
               }
             });
             const exactCount=newlyKnownCols.filter(c=>{
@@ -4638,7 +4846,7 @@ function AppInner(){
     const _sharedMeta=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     const _slimAccLog=(S.accLog||[]).slice(-10);
     COLS.forEach(col=>{
-      const W={...S.weights[col],_metaModel:_sharedMeta,_accLog:_slimAccLog,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{}};
+      const W={...S.weights[col],_metaModel:_sharedMeta,_accLog:_slimAccLog,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null};
       result[col]=predictCol(col,scopedRows,W,S.customs,tDate,S.datasets,S.patternBank);
     });
     // Joint column hint
@@ -4689,6 +4897,82 @@ function AppInner(){
     setCheckRes(null);setActs(mkColTextDefaults());setTab("predict");
     setTimeout(()=>st("Predictions ready"+(tDate?" · "+tDate:"")+" ✓"),300);
   }
+  function runValidationAudit(freezeBaseline=false){
+    if(rows.length<12){st("Need at least 12 rows for audit","warn");return;}
+    const sorted=[...rows].sort((a,b)=>{
+      if(a.date&&b.date)return a.date.localeCompare(b.date);
+      return a.row-b.row;
+    });
+    const warmup=6;
+    const t0=PERF_NOW();
+    const byCol=Object.fromEntries(COLS.map(c=>[c,{exact:0,total:0,logLoss:0,entropy:0,variance:0}]));
+    const byRegime={};
+    let exact=0,total=0,logLossSum=0,brierSum=0,entropySum=0,varSum=0;
+    const bins=Array.from({length:CALIB_BINS},()=>({sumP:0,sumY:0,total:0}));
+    for(let i=warmup;i<sorted.length;i++){
+      const hist=sorted.slice(0,i);
+      const row=sorted[i];
+      COLS.forEach(col=>{
+        const actual=row[col];
+        if(!ok(actual))return;
+        const W={...S.weights[col],_accLog:(S.accLog||[]).slice(-AUDIT_ACCLOG_LOOKBACK),_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null};
+        const pred=predictCol(col,getWindowRows(hist,ROLLING_WINDOW_ROWS),W,S.customs,row.date||"",S.datasets,S.patternBank);
+        if(!pred||!pred.top5||!pred.top5.length)return;
+        const top1=pred.top5[0].value;
+        const hit=isExactOrReversed(top1,actual);
+        const p=clamp(pred.confProb!=null?pred.confProb:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
+        const y=hit?1:0;
+        const ll=-(y*Math.log(p)+(1-y)*Math.log(1-p));
+        const rg=normalizeRegimeLabel(pred.regime);
+        if(!byRegime[rg])byRegime[rg]={exact:0,total:0,logLoss:0};
+        byRegime[rg].total++;
+        byRegime[rg].exact+=hit?1:0;
+        byRegime[rg].logLoss+=ll;
+        byCol[col].total++;
+        byCol[col].exact+=hit?1:0;
+        byCol[col].logLoss+=ll;
+        byCol[col].entropy+=(pred.pmfEntropy||0);
+        byCol[col].variance+=(pred.variance||0);
+        exact+=hit?1:0;
+        total++;
+        logLossSum+=ll;
+        brierSum+=(p-y)*(p-y);
+        entropySum+=(pred.pmfEntropy||0);
+        varSum+=(pred.variance||0);
+        const bi=getCalibrationBin(p);
+        bins[bi].sumP+=p;
+        bins[bi].sumY+=y;
+        bins[bi].total++;
+      });
+    }
+    if(!total){st("Audit skipped: no evaluable known values","warn");return;}
+    const ece=+bins.reduce((s,b)=>{
+      if(!b.total)return s;
+      const conf=b.sumP/b.total;
+      const acc=b.sumY/b.total;
+      return s+Math.abs(conf-acc)*(b.total/total);
+    },0).toFixed(4);
+    const result={
+      total,
+      exactPct:+(exact/total*100).toFixed(2),
+      logLoss:+(logLossSum/total).toFixed(4),
+      brier:+(brierSum/total).toFixed(4),
+      ece,
+      entropy:+(entropySum/total).toFixed(4),
+      variance:+(varSum/total).toFixed(4),
+      runtimeMs:+(PERF_NOW()-t0).toFixed(2),
+      byRegime:Object.fromEntries(Object.entries(byRegime).map(([k,v])=>[k,{exactPct:v.total?+(v.exact/v.total*100).toFixed(2):0,logLoss:v.total?+(v.logLoss/v.total).toFixed(4):0,total:v.total}])),
+      byColumn:Object.fromEntries(Object.entries(byCol).map(([k,v])=>[k,{exactPct:v.total?+(v.exact/v.total*100).toFixed(2):0,logLoss:v.total?+(v.logLoss/v.total).toFixed(4):0,entropy:v.total?+(v.entropy/v.total).toFixed(4):0,variance:v.total?+(v.variance/v.total).toFixed(4):0,total:v.total}])),
+      at:new Date().toISOString()
+    };
+    setAuditRes(result);
+    if(freezeBaseline){
+      upd(prev=>({...prev,validationBaseline:{exactPct:result.exactPct,logLoss:result.logLoss,ece:result.ece,brier:result.brier,entropy:result.entropy,variance:result.variance,at:result.at}}));
+      st("Audit complete and baseline frozen ✓","ok");
+      return;
+    }
+    st("Audit complete ✓","ok");
+  }
 
   // Run full prediction for unknown columns using known values as cross-col hints
   function predictMissingCols(){
@@ -4723,7 +5007,7 @@ function AppInner(){
     const _meta2=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
     const unresolved=[...missing];
     const computePredictionStrength=pred=>{
-      const conf=pred?.conf==="HIGH"?2.8:pred?.conf==="MED"?1.9:1.1;
+      const conf=pred?.confProb!=null?pred.confProb*3:1.1;
       const pct=(pred?.top5&&pred.top5[0]?pred.top5[0].pct:0)/100;
       const spreadPenalty=pred?.variance!=null?Math.max(0,1-pred.variance/60):0.6;
       return conf+pct+spreadPenalty;
@@ -4731,7 +5015,7 @@ function AppInner(){
     while(unresolved.length){
       let best=null;
       unresolved.forEach(col=>{
-        const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{}},S.customs,S.predDate||"",S.datasets,S.patternBank);
+        const pred=predictCol(col,tempDataset,{...S.weights[col],_metaModel:_meta2,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{},_calibration:(S.calibration&&S.calibration[col])||null},S.customs,S.predDate||"",S.datasets,S.patternBank);
         if(!pred||!pred.top5||!pred.top5[0])return;
         const score=computePredictionStrength(pred);
         if(!best||score>best.score)best={col,pred,score};
@@ -4788,14 +5072,13 @@ function AppInner(){
     setCheckRes(results);
     upd(prev=>{
       const nw={...prev.weights};
-      const nc={...(prev.calibration||mkColMapDefaults())};
-      let nlb={...(prev.algoLeaderboard||mkColMapDefaults())};
+      const nc=normalizeCalibrationMap(prev.calibration||mkColMapDefaults());
       // Bug 2 fix: compute dateCtx BEFORE the loop that uses it
       const _datePd=prev.predDate?parseDate(prev.predDate):null;
       const dateCtx=_datePd?{dow:_datePd.dow,lunar:_datePd.lunarPhase,month:_datePd.m,season:_datePd.season}:null;
       COLS.forEach(col=>{
         if(actuals[col]===null)return;
-        const colRegime=prev.preds[col]?prev.preds[col].regime:"normal";
+        const colRegime=normalizeRegimeLabel(prev.preds[col]?prev.preds[col].regime:"STABLE");
         const hitCtx=getTop5HitContext(prev.preds[col],actuals[col]);
         let updated=updateW(prev.preds[col],actuals[col],prev.weights[col],prev.predRow,colRegime,prev.calibration&&prev.calibration[col],hitCtx);
         // Bug 12 fix: decay ALL weight maps, not just global
@@ -4824,10 +5107,9 @@ function AppInner(){
         nw[col]=updated;
         const pred=prev.preds[col];
         if(pred){
-          nlb=updateAlgoLeaderboard(nlb,col,pred);
           const colHitCtx=getTop5HitContext(pred,actuals[col]);
           const wasExactLike=isExactLikePrediction(pred,actuals[col],colHitCtx);
-          nc[col]=updateCalibration(pred.conf,wasExactLike,nc[col]||{});
+          nc[col]=updateCalibration(pred.confProb,wasExactLike,nc[col]||{});
         }
       });
       const knownCount=knownCols.length;
@@ -4895,7 +5177,7 @@ function AppInner(){
         }
       });
 
-      return{...prev,weights:nw,algoLeaderboard:nlb,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,contextMemory:newContextMemory,adaptiveControl,accLog:newFullLog,lastAutoGenRows:newRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
+      return{...prev,weights:nw,calibration:nc,customs:finalCustoms,datasets:newDs,patternBank:newPatternBank,contextMemory:newContextMemory,adaptiveControl,accLog:newFullLog,lastAutoGenRows:newRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
     });
     st("Learned! "+exactCount+"/"+knownCols.length+" exact · "+numberHitCount+" top5 hits — weights saved ✓");
     const pct=Math.round(exactCount/knownCols.length*100);
@@ -4995,6 +5277,9 @@ function AppInner(){
         adaptiveControl:{...(prev.adaptiveControl||{mutationScale:1,pruneScale:1,status:"balanced"})},
         allDs:{...prev.datasets}, // kept in sync as rows are added
         exactTotal:0,nearTotal:0,totalKnown:0,
+        logLossSum:0,brierSum:0,
+        eceBins:Array.from({length:CALIB_BINS},()=>({sumP:0,sumY:0,total:0})),
+        regimeStats:{},
         btCache:{},         // {col__name:{bt,wfBoost}} — rebuilt on schedule
         btCacheAge:0,       // ticks since last btCache refresh
         cachedMeta:null,    // buildMetaModel result — rebuilt every 25 rows
@@ -5073,6 +5358,7 @@ function AppInner(){
           _btCache:tr.btCache,_btCacheCol:col,
           _leaderboard:tr.leaderboard[col]||{},
           _contextMemory:tr.contextMemory||{},
+          _calibration:tr.calibration[col]||null,
           _algoBudget:tr.lightweight?10:HEAVY_TOPK_EVAL,
           _lightweight:tr.lightweight};
         rowPreds[col]=predictCol(col,scopedHistory,W,tr.customs,csvRow.date||"",tr.allDs,tr.patternBank);
@@ -5100,12 +5386,26 @@ function AppInner(){
         const nr=!exactLike&&M.near(top1??-1,actual,2);
         rowResults[col]={predicted:top1,actual,exact:exactLike,numberHit:!exTop1&&hitCtx.top5Hit,near:nr,skipped:false};
         if(exactLike)rowExact++;rowKnown++;
-        const regime=pred.regime||"normal";
+        const regime=normalizeRegimeLabel(pred.regime||"STABLE");
+        const pp=clamp(pred.confProb!=null?pred.confProb:CONFIDENCE_PROB_DEFAULT,0.01,0.99);
+        const y=exactLike?1:0;
+        tr.logLossSum+=-(y*Math.log(pp)+(1-y)*Math.log(1-pp));
+        tr.brierSum+=(pp-y)*(pp-y);
+        const ebi=getCalibrationBin(pp);
+        if(ebi>=0&&ebi<CALIB_BINS&&tr.eceBins[ebi]){
+          tr.eceBins[ebi].sumP+=pp;
+          tr.eceBins[ebi].sumY+=y;
+          tr.eceBins[ebi].total++;
+        }
+        if(!tr.regimeStats[regime])tr.regimeStats[regime]={exact:0,total:0,logLoss:0};
+        tr.regimeStats[regime].total++;
+        tr.regimeStats[regime].exact+=exactLike?1:0;
+        tr.regimeStats[regime].logLoss+=-(y*Math.log(pp)+(1-y)*Math.log(1-pp));
         // Skip applyForgetting in hot path — deferred to autoTrainFinish
         let uw=updateW(pred,actual,tr.weights[col],csvRow.row,regime,tr.calibration[col],hitCtx);
         if(dateCtx)uw=updateDateWeights(pred,actual,uw,dateCtx);
         tr.weights[col]=uw;
-        tr.calibration[col]=updateCalibration(pred.conf,exactLike,tr.calibration[col]||{});
+        tr.calibration[col]=updateCalibration(pred.confProb,exactLike,tr.calibration[col]||{});
         tr.leaderboard=updateAlgoLeaderboard(tr.leaderboard,col,pred);
       });
       tr.perf.updMs+=PERF_NOW()-updT0;
@@ -5211,13 +5511,13 @@ function AppInner(){
       // Cap at 120 hard — beyond this btScore gain is <1% but cost grows linearly
       const btSer=(globalSer.length>localSer.length?globalSer:localSer).slice(-120);
       if(btSer.length<4)return;
-      const regime=getRegime(localSer);
+      const regime=normalizeRegimeLabel(getRegime(localSer));
       const allowedNames=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
-      let budget=HEAVY_TOPK_EVAL;
-      if(tr.lightweight)budget=10;
-      else if(hlen>280)budget=16;
-      else if(hlen>160)budget=22;
-      const evalNames=selectAlgoNames(allowedNames,regime,Math.min(budget,allowedNames.length));
+      let budget=ACTIVE_ALGO_MAX;
+      if(tr.lightweight)budget=ACTIVE_ALGO_MIN;
+      else if(hlen>280)budget=Math.min(18,ACTIVE_ALGO_MAX);
+      else if(hlen>160)budget=Math.min(22,ACTIVE_ALGO_MAX);
+      const evalNames=selectAlgoNames(allowedNames,regime,Math.max(Math.min(ACTIVE_ALGO_MIN,allowedNames.length),Math.min(budget,allowedNames.length)));
       evalNames.forEach(name=>{
         try{
           const bt=btScore(A[name],btSer);
@@ -5262,6 +5562,20 @@ function AppInner(){
 
     const exactPct=tr.totalKnown>0?Math.round(tr.exactTotal/tr.totalKnown*100):0;
     const nearPct=tr.totalKnown>0?Math.round((tr.exactTotal+tr.nearTotal)/tr.totalKnown*100):0;
+    const logLoss=tr.totalKnown?+(tr.logLossSum/tr.totalKnown).toFixed(4):0;
+    const brier=tr.totalKnown?+(tr.brierSum/tr.totalKnown).toFixed(4):0;
+    const ece=tr.totalKnown?+(
+      (tr.eceBins||[]).reduce((s,b)=>{
+        if(!b.total)return s;
+        const conf=b.sumP/b.total;
+        const acc=b.sumY/b.total;
+        return s+Math.abs(conf-acc)*(b.total/tr.totalKnown);
+      },0)
+    ).toFixed(4):0;
+    const perRegimeSummary=Object.fromEntries(Object.entries(tr.regimeStats||{}).map(([k,v])=>[
+      normalizeRegimeLabel(k),
+      {exactPct:v.total?Math.round(v.exact/v.total*100):0,logLoss:v.total?+(v.logLoss/v.total).toFixed(4):0,total:v.total||0}
+    ]));
     const runtimeSec=Math.max(0.1,(PERF_NOW()-tr.perf.startedAt)/1000);
     const rowsPerSec=+((tr.perf.rows||tr.total)/runtimeSec).toFixed(2);
     const avgPredMs=tr.perf.rows?+(tr.perf.predMs/tr.perf.rows).toFixed(2):0;
@@ -5270,14 +5584,24 @@ function AppInner(){
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "✅ Done — "+tr.total+" rows processed",
       "🎯 Exact: "+tr.exactTotal+"/"+tr.totalKnown+" ("+exactPct+"%)  Near+: "+nearPct+"%",
+      "📉 LogLoss: "+logLoss+" · Brier: "+brier+" · ECE: "+ece,
       "⏱ Throughput: "+rowsPerSec+" rows/s · avg predict "+avgPredMs+"ms · avg tick "+avgTickMs+"ms",
       "🧠 Algos kept: "+finalCustoms.filter(a=>!a.benched).length+"  Pruned: "+removed.length,
       "🗂 Pattern bank: "+COLS.reduce((s,c)=>s+Object.keys(tr.patternBank[c]?.mdProfiles||{}).length,0)+" MD-exact profiles",
       "💾 Weights saved — ready to predict"
     ];
 
+    let rejectedByGate=false;
+    let gateReason="";
     // Single atomic React state commit
     setS(prev=>{
+      const baseline=prev.validationBaseline;
+      const isRejectedByLogLossGate=!!(baseline&&exactPct>baseline.exactPct&&logLoss>baseline.logLoss+LOGLOSS_GATE_TOLERANCE);
+      if(isRejectedByLogLossGate){
+        rejectedByGate=true;
+        gateReason="accuracy "+exactPct+"% > baseline "+baseline.exactPct+"% but log-loss "+logLoss+" > baseline "+baseline.logLoss;
+        return prev;
+      }
       const saved={...prev,
         weights:tr.weights,calibration:tr.calibration,
         customs:finalCustoms,datasets:finalDs,
@@ -5291,14 +5615,17 @@ function AppInner(){
       saveS(saved);
       return saved;
     });
+    if(rejectedByGate){
+      finalLog.push("🚫 Validation gate: rejected ("+gateReason+")");
+    }
     setAutoTrainStatus(s=>({...s,running:false,done:true,progress:tr.total,
       log:[...(s?.log||[]).filter(l=>!l.startsWith("━")),...finalLog],
       result:{exactPct,nearPct,total:tr.total,
-        kept:finalCustoms.filter(a=>!a.benched).length,pruned:removed.length,
-        perf:{rowsPerSec,avgPredMs,avgTickMs}}}));
+        kept:finalCustoms.filter(a=>!a.benched).length,pruned:removed.length,rejected:rejectedByGate,
+        perf:{rowsPerSec,avgPredMs,avgTickMs},metrics:{logLoss,brier,ece,perRegime:perRegimeSummary}}}));
     autoTrainRef.current=false;
     _TC.clear(); // free cache memory
-    syslog("🚀 Auto-train done: "+tr.total+" rows · "+exactPct+"% exact · "+finalCustoms.filter(a=>!a.benched).length+" algos","learn");
+    syslog((rejectedByGate?"🚫 Auto-train rejected by validation gate: ":"🚀 Auto-train done: ")+tr.total+" rows · "+exactPct+"% exact · "+finalCustoms.filter(a=>!a.benched).length+" algos",rejectedByGate?"warn":"learn");
   }
 
   function doGenerate(){
@@ -5393,54 +5720,6 @@ function AppInner(){
     return s;
   },[accLog]);
 
-  const todayLeaderboard=useMemo(()=>{
-    if(!S.preds)return null;
-    const perCol={};
-    const all=[];
-    COLS.forEach(col=>{
-      const pred=S.preds[col];
-      if(!pred||!pred.details)return;
-      const details=Object.entries(pred.details).map(([name,info])=>{
-        const perf=S.weights&&S.weights[col]&&S.weights[col].performance?S.weights[col].performance[name]||{}:{};
-        const ns=S.weights&&S.weights[col]&&S.weights[col].neuralScores?S.weights[col].neuralScores:{};
-        const lb=S.algoLeaderboard&&S.algoLeaderboard[col]?S.algoLeaderboard[col][name]||0:0;
-        const algoStreak=getAlgoNeuralStreak(ns,name);
-        const soloStreak=computeSoloAlgoStreak(accLog,col,name);
-        const trust=buildAlgoTrust(perf,algoStreak,lb);
-        const top1Pred=pred&&pred.top5&&pred.top5[0]?pred.top5[0].value:0;
-        const selectedPred=ok(info?.pred)?info.pred:top1Pred;
-        const probable=M.mod(Math.round(selectedPred));
-        return{
-          col,name,probable,algoStreak,soloStreak,lb,
-          trustScore:trust.score,trustLabel:trust.label,evalCount:trust.evalCount,
-          score:trust.score+soloStreak*TODAY_SCORE_SOLO_STREAK_MULT+(trust.label==="HIGH"?TODAY_SCORE_HIGH_TRUST_BONUS:trust.label==="MED"?TODAY_SCORE_MED_TRUST_BONUS:0),
-          perfRolling:+((perf&&perf.rollingAccuracy)||0).toFixed(3)
-        };
-      }).sort((a,b)=>b.score-a.score);
-      if(!details.length)return;
-      perCol[col]={
-        best:details[0],
-        trusted:details.filter(x=>x.trustLabel!=="LOW").slice(0,5),
-        ranked:details
-      };
-      all.push(...details);
-    });
-    if(!all.length)return null;
-    all.sort((a,b)=>b.score-a.score);
-    const topNumber=COLS.map(col=>{
-      const p=S.preds&&S.preds[col]&&S.preds[col].top5&&S.preds[col].top5[0]?S.preds[col].top5[0]:null;
-      if(!p)return null;
-      return{col,value:p.value,pct:p.pct||0};
-    }).filter(Boolean).sort((a,b)=>b.pct-a.pct)[0]||null;
-    return{
-      perCol,
-      globalTop:all.slice(0,14),
-      strongestAlgo:all[0]||null,
-      onFire:all.filter(x=>x.soloStreak>=MIN_SOLO_STREAK_ON_FIRE).sort((a,b)=>b.soloStreak-a.soloStreak||b.score-a.score).slice(0,MAX_ON_FIRE_DISPLAY),
-      topNumber
-    };
-  },[S.preds,S.weights,S.algoLeaderboard,accLog]);
-
   const missingRows=useMemo(()=>{
     const nums=rows.map(r=>r.row).sort((a,b)=>a-b);
     const missing=[];
@@ -5472,7 +5751,7 @@ function AppInner(){
         </div>
 
         <div style={{display:"flex",borderBottom:"1px solid #12152a",marginBottom:14,overflowX:"auto"}}>
-          {[{id:"data",l:"📊 Data ("+rows.length+")"},{id:"predict",l:"🔮 Predict"},{id:"leaderboard",l:"🏆 Today Leaderboard"},{id:"learn",l:"✅ Learn"+(accLog.length?" ("+accLog.length+")":"")},{id:"analysis",l:"📈 Analysis"},{id:"algos",l:"⚙ Algos ("+(ALGO_COUNT+customs.length)+")"}].map(function(t){
+          {[{id:"data",l:"📊 Data ("+rows.length+")"},{id:"predict",l:"🔮 Predict"},{id:"learn",l:"✅ Learn"+(accLog.length?" ("+accLog.length+")":"")},{id:"analysis",l:"📈 Analysis"},{id:"algos",l:"⚙ Algos ("+(ALGO_COUNT+customs.length)+")"}].map(function(t){
             return <button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"rgba(167,139,250,.1)":"transparent",border:"none",borderBottom:tab===t.id?"2px solid #a78bfa":"2px solid transparent",color:tab===t.id?"#a78bfa":"#4a4e6a",padding:"8px 12px",cursor:"pointer",fontSize:11,fontFamily:"inherit",whiteSpace:"nowrap",marginBottom:-1}}>{t.l}</button>;
           })}
           <div style={{flex:1}}/>
@@ -5527,7 +5806,7 @@ function AppInner(){
                     <span style={{fontSize:9,opacity:.8,display:"block"}}>CSV with known outcomes</span>
                     <input type="file" accept=".csv,.txt" onChange={doAutoTrain} style={{display:"none"}}/>
                   </label>
-                  {autoTrainStatus?.running&&<button onClick={()=>{autoTrainRef.current=true;}} style={{background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#f87171",padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>⛔ Stop</button>}
+                  {autoTrainStatus?.running&&<button onClick={()=>{autoTrainRef.current=false;}} style={{background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#f87171",padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>⛔ Stop</button>}
                 </div>
               </div>
               {/* Progress */}
@@ -5557,6 +5836,9 @@ function AppInner(){
                   {autoTrainStatus.result.perf&&<div style={{background:"rgba(96,165,250,.08)",border:"1px solid rgba(96,165,250,.2)",borderRadius:6,padding:"4px 10px",fontSize:10}}>
                     <span style={{color:"#60a5fa",fontWeight:700}}>{autoTrainStatus.result.perf.rowsPerSec}</span> <span style={{color:"#4a4e6a"}}>rows/s · {autoTrainStatus.result.perf.avgPredMs}ms pred</span>
                   </div>}
+                  {autoTrainStatus.result.metrics&&<div style={{background:"rgba(192,132,252,.08)",border:"1px solid rgba(192,132,252,.2)",borderRadius:6,padding:"4px 10px",fontSize:10}}>
+                    <span style={{color:"#c084fc",fontWeight:700}}>LL {autoTrainStatus.result.metrics.logLoss}</span> <span style={{color:"#4a4e6a"}}>· ECE {autoTrainStatus.result.metrics.ece} · Brier {autoTrainStatus.result.metrics.brier}</span>
+                  </div>}
                 </div>}
                 <div style={{background:"#060709",border:"1px solid #12152a",borderRadius:6,padding:"6px 10px",maxHeight:120,overflowY:"auto",fontFamily:"monospace",fontSize:9,lineHeight:1.7}}>
                   {(autoTrainStatus.log||[]).map((l,i)=><div key={i} style={{color:l.startsWith("✅")||l.startsWith("🎯")?"#34d399":l.startsWith("❌")||l.startsWith("⛔")?"#f87171":l.startsWith("📊")?"#fbbf24":l.startsWith("🧠")?"#a78bfa":"#4a4e6a"}}>{l}</div>)}
@@ -5567,12 +5849,18 @@ function AppInner(){
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               <GB onClick={()=>setShowBulk(!showBulk)}>{showBulk?"▲":"▼"} Bulk Paste</GB>
               <GB onClick={()=>doExportCSV(rows,S.preds,S.predRow)}>📥 Export CSV</GB>
-              <GB onClick={()=>doExportJSON(S)}>📦 Export JSON</GB>
+              <GB onClick={()=>doExportRowsJSON(rows)}>📦 Export JSON</GB>
+              <button onClick={()=>runValidationAudit(false)} style={{background:"rgba(96,165,250,.08)",border:"1px solid rgba(96,165,250,.25)",color:"#60a5fa",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>📊 Run Audit</button>
+              <button onClick={()=>runValidationAudit(true)} style={{background:"rgba(52,211,153,.08)",border:"1px solid rgba(52,211,153,.25)",color:"#34d399",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>🧊 Freeze Baseline</button>
               <label style={{background:"transparent",border:"1px solid #1a1e35",color:"#8892b0",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>📂 Import JSON<input type="file" accept=".json" onChange={doImport} style={{display:"none"}}/></label>
               <button onClick={doRebuildPatternBank} style={{background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.25)",color:"#a78bfa",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>
                 🧠 Rebuild Patterns ({COLS.reduce((s,c)=>s+Object.keys((S.patternBank||{})[c]?.mdProfiles||{}).length,0)} stored)
               </button>
             </div>
+            {(auditRes||S.validationBaseline)&&<div style={{marginTop:8,padding:"8px 10px",borderRadius:8,background:"rgba(96,165,250,.06)",border:"1px solid rgba(96,165,250,.18)",fontSize:10,color:"#4a4e6a",display:"grid",gap:4}}>
+              {auditRes&&<div>Audit: <span style={{color:"#60a5fa"}}>{auditRes.exactPct}% exact</span> · LL {auditRes.logLoss} · ECE {auditRes.ece} · entropy {auditRes.entropy} · var {auditRes.variance} · {auditRes.runtimeMs}ms</div>}
+              {S.validationBaseline&&<div>Baseline: <span style={{color:"#34d399"}}>{S.validationBaseline.exactPct}% exact</span> · LL {S.validationBaseline.logLoss} · ECE {S.validationBaseline.ece} · {S.validationBaseline.at?new Date(S.validationBaseline.at).toLocaleString():""}</div>}
+            </div>}
             {showBulk&&<div style={{marginTop:8,background:"#0c0e1a",border:"1px solid #1a1e35",borderRadius:8,padding:12}}>
               <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,02,10,92,XX\n02,91,10,30,68"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
               <div style={{display:"flex",gap:6,marginTop:8}}><PB onClick={doBulk}>Import</PB><GB onClick={()=>setShowBulk(false)}>Cancel</GB></div>
@@ -5581,7 +5869,7 @@ function AppInner(){
           {rows.length>0?<Card>
             <div style={{overflowX:"auto",maxHeight:320,overflowY:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date",...COLS,""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date","A","B","C","D",""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
                 <tbody>{rows.map((r,i)=>{const dp=r.date?parseDate(r.date):null;const DAYS=["Su","Mo","Tu","We","Th","Fr","Sa"];return<tr key={r.row} style={{background:i%2?"rgba(255,255,255,.01)":"transparent",borderBottom:"1px solid rgba(255,255,255,.02)"}}>
                   <td style={{padding:"5px 10px",color:"#252840",textAlign:"center"}}>{i+1}</td>
                   <td style={{padding:"5px 10px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(r.row)}</td>
@@ -5617,14 +5905,14 @@ function AppInner(){
                     const top=S.preds[col]&&S.preds[col].top5[0]?S.preds[col].top5[0]:null;
                     const confClr=S.preds[col]?S.preds[col].confClr:"#4a4e6a";
                     const conf=S.preds[col]?S.preds[col].conf:"?";
-                    const regime=S.preds[col]?S.preds[col].regime:"normal";
+                    const regime=normalizeRegimeLabel(S.preds[col]?S.preds[col].regime:"STABLE");
                     if(!top)return null;
                     return <div key={col} style={{textAlign:"center"}}>
                       <div style={{fontSize:9,color:CLR[col],letterSpacing:2,marginBottom:2}}>{col}</div>
                       <div style={{fontSize:24,fontWeight:900,color:CLR[col],background:CLR[col]+"18",border:"1px solid "+CLR[col]+"44",borderRadius:8,padding:"4px 10px",minWidth:52,textAlign:"center"}}>{pad2(top.value)}</div>
                       <div style={{fontSize:8,color:"#4a4e6a",marginTop:2}}>{top.pct}%</div>
                       <div style={{fontSize:8,color:confClr,fontWeight:700}}>{conf}</div>
-                      {regime!=="normal"&&<div style={{fontSize:7,color:"#fbbf24"}}>{regime}</div>}
+                      {regime!=="STABLE"&&<div style={{fontSize:7,color:"#fbbf24"}}>{regime}</div>}
                       {streaks[col]>=2&&<div style={{fontSize:8,color:"#34d399"}}>🔥{streaks[col]}</div>}
                       {S.preds[col]&&S.preds[col].familyAgreement>=3&&<div style={{fontSize:7,color:"#a78bfa",marginTop:1}}>{"★".repeat(Math.min(S.preds[col].familyAgreement,5))} cross-family</div>}
                     </div>;
@@ -5658,7 +5946,7 @@ function AppInner(){
                     <span style={{fontSize:20,fontWeight:900,color:clr}}>Col {col}</span>
                     <div style={{textAlign:"right"}}>
                       <div style={{fontSize:8,fontWeight:700,color:pred.confClr}}>{pred.conf}</div>
-                      <div style={{fontSize:8,color:"#2d3158"}}>spread:{pred.variance} · {pred.regime}</div>
+                      <div style={{fontSize:8,color:"#2d3158"}}>spread:{pred.variance} · H:{pred.pmfEntropy!=null?pred.pmfEntropy.toFixed(2):"0.00"} · {pred.regime}</div>
                     </div>
                   </div>
                   <div style={{fontSize:9,color:"#2d3158",marginBottom:6}}>band: <span style={{color:"#a78bfa"}}>{pad2(pred.bandLo||0)}–{pad2(pred.bandHi||0)}</span> · consensus:{pred.consensus}%</div>
@@ -5734,89 +6022,6 @@ function AppInner(){
           </div>}
         </div>}
 
-        {tab==="leaderboard"&&<div>
-          {!S.preds||!todayLeaderboard?<Card><div style={{fontSize:11,color:"#4a4e6a"}}>Run prediction first to build today leaderboard.</div></Card>:<div>
-            <Card style={{marginBottom:14}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                <SL style={{margin:0}}>🏆 Best of Best — Today</SL>
-                <div style={{fontSize:10,color:"#4a4e6a"}}>
-                  {todayLeaderboard.strongestAlgo?<span>Top Algo: <b style={{color:"#34d399"}}>{todayLeaderboard.strongestAlgo.name}</b> ({todayLeaderboard.strongestAlgo.col})</span>:<span>—</span>}
-                  {todayLeaderboard.topNumber&&<span> · Strongest Number: <b style={{color:"#a78bfa"}}>{pad2(todayLeaderboard.topNumber.value)}</b> ({todayLeaderboard.topNumber.col}, {todayLeaderboard.topNumber.pct}%)</span>}
-                </div>
-              </div>
-            </Card>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10,marginBottom:14}}>
-              {COLS.map(col=>{
-                const item=todayLeaderboard.perCol[col]&&todayLeaderboard.perCol[col].best;
-                if(!item)return <Card key={col}><div style={{fontSize:10,color:"#2d3158"}}>Col {col}: no data</div></Card>;
-                const trustClr=item.trustLabel==="HIGH"?"#34d399":item.trustLabel==="MED"?"#fbbf24":"#f87171";
-                return <div key={col} style={{background:"#0c0e1a",border:"1px solid #1a1e35",borderTop:"3px solid "+CLR[col],borderRadius:10,padding:12}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                    <div style={{fontSize:10,color:CLR[col],letterSpacing:2}}>COL {col}</div>
-                    <div style={{fontSize:9,color:trustClr,fontWeight:800}}>{item.trustLabel} TRUST</div>
-                  </div>
-                  <div style={{fontSize:18,fontWeight:900,color:"#c8d0e8",marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</div>
-                  <div style={{fontSize:11,color:"#4a4e6a",marginBottom:6}}>Most probable: <b style={{color:CLR[col]}}>{pad2(item.probable)}</b></div>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:9}}>
-                    <div style={{background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.2)",borderRadius:6,padding:"4px 6px"}}>Trust <b style={{color:"#a78bfa"}}>{item.trustScore}</b></div>
-                    <div style={{background:"rgba(96,165,250,.08)",border:"1px solid rgba(96,165,250,.2)",borderRadius:6,padding:"4px 6px"}}>Eval <b style={{color:"#60a5fa"}}>{item.evalCount}</b></div>
-                    <div style={{background:"rgba(52,211,153,.08)",border:"1px solid rgba(52,211,153,.2)",borderRadius:6,padding:"4px 6px"}}>Algo streak <b style={{color:"#34d399"}}>{item.algoStreak}</b></div>
-                    <div style={{background:"rgba(251,191,36,.08)",border:"1px solid rgba(251,191,36,.2)",borderRadius:6,padding:"4px 6px"}}>Solo streak <b style={{color:"#fbbf24"}}>{item.soloStreak}</b></div>
-                  </div>
-                </div>;
-              })}
-            </div>
-            <Card style={{marginBottom:14}}>
-              <SL>Trusted Now</SL>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:8}}>
-                {COLS.map(col=>{
-                  const trusted=todayLeaderboard.perCol[col]&&todayLeaderboard.perCol[col].trusted?todayLeaderboard.perCol[col].trusted:[];
-                  return <div key={col} style={{background:"rgba(255,255,255,.02)",border:"1px solid #1a1e35",borderRadius:8,padding:"8px 10px"}}>
-                    <div style={{fontSize:9,color:CLR[col],letterSpacing:2,marginBottom:5}}>COL {col}</div>
-                    {trusted.length?trusted.slice(0,3).map(t=><div key={t.name} style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:6,fontSize:9,marginBottom:3}}>
-                      <span style={{color:"#c8d0e8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
-                      <span style={{color:"#a78bfa"}}>{pad2(t.probable)}</span>
-                      <span style={{color:t.trustLabel==="HIGH"?"#34d399":"#fbbf24",fontWeight:700}}>{t.trustScore}</span>
-                    </div>):<div style={{fontSize:9,color:"#2d3158"}}>No trusted algo yet</div>}
-                  </div>;
-                })}
-              </div>
-            </Card>
-            <Card style={{marginBottom:14}}>
-              <SL>🔥 On Fire (Solo Streak)</SL>
-              {todayLeaderboard.onFire.length?<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:8}}>
-                {todayLeaderboard.onFire.map(item=><div key={item.col+"_"+item.name} style={{background:"rgba(52,211,153,.05)",border:"1px solid rgba(52,211,153,.18)",borderRadius:8,padding:"8px 10px",fontSize:10}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <span style={{color:"#34d399",fontWeight:700}}>{item.name}</span>
-                    <span style={{color:CLR[item.col]}}>Col {item.col}</span>
-                  </div>
-                  <div style={{marginTop:4,color:"#4a4e6a"}}>Solo streak <b style={{color:"#34d399"}}>{item.soloStreak}</b> · probable {pad2(item.probable)}</div>
-                </div>)}
-              </div>:<div style={{fontSize:10,color:"#2d3158"}}>No active solo streaks yet.</div>}
-            </Card>
-            <Card>
-              <SL>Global Ranking</SL>
-              <div style={{overflowX:"auto"}}>
-                <table style={{borderCollapse:"collapse",width:"100%",fontSize:10}}>
-                  <thead><tr>{["#","Algo","Col","Probable","Trust","Solo","Algo Streak","Eval"].map((h,i)=><th key={i} style={{padding:"4px 6px",color:"#252840",fontSize:9,borderBottom:"1px solid #1a1e35",textAlign:"center",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {todayLeaderboard.globalTop.map((r,i)=><tr key={r.col+"_"+r.name} style={{borderBottom:"1px solid rgba(255,255,255,.02)"}}>
-                      <td style={{padding:"4px 6px",textAlign:"center",color:"#4a4e6a"}}>{i+1}</td>
-                      <td style={{padding:"4px 6px",color:"#c8d0e8"}}>{r.name}</td>
-                      <td style={{padding:"4px 6px",textAlign:"center",color:CLR[r.col]}}>{r.col}</td>
-                      <td style={{padding:"4px 6px",textAlign:"center",color:"#a78bfa"}}>{pad2(r.probable)}</td>
-                      <td style={{padding:"4px 6px",textAlign:"center",color:r.trustLabel==="HIGH"?"#34d399":r.trustLabel==="MED"?"#fbbf24":"#f87171"}}>{r.trustScore}</td>
-                      <td style={{padding:"4px 6px",textAlign:"center",color:"#34d399"}}>{r.soloStreak}</td>
-                      <td style={{padding:"4px 6px",textAlign:"center",color:"#60a5fa"}}>{r.algoStreak}</td>
-                      <td style={{padding:"4px 6px",textAlign:"center",color:"#4a4e6a"}}>{r.evalCount}</td>
-                    </tr>)}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>}
-        </div>}
-
         {tab==="learn"&&<div>
           <Card style={{marginBottom:14}}>
             <SL>{S.preds?"Enter Actual for Row "+pad2(S.predRow||0):"Run prediction first"}</SL>
@@ -5874,7 +6079,7 @@ function AppInner(){
             </div>
             <div style={{overflowX:"auto",maxHeight:240,overflowY:"auto"}}>
               <table style={{borderCollapse:"collapse",width:"100%",fontSize:11}}>
-                <thead><tr>{["Time","Row",...COLS.map(c=>"P"+c),...COLS.map(c=>"A"+c),"Hit"].map((h,i)=><th key={i} style={{padding:"4px 7px",color:"#252840",fontSize:9,borderBottom:"1px solid #1a1e35",textAlign:"center",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Time","Row","PA","PB","PC","PD","AA","AB","AC","AD","Hit"].map((h,i)=><th key={i} style={{padding:"4px 7px",color:"#252840",fontSize:9,borderBottom:"1px solid #1a1e35",textAlign:"center",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                 <tbody>{[...accLog].reverse().map((entry,i)=><tr key={i} style={{borderBottom:"1px solid rgba(255,255,255,.015)"}}>
                   <td style={{padding:"4px 7px",color:"#252840",fontSize:9,textAlign:"center"}}>{new Date(entry.at).toLocaleTimeString()}</td>
                   <td style={{padding:"4px 7px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(entry.targetRow||0)}</td>
@@ -5896,10 +6101,10 @@ function AppInner(){
             </div>
           </Card>}
 
-          {S.calibration&&Object.values(S.calibration).some(c=>Object.values(c).some(x=>x.total>=3))&&<Card style={{marginBottom:14}}>
+          {S.calibration&&Object.values(S.calibration).some(c=>Array.isArray(c?.bins)&&c.bins.some(x=>x&&x.total>=3))&&<Card style={{marginBottom:14}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
               <SL style={{margin:0}}>🎯 Confidence Calibration</SL>
-              <span style={{fontSize:9,color:"#4a4e6a"}}>How accurate are HIGH/MED/LOW labels?</span>
+              <span style={{fontSize:9,color:"#4a4e6a"}}>How accurate are predicted probability bins?</span>
             </div>
             <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
               {COLS.map(col=><CalibCol key={col} col={col} cal={S.calibration[col]||{}}/>)}
@@ -6061,7 +6266,7 @@ function AppInner(){
               <b style={{color:"#c8d0e8"}}>ConsensusFilter:</b> values agreed by 4+ algos get 15% vote boost per extra agreement<br/>
               <b style={{color:"#c8d0e8"}}>HistFreqFilter:</b> values never seen in training get 60% vote penalty<br/>
               <b style={{color:"#c8d0e8"}}>Neural Scores:</b> EMA running accuracy per algo — good algos compound, bad ones fade<br/>
-              <b style={{color:"#c8d0e8"}}>Calibration:</b> tracks HIGH/MED/LOW confidence actual accuracy over sessions<br/>
+              <b style={{color:"#c8d0e8"}}>Calibration:</b> tracks predicted probability vs realized accuracy over sessions<br/>
               <b style={{color:"#c8d0e8"}}>Auto-Generate:</b> triggers every 2 new rows automatically — continuous pattern discovery<br/>
               <b style={{color:"#c8d0e8"}}>Auto-Prune:</b> after every Learn session the single worst-scoring generated algo is removed (scored by neural EMA + BT)<br/>
               <b style={{color:"#c8d0e8"}}>User algos:</b> never auto-pruned — only generated algos are pruned<br/>
@@ -6195,16 +6400,17 @@ function HotColdCol(p){
 }
 function CalibCol(p){
   const cal=p.cal;
-  const levels=["HIGH","MED","LOW"];
+  const bins=cal&&Array.isArray(cal.bins)?cal.bins:[];
   return <div>
     <div style={{fontSize:9,color:CLR[p.col],letterSpacing:2,marginBottom:6}}>{p.col}</div>
-    {levels.map(lv=>{
-      const d=cal[lv];
+    {bins.map((d,idx)=>{
       if(!d||d.total<3)return null;
       const rate=Math.round(d.right/d.total*100);
       const clr=rate>50?"#34d399":rate>25?"#fbbf24":"#f87171";
-      return <div key={lv} style={{display:"flex",gap:6,alignItems:"center",marginBottom:4}}>
-        <span style={{fontSize:9,color:"#4a4e6a",minWidth:30}}>{lv}</span>
+      const lo=Math.round(idx*100/CALIB_BINS);
+      const hi=Math.round((idx+1)*100/CALIB_BINS);
+      return <div key={idx} style={{display:"flex",gap:6,alignItems:"center",marginBottom:4}}>
+        <span style={{fontSize:9,color:"#4a4e6a",minWidth:44}}>{lo}-{hi}%</span>
         <div style={{flex:1,height:4,background:"#1a1e35",borderRadius:99}}>
           <div style={{height:"100%",width:rate+"%",background:clr,borderRadius:99}}/>
         </div>
