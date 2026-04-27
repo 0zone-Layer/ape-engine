@@ -426,7 +426,7 @@ const A={
   ZScore:         s=>{if(s.length<4)return[s[s.length-1]];const avg=M.mean(s.slice(-8)),std=M.std(s.slice(-8));if(!std)return[s[s.length-1]];return[M.mod(Math.round(avg-(s[s.length-1]-avg)/std*std*0.5))];},
  ExpSmooth:      s=>{if(s.length<2)return[s[0]||0];const q=Math.max(1,Math.floor(s.length/4));const _vol=M.std(s.slice(-8));const _alpha=Math.max(0.15,Math.min(0.55,0.15+_vol/30));let sm=M.mean(s.slice(0,q));s.slice(q).forEach(v=>{sm=_alpha*v+(1-_alpha)*sm;});return[M.mod(Math.round(sm))];},
   DblExp:         s=>{if(s.length<3)return[s[s.length-1]];const _q=Math.max(1,Math.floor(s.length/4));const _init=M.mean(s.slice(0,_q));let lv=_init,tr=(M.mean(s.slice(_q,_q*2))-_init)/(_q||1);for(let i=_q;i<s.length;i++){const pl=lv,pt=tr;lv=0.4*s[i]+0.6*(pl+pt);tr=0.3*(lv-pl)+0.7*pt;}return[M.mod(Math.round(lv+tr))];},
-  KernelSmooth:   s=>{if(s.length<3)return[s[s.length-1]];const n=s.length,h=3;let ws=0,vs=0;for(let i=0;i<n;i++){const w=Math.exp(-0.5*((n-1-i)/h)**2);ws+=w;vs+=w*s[i];}return[M.mod(Math.round(vs/ws))];},
+  KernelSmooth:   s=>{if(s.length<3)return[s[s.length-1]];const n=s.length,h=Math.max(3,Math.min(6,Math.floor(s.length/8)));let ws=0,vs=0;for(let i=0;i<n;i++){const w=Math.exp(-0.5*((n-1-i)/h)**2);ws+=w;vs+=w*s[i];}return[M.mod(Math.round(vs/ws))];},
   MedianFilt:     s=>{if(s.length<3)return[s[s.length-1]];return[M.mod(Math.round(M.median(s.slice(-3))))];},
   LowPass:        s=>{if(s.length<2)return[s[0]||0];let sm=s[0];s.slice(1).forEach(v=>{sm=0.25*v+0.75*sm;});return[M.mod(Math.round(0.25*s[s.length-1]+0.75*sm))];},
   BandPass:       s=>{if(s.length<4)return[s[s.length-1]];const avg=M.mean(s.slice(-8)),std=M.std(s.slice(-8));const filt=s.filter(v=>Math.abs(v-avg)<=std);if(!filt.length)return[s[s.length-1]];return[M.mod(Math.round(M.mean(filt.slice(-4))))];},
@@ -497,7 +497,7 @@ const A={
     const perfect=(n-2)*1.4; // approx max with recency weights
     outer2:for(const a of[1,2,3,-1,-2,5,-3])
       for(const b of[0,1,-1,2,-2,3])
-        for(const c of[0,1,-1,3,-3,7,-7,11,-11,13,-13]){
+        for(const c of[0,1,-1,2,-2,3,-3,5,-5,7,-7,9,-9,11,-11,13,-13,18,-18]){
           let sc=0;
           for(let i=2;i<n;i++){
             const p=M.mod(a*s[i-1]+b*s[i-2]+c);
@@ -531,9 +531,9 @@ const A={
   AR3:            s=>{
     if(s.length<4)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,pred:s[n-1]};
-    outer3:for(const a of[0.2,0.4,0.5,0.6,0.7,0.8,1.0,1.2])
-      for(const b of[-0.4,-0.2,-0.1,0,0.1,0.2,0.4])
-        for(const c of[-0.3,-0.1,0,0.1,0.3]){
+    outer3:for(const a of[0.2,0.4,0.5,0.6,0.7,0.8,1.0,1.2,-0.3,-0.5])
+      for(const b of[-0.5,-0.4,-0.2,-0.1,0,0.1,0.2,0.4,0.5])
+        for(const c of[-0.4,-0.3,-0.1,0,0.1,0.3,0.4]){
           let sc=0;
           for(let i=3;i<n;i++){
             const p=M.mod(Math.round(a*s[i-1]+b*s[i-2]+c*s[i-3]));
