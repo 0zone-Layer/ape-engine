@@ -66,7 +66,7 @@ function isExactLikePrediction(pred,actual,hitCtx){
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
 const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
-const MIN_CROSS_SIGNAL_WEIGHT=0.35;
+const MIN_CROSS_SIGNAL_WEIGHT=0.25;
 const HEAVY_PRED_THRESHOLD_MS=18;
 const MAX_HEAVY_STREAK=8;
 const LIGHTWEIGHT_TRIGGER_STREAK=2;
@@ -110,7 +110,7 @@ const NEURAL_ALPHA_FLAT=0.14;
 const NEURAL_ALPHA_DEFAULT=0.22;
 const PRUNE_MIN_NEAR1_RATE=0.001;
 const PATTERN_MUTATION_PROBABILITY=0.65;
-const AUTO_EVOLVE_INTERVAL_ROWS=3;
+const AUTO_EVOLVE_INTERVAL_ROWS=2;
 // Ensemble adaptation defaults (tuned for fast online convergence without collapse).
 const PERF_ROLLING_WINDOW=18;
 const MIN_PRUNE_EVAL_WINDOW=8;
@@ -153,7 +153,7 @@ const REWARD_NUMBER_HIT=1.55;
 const REWARD_NEAR1=1.35;
 const REWARD_NEAR_REGIME=0.85;
 const REWARD_CLOSE=0.2;
-const REWARD_MISS=-0.55;
+const REWARD_MISS=-0.35;
 const WEIGHT_MULT_EXACT=1.4;
 const WEIGHT_MULT_NUMBER_HIT=1.18;
 const WEIGHT_MULT_NEAR=1.1;
