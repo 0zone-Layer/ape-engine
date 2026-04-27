@@ -4278,72 +4278,63 @@ function AppInner(){
       entry[col]=n;
     }
     if(COLS.every(c=>entry[c]===null)){st("Enter at least one value","err");return;}
-    setRows(prev=>{
-      const updated=[...prev.filter(x=>x.row!==r),entry].sort((a,b)=>a.row-b.row);
-      setTimeout(()=>{
-        setS(cur=>{
-          const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
-          const _genCount=(cur.customs||[]).filter(a=>a.generated&&!a.benched).length;
-          let next=cur;
-          // ── Auto-generate new algos ──
-          if(shouldAutoGenerate(curRows.length,cur.genN,cur.lastAutoGenRows,_genCount)){
-            const existing=new Set([...Object.keys(A),...(cur.customs||[]).map(a=>a.name)]);
-            const newAlgos=generateAlgos(getWindowRows(curRows,ROLLING_WINDOW_ROWS),existing);
-            if(newAlgos.length>0){
-              const log=cur.autoGenLog||[];
-              const msg="+"+newAlgos.length+" algos generated ("+curRows.length+" rows)";
-              const capped=enforceGeneratedPoolCap([...(next.customs||[]),...newAlgos],next.weights||cur.weights,getWindowRows(curRows,ROLLING_WINDOW_ROWS),MAX_GENERATED_ALGOS);
-              next={...next,customs:capped,genN:(next.genN||0)+1,lastAutoGenRows:curRows.length,autoGenLog:[...log.slice(-9),{at:new Date().toISOString(),msg}]};
-              setAutoGenLog(p=>[...p.slice(-4),msg]);
-              syslog("🔧 "+msg,"gen");
-              // Notify if strong pattern detected
-              const strongAlgos=newAlgos.filter(a=>a.name.startsWith("Cyc_")||a.name.startsWith("Rec2_")||a.name.startsWith("XorLag_"));
-              if(strongAlgos.length>0)syslog("⚡ Strong pattern detected: "+strongAlgos.map(a=>a.name).join(", ")+" — consider exporting weights!","alert");
+    setS(cur=>{
+      const prevRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
+      const curRows=[...prevRows.filter(x=>x.row!==r),entry].sort((a,b)=>a.row-b.row);
+      const ds={...cur.datasets};
+      ds[cur.active]={...ds[cur.active],rows:curRows};
+      const _genCount=(cur.customs||[]).filter(a=>a.generated&&!a.benched).length;
+      let next={...cur,datasets:ds};
+      // ── Auto-generate new algos ──
+      if(shouldAutoGenerate(curRows.length,cur.genN,cur.lastAutoGenRows,_genCount)){
+        const existing=new Set([...Object.keys(A),...(cur.customs||[]).map(a=>a.name)]);
+        const newAlgos=generateAlgos(getWindowRows(curRows,ROLLING_WINDOW_ROWS),existing);
+        if(newAlgos.length>0){
+          const log=cur.autoGenLog||[];
+          const msg="+"+newAlgos.length+" algos generated ("+curRows.length+" rows)";
+          const capped=enforceGeneratedPoolCap([...(next.customs||[]),...newAlgos],next.weights||cur.weights,getWindowRows(curRows,ROLLING_WINDOW_ROWS),MAX_GENERATED_ALGOS);
+          next={...next,customs:capped,genN:(next.genN||0)+1,lastAutoGenRows:curRows.length,autoGenLog:[...log.slice(-9),{at:new Date().toISOString(),msg}]};
+          setAutoGenLog(p=>[...p.slice(-4),msg]);
+          syslog("🔧 "+msg,"gen");
+          const strongAlgos=newAlgos.filter(a=>a.name.startsWith("Cyc_")||a.name.startsWith("Rec2_")||a.name.startsWith("XorLag_"));
+          if(strongAlgos.length>0)syslog("⚡ Strong pattern detected: "+strongAlgos.map(a=>a.name).join(", ")+" — consider exporting weights!","alert");
+        }
+      }
+      // ── Auto-prune + auto-mutate every 3 rows ──
+      if(shouldAutoEvolve(curRows.length,cur.lastAutoEvolveRows)){
+        const cycle=applyEvolutionCycle(next.customs,next.weights||cur.weights,getWindowRows(curRows,ROLLING_WINDOW_ROWS),removed=>{
+          setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
+          removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
+        },next.adaptiveControl||cur.adaptiveControl);
+        if(cycle.mutated)syslog("🧬 Auto-mutation tournament completed ("+curRows.length+" rows)","gen");
+        next={...next,customs:cycle.customs,lastAutoEvolveRows:curRows.length};
+      }
+      // ── Re-fit stale Gap/Lin algos ──
+      if(curRows.length>=8&&curRows.length%4===0){
+        let refitCount=0;
+        next={...next,customs:(next.customs||[]).map(ca=>{
+          if(!ca.generated||ca.benched)return ca;
+          if(ca.name.startsWith("Gap_")){
+            const col=ca.name.split("_")[1];
+            const s=getSeries(col,getWindowRows(curRows,ROLLING_WINDOW_ROWS));if(s.length<4)return ca;
+            const gs=[];for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gs.push(g);}
+            const ng=Math.round(M.mean(gs.slice(-6)));
+            if(ng!==0&&Math.abs(ng-(parseInt(ca.name.split("_")[2])||0))>2){
+              refitCount++;
+              return{...ca,code:"(s,M)=>[M.mod(s[s.length-1]+("+ng+"))]",updatedAt:Date.now()};
             }
           }
-          // ── Auto-prune + auto-mutate every 3 rows ──
-          if(shouldAutoEvolve(curRows.length,cur.lastAutoEvolveRows)){
-            const cycle=applyEvolutionCycle(next.customs,next.weights||cur.weights,getWindowRows(curRows,ROLLING_WINDOW_ROWS),removed=>{
-              setAutoGenLog(p=>[...p.slice(-(5-Math.min(removed.length,3))),...removed.slice(0,3).map(r=>"Pruned: "+r.name)]);
-              removed.forEach(rm=>syslog("🗑 Pruned weak algo: "+rm.name+" ("+rm.reason+")","prune"));
-            },next.adaptiveControl||cur.adaptiveControl);
-            if(cycle.mutated)syslog("🧬 Auto-mutation tournament completed ("+curRows.length+" rows)","gen");
-            next={...next,customs:cycle.customs,lastAutoEvolveRows:curRows.length};
-          }
-          // ── Re-fit stale Gap/Lin algos ──
-          if(curRows.length>=8&&curRows.length%4===0){
-            let refitCount=0;
-            next={...next,customs:(next.customs||[]).map(ca=>{
-              if(!ca.generated||ca.benched)return ca;
-              if(ca.name.startsWith("Gap_")){
-                const col=ca.name.split("_")[1];
-                const s=getSeries(col,getWindowRows(curRows,ROLLING_WINDOW_ROWS));if(s.length<4)return ca;
-                const gs=[];for(let i=1;i<s.length;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gs.push(g);}
-                const ng=Math.round(M.mean(gs.slice(-6)));
-                if(ng!==0&&Math.abs(ng-(parseInt(ca.name.split("_")[2])||0))>2){
-                  refitCount++;
-                  return{...ca,code:"(s,M)=>[M.mod(s[s.length-1]+("+ng+"))]",updatedAt:Date.now()};
-                }
-              }
-              return ca;
-            })};
-            if(refitCount>0)syslog("♻ Re-fitted "+refitCount+" gap algo(s) to current drift","refit");
-          }
-          if(next!==cur)saveS(next);
-          return next;
-        });
-      },100);
-      return updated;
+          return ca;
+        })};
+        if(refitCount>0)syslog("♻ Re-fitted "+refitCount+" gap algo(s) to current drift","refit");
+      }
+      const maxR=curRows.length?curRows.reduce((m,x)=>x.row>m?x.row:m,r):r;
+      setRowIn(String(maxR+1));
+      saveS(next);
+      return next;
     });
     // Auto-advance date by 1 day and day# by 1
     if(dateIn){const nd=new Date(dateIn+"T12:00:00");nd.setDate(nd.getDate()+1);setDateIn(nd.getFullYear()+"-"+String(nd.getMonth()+1).padStart(2,"0")+"-"+String(nd.getDate()).padStart(2,"0"));}
-    // Next day = max row in dataset + 1 (sequential, not 1-31 cycle)
-    setS(cur=>{
-      const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
-      const maxR=curRows.length?Math.max(...curRows.map(x=>x.row)):r;
-      setRowIn(String(maxR+1));
-      return cur;
-    });
     setVals(mkColTextDefaults());
     st("Day "+pad2(r)+" saved ✓");
     syslog("📥 Day "+r+(dateIn?" ("+dateIn+")":"")+" saved","data");
