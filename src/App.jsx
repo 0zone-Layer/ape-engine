@@ -2735,10 +2735,10 @@ function getRegime(series){
 }
 // Regime-gated algo pool: FULL exclusion not just multipliers
 const REGIME_POOLS={
-  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","MirrorNumber"]),
-  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod","MirrorNumber","MirrorAt50","ComplementPairs","ReverseSeq"]),
-  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG","BestStep","ArithSeqDetect"]),
-  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5","MirrorNumber","MirrorAt50","ComplementPairs"]),
+  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","MirrorNumber","KalmanFilter","BayesianDirichlet","CUSUMChangePoint"]),
+  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod","MirrorNumber","MirrorAt50","ComplementPairs","ReverseSeq","BayesianDirichlet","SparseTransitionGraph"]),
+  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG","BestStep","ArithSeqDetect","KalmanFilter","CUSUMChangePoint"]),
+  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5","MirrorNumber","MirrorAt50","ComplementPairs","BayesianDirichlet","SparseTransitionGraph"]),
   normal:null
 };
 function algoAllowed(name,regime){
