@@ -145,8 +145,8 @@ const CLASS_LINEAR_RE=/lin|mean|trend|reg|lag|arith|step|fit|diff/;
 const CLASS_PERIODIC_RE=/period|cyc|markov|phase|season|repeat|sticky/;
 const SCORE_WEIGHT_NS=0.34;
 const SCORE_WEIGHT_STREAK=0.16;
-const SCORE_WEIGHT_BT=1.8;
-const SCORE_WEIGHT_WF=1.1;
+const SCORE_WEIGHT_BT=1.5;
+const SCORE_WEIGHT_WF=1.6;
 const SCORE_WEIGHT_NEAR1=1.8;
 const REWARD_EXACT=2.6;
 const REWARD_NUMBER_HIT=1.55;
@@ -173,7 +173,7 @@ const CONTEXT_WINDOW_MAX=100; // [UPDATED] strict context window cap
 const CONTEXTS=["TREND","CYCLIC","STABLE","CHAOTIC","MIXED"];
 const ALGO_CATEGORIES=["TRANSFORM","STATISTICAL","SEQUENCE","STOCHASTIC","HEURISTIC"];
 const ADAPT_ALPHA=0.45;
-const ADAPT_BETA=0.95;
+const ADAPT_BETA=0.60;
 const ADAPT_GAMMA=0.35;
 const ADAPT_LAMBDA=0.55; // [ADDED]
 const ADAPT_DELTA=0.25;
@@ -434,7 +434,7 @@ const A={
   AutoCorr:       s=>{if(s.length<6)return[s[s.length-1]];const n=s.length,avg=M.mean(s);
     // Fix: denominator uses same overlapping range as numerator (both i=lag..n)
     let bestLag=1,bestAcf=-2;
-    for(let lag=1;lag<=Math.min(8,n-2);lag++){
+    for(let lag=1;lag<=Math.min(14,n-2);lag++){
       let num=0,den0=0,den1=0;
       for(let i=lag;i<n;i++){num+=(s[i]-avg)*(s[i-lag]-avg);den0+=(s[i]-avg)**2;den1+=(s[i-lag]-avg)**2;}
       const acf=(den0*den1)>0?num/Math.sqrt(den0*den1):0;
@@ -2343,7 +2343,7 @@ function getTemporalChain(targetCol,data){
   let wSum=0,wVal=0;
   temporalSources.forEach(c=>{
     const gap=tGap(c,targetCol)||300;
-    const w=Math.exp(-gap/600)*srcStability(c);
+    const w=Math.exp(-gap/350)*srcStability(c);
     wSum+=w;wVal+=last[c]*w;
   });
   if(wSum>0)res["TempBlend"]=[M.mod(Math.round(wVal/wSum))];
