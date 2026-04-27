@@ -6018,6 +6018,7 @@ function ActInput(p){
 function MissingColPred(p){
   const {col,pred,maxV}=p;
   const clr=CLR[col];
+  const [exp,setExp]=useState(false);
   return <div style={{background:"#0c0e1a",border:"1px solid "+clr+"33",borderTop:"2px solid "+clr,borderRadius:8,padding:10}}>
     <div style={{fontSize:12,fontWeight:900,color:clr,marginBottom:6}}>Col {col}</div>
     <div style={{fontSize:9,color:"#2d3158",marginBottom:6}}>Confidence: <span style={{color:pred.confClr,fontWeight:700}}>{pred.conf}</span> · {pred.algoCount} algos</div>
@@ -6028,6 +6029,23 @@ function MissingColPred(p){
       </div>
       <span style={{fontSize:9,color:"#2d3158",minWidth:22,textAlign:"right"}}>{p2.pct}%</span>
     </div>)}
+    <button onClick={()=>setExp(e=>!e)} style={{marginTop:10,width:"100%",background:"transparent",border:"1px solid #1a1e35",color:"#2d3158",borderRadius:6,padding:"4px 0",fontSize:9,cursor:"pointer",fontFamily:"inherit"}}>{exp?"▲ Hide":"▼ All algo votes"}</button>
+    {exp&&pred.details&&<div style={{marginTop:8,maxHeight:260,overflowY:"auto"}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:2,fontSize:9,color:"#2d3158",borderBottom:"1px solid #1a1e35",paddingBottom:3,marginBottom:3}}>
+        <span>Algo</span><span>Pred</span><span>BT%</span><span>Gw</span><span>Rw</span>
+      </div>
+      {Object.entries(pred.details).sort((a,b)=>b[1].w-a[1].w).map(([name,info])=>{
+        const inTop=pred.top5.some(t=>t.value===info.pred&&t.algos.includes(name));
+        const tc=info.type==="date"?"#a78bfa":info.type==="temporal"?"#34d399":info.type==="rowhistory"?"#f59e0b":info.type==="colgap"?"#38bdf8":info.type==="custom"?"#f87171":info.type==="cross"?"#fbbf24":"#4a4e6a";
+        return <div key={name} style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:3,padding:"2px 0",borderBottom:"1px solid rgba(255,255,255,.015)",background:inTop?clr+"08":"transparent",fontSize:9}}>
+          <span style={{color:tc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
+          <span style={{color:inTop?clr:"#4a4e6a",fontWeight:inTop?700:400,textAlign:"center"}}>{pad2(info.pred)}</span>
+          <span style={{color:info.bt===null?"#fbbf24":info.bt>20?"#34d399":info.bt>7?"#fbbf24":"#2d3158",textAlign:"right"}}>{info.bt===null?"⊕":info.bt+"%"}</span>
+          <span style={{color:info.lw>1.5?"#34d399":info.lw<0.5?"#f87171":"#4a4e6a",textAlign:"right"}}>{info.lw}×</span>
+          <span style={{color:info.rw>1.2?"#34d399":info.rw<0.8?"#f87171":"#4a4e6a",textAlign:"right"}}>{info.rw}×</span>
+        </div>;
+      })}
+    </div>}
   </div>;
 }
 function CheckCard(p){
