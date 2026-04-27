@@ -4680,7 +4680,7 @@ function AppInner(){
         const v=preds[0];
         const existing=top.find(p=>p.value===v);
         if(existing)existing.pct=Math.min(99,existing.pct+12);
-        else if(top.length>0)top.push({value:v,votes:1,pct:12,algos:[name]});
+        else if(top.length>0&&top.length<5)top.push({value:v,votes:1,pct:12,algos:[name]});
       });
     });
     // ── MULTI-STEP SUM CONSENSUS ───────────────────
@@ -4703,7 +4703,7 @@ function AppInner(){
             // Inject nudged as a top candidate
             const existing=result[col].top5.find(p=>p.value===nudged);
             if(existing)existing.pct=Math.min(99,existing.pct+10);
-            else result[col].top5.push({value:nudged,votes:0,pct:10,algos:["SumConsensus"]});
+            else if(result[col].top5.length<5)result[col].top5.push({value:nudged,votes:0,pct:10,algos:["SumConsensus"]});
           }
         });
       }
@@ -5547,14 +5547,14 @@ function AppInner(){
               </button>
             </div>
             {showBulk&&<div style={{marginTop:8,background:"#0c0e1a",border:"1px solid #1a1e35",borderRadius:8,padding:12}}>
-              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,02,10,92,XX\n02,91,10,30,68"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
+              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,02,10,92,XX,45,67\n02,91,10,30,68,12,34"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
               <div style={{display:"flex",gap:6,marginTop:8}}><PB onClick={doBulk}>Import</PB><GB onClick={()=>setShowBulk(false)}>Cancel</GB></div>
             </div>}
           </div>
           {rows.length>0?<Card>
             <div style={{overflowX:"auto",maxHeight:320,overflowY:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date","A","B","C","D",""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date",...COLS,""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
                 <tbody>{rows.map((r,i)=>{const dp=r.date?parseDate(r.date):null;const DAYS=["Su","Mo","Tu","We","Th","Fr","Sa"];return<tr key={r.row} style={{background:i%2?"rgba(255,255,255,.01)":"transparent",borderBottom:"1px solid rgba(255,255,255,.02)"}}>
                   <td style={{padding:"5px 10px",color:"#252840",textAlign:"center"}}>{i+1}</td>
                   <td style={{padding:"5px 10px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(r.row)}</td>
