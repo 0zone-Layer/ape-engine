@@ -424,7 +424,7 @@ const A={
   GeoMean:        s=>{const sl=s.slice(-5).filter(v=>v>0);if(!sl.length)return[s[s.length-1]];return[M.mod(Math.round(Math.pow(sl.reduce((a,v)=>a*v,1),1/sl.length)))];},
   MoveStd:        s=>{if(s.length<3)return[s[s.length-1]];const w=s.slice(-5),avg=M.mean(w),std=M.std(w);return[M.mod(Math.round(avg+std)),M.mod(Math.round(avg-std))];},
   ZScore:         s=>{if(s.length<4)return[s[s.length-1]];const avg=M.mean(s.slice(-8)),std=M.std(s.slice(-8));if(!std)return[s[s.length-1]];return[M.mod(Math.round(avg-(s[s.length-1]-avg)/std*std*0.5))];},
-  ExpSmooth:      s=>{if(s.length<2)return[s[0]||0];const q=Math.max(1,Math.floor(s.length/4));let sm=M.mean(s.slice(0,q));s.slice(q).forEach(v=>{sm=0.3*v+0.7*sm;});return[M.mod(Math.round(sm))];},
+ ExpSmooth:      s=>{if(s.length<2)return[s[0]||0];const q=Math.max(1,Math.floor(s.length/4));const _vol=M.std(s.slice(-8));const _alpha=Math.max(0.15,Math.min(0.55,0.15+_vol/30));let sm=M.mean(s.slice(0,q));s.slice(q).forEach(v=>{sm=_alpha*v+(1-_alpha)*sm;});return[M.mod(Math.round(sm))];},
   DblExp:         s=>{if(s.length<3)return[s[s.length-1]];const _q=Math.max(1,Math.floor(s.length/4));const _init=M.mean(s.slice(0,_q));let lv=_init,tr=(M.mean(s.slice(_q,_q*2))-_init)/(_q||1);for(let i=_q;i<s.length;i++){const pl=lv,pt=tr;lv=0.4*s[i]+0.6*(pl+pt);tr=0.3*(lv-pl)+0.7*pt;}return[M.mod(Math.round(lv+tr))];},
   KernelSmooth:   s=>{if(s.length<3)return[s[s.length-1]];const n=s.length,h=3;let ws=0,vs=0;for(let i=0;i<n;i++){const w=Math.exp(-0.5*((n-1-i)/h)**2);ws+=w;vs+=w*s[i];}return[M.mod(Math.round(vs/ws))];},
   MedianFilt:     s=>{if(s.length<3)return[s[s.length-1]];return[M.mod(Math.round(M.median(s.slice(-3))))];},
@@ -444,11 +444,11 @@ const A={
   WtdMomentum:    s=>{
     if(s.length<2)return[s[0]||0];
     let ws=0,wd=0;
-    for(let i=1;i<s.length;i++){
-      const w=Math.pow(1.8,i);
-      let d=s[i]-s[i-1];if(d>50)d-=100;if(d<-50)d+=100;
-      ws+=w;wd+=d*w;
-    }
+    recent.forEach((v,i)=>{
+      const dec=Math.floor(v/10);
+      const age=recent.length-1-i;
+      decFreq[dec]=(decFreq[dec]||0)+Math.exp(-age*0.12);
+    });
     const rawGap=wd/ws;
     // Cap extreme projections to ±25 to avoid overshooting
     const cappedGap=Math.max(-25,Math.min(25,Math.round(rawGap)));
@@ -553,10 +553,9 @@ const A={
     const freq={};
     s.forEach((v,i)=>{
       // Exponential recency: more recent = much stronger weight
-      freq[v]=(freq[v]||0)+Math.pow(1.6,i);
+      freq[v]=(freq[v]||0)+Math.exp(-age*0.12);
     });
-    // Also add extra weight for last 3 values
-    s.slice(-3).forEach(v=>{freq[v]=(freq[v]||0)+5;});
+    
     return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([v])=>parseInt(v));
   },
   Markov:         s=>{
@@ -954,19 +953,17 @@ const A={
   },
   EntropyAdapt:   s=>{
     if(s.length<6)return[s[s.length-1]];
-    const w=s.slice(-8);
+    const w=s.slice(-Math.min(s.length,20));
     const freq={};w.forEach(v=>{freq[v]=(freq[v]||0)+1;});
     const probs=Object.values(freq).map(c=>c/w.length);
     const entropy=-probs.reduce((sum,p)=>sum+p*Math.log2(p+1e-10),0);
     if(entropy>3.2){
-      // high entropy: use frequency
-      const f={};s.forEach((v,i)=>{f[v]=(f[v]||0)+Math.pow(1.4,i);});
+      const f={};w.forEach((v,i)=>{const age=w.length-1-i;f[v]=(f[v]||0)+Math.exp(-age*0.12);});
       return[parseInt(Object.entries(f).sort((a,b)=>b[1]-a[1])[0][0])];
     }
-    // low entropy: use linear fit
-    const n=s.length;let sx=0,sy=0,sxy=0,sx2=0;
-    s.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});
-    const D=n*sx2-sx*sx;if(!D)return[s[n-1]];
+    const n=w.length;let sx=0,sy=0,sxy=0,sx2=0;
+    w.forEach((v,i)=>{sx+=i;sy+=v;sxy+=i*v;sx2+=i*i;});
+    const D=n*sx2-sx*sx;if(!D)return[w[n-1]];
     const a=(n*sxy-sx*sy)/D,b=(sy-a*sx)/n;
     return[M.mod(Math.round(a*n+b))];
   },
@@ -1083,16 +1080,17 @@ const A={
   // AlternatingStep: detects +k, -k, +k, -k pattern (zigzag with fixed amplitude)
   AlternatingStep:s=>{
     if(s.length<4)return[s[s.length-1]];
-    const n=s.length;let best={sc:-1,k:1};
+    const n=s.length;let best={sc:-1,k:1,phase:0};
     for(let k=1;k<=20;k++){
-      let sc=0;
-      for(let i=2;i<n;i++){
-        const expected=i%2===0?M.mod(s[i-2]):M.mod(s[i-1]+(s[i-1]>s[i-2]?-k:k));
-        if(expected===s[i])sc++;
+      for(const phase of[0,1]){
+        let sc=0;
+        for(let i=2;i<n;i++){
+          const expected=(i+phase)%2===0?M.mod(s[i-2]):M.mod(s[i-1]+(s[i-1]>s[i-2]?-k:k));
+          if(expected===s[i])sc++;
+        }
+        if(sc>best.sc)best={sc,k,phase};
       }
-      if(sc>best.sc)best={sc,k};
     }
-    // Predict: if last gap was +k, next is -k and vice versa
     const lastGap=s[n-1]-s[n-2];
     return[M.mod(s[n-1]+(lastGap>=0?-best.k:best.k))];
   },
@@ -1317,8 +1315,9 @@ const A={
   },
 
   // DFT Period Detector: finds dominant frequency via simplified DFT
-  DFTPeriod:      s=>{
+ DFTPeriod:      s=>{
     if(s.length<8)return[s[s.length-1]];
+    if(M.std(s)<0.5)return[s[s.length-1]];
     const n=s.length;
     const avg=M.mean(s);
     let bestPeriod=2,bestPower=0;
@@ -1623,9 +1622,10 @@ const A={
     const recent=s.slice(-10);
     // Weight decades by recency
     const decFreq={};
-    recent.forEach((v,i)=>{
+   recent.forEach((v,i)=>{
       const dec=Math.floor(v/10);
-      decFreq[dec]=(decFreq[dec]||0)+Math.pow(1.6,i);
+      const age=recent.length-1-i;
+      decFreq[dec]=(decFreq[dec]||0)+Math.exp(-age*0.12);
     });
     const topDec=parseInt(Object.entries(decFreq).sort((a,b)=>b[1]-a[1])[0][0]);
     // Within that decade, find the historically most frequent values
@@ -1639,6 +1639,67 @@ const A={
     const topVals=Object.entries(valFreq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
     return topVals.length?topVals:[M.mod(Math.round(M.mean(decVals)))];
   },
+
+  KalmanFilter:   s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const Q=2,R=8;let x=s[0],P=10;
+    for(let i=1;i<s.length;i++){
+      const Pp=P+Q;
+      const K=Pp/(Pp+R);
+      x=x+K*(s[i]-x);
+      P=(1-K)*Pp;
+    }
+    return[M.mod(Math.round(x))];
+  },
+
+  BayesianDirichlet: s=>{
+    if(s.length<4)return[s[s.length-1]];
+    const alpha=new Array(100).fill(0.5);
+    s.forEach((v,i)=>{
+      const age=s.length-1-i;
+      alpha[M.mod(v)]+=Math.exp(-age*0.08)+0.1;
+    });
+    let bestVal=0,bestA=-1;
+    for(let i=0;i<100;i++){if(alpha[i]>bestA){bestA=alpha[i];bestVal=i;}}
+    return[bestVal];
+  },
+
+  CUSUMChangePoint: s=>{
+    if(s.length<8)return[s[s.length-1]];
+    const mu0=M.mean(s.slice(0,Math.floor(s.length/2)));
+    const sigma=Math.max(M.std(s)||5,3);
+    const k=0.5,h=4;
+    let Sp=0,Sn=0,cpIdx=0;
+    for(let i=Math.floor(s.length/2);i<s.length;i++){
+      Sp=Math.max(0,Sp+(s[i]-mu0)/sigma-k);
+      Sn=Math.max(0,Sn-(s[i]-mu0)/sigma-k);
+      if(Sp>h||Sn>h){cpIdx=i;Sp=0;Sn=0;}
+    }
+    const recent=s.slice(cpIdx>0?cpIdx:0);
+    if(recent.length<2)return[s[s.length-1]];
+    const freq={};
+    recent.forEach((v,i)=>{const w=Math.exp(-(recent.length-1-i)*0.1);freq[v]=(freq[v]||0)+w;});
+    return[M.mod(parseInt(Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0]))];
+  },
+
+  SparseTransitionGraph: s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const bkt=v=>Math.floor(M.mod(v)/10);
+    const G={};
+    for(let i=1;i<s.length;i++){
+      const age=s.length-1-i;
+      const from=bkt(s[i-1]),to=bkt(s[i]);
+      if(!G[from])G[from]={};
+      G[from][to]=(G[from][to]||0)+Math.exp(-age*0.18);
+    }
+    const cur=bkt(s[s.length-1]);
+    const edges=G[cur]||{};
+    let bestTo=-1,bestW=-1;
+    for(const[to,w]of Object.entries(edges)){if(w>=0.25&&w>bestW){bestW=w;bestTo=parseInt(to);}}
+    if(bestTo<0)return[s[s.length-1]];
+    const inDec=s.filter(v=>bkt(v)===bestTo);
+    return[inDec.length?M.mod(Math.round(M.mean(inDec))):M.mod(bestTo*10+5)];
+  },
 };
 const ALGO_NAMES=Object.keys(A);
 const ALGO_COUNT_CONST=ALGO_NAMES.length;
@@ -1650,8 +1711,8 @@ console.log("Algo count:",ALGO_COUNT);
 // This prevents a cluster of similar algos from dominating just by sheer count.
 const _FAM={};
 const _FAMS={
-  stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt","RetraceRebound","SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend"],
-  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget"],
+  stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt","RetraceRebound","SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend","KalmanFilter","BayesianDirichlet","CUSUMChangePoint"],
+  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","SparseTransitionGraph"],
   momentum:["WtdMomentum","SecondDiff","LastGap","AutoCorr","Cyclic","AR3","LCGFit","Recurrence2","LogMap","XorChain","ModSearch","BestStep","ArithSeqDetect","StepAccelerate","ZigZag","DFTPeriod","ALFG","CrossLagSelf","FreqMomentum"],
   transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur","RevLag2","SymmetricMirror","BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget"],
   prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong"],
@@ -2423,7 +2484,7 @@ function btScore(fn,series){
 }
 
 function walkFwd(fn,series){
-  const n=series.length,h=Math.min(5,Math.floor(n*0.25));
+  const n=series.length,h=Math.min(10,Math.floor(n*0.30));
   if(n<h+4)return null;
   // Build history once, extend incrementally — avoids [...train,...slice] spread per iter
   const hist=series.slice(0,n-h);
@@ -2507,7 +2568,7 @@ function jointColHint(col,data,knownPreds){
   const scored=data.filter(r=>ok(r[col])).map(r=>{
     const dist=otherCols.reduce((s,c)=>s+M.cd(r[c]||0,knownPreds[c]),0);
     return{v:r[col],dist};
-  }).sort((a,b)=>a.dist-b.dist).slice(0,5);
+  }).sort((a,b)=>a.dist-b.dist).slice(0,10);
   if(!scored.length)return null;
   const totalW=scored.reduce((s,x)=>s+1/(x.dist+1),0);
   const wv=scored.reduce((s,x)=>s+x.v/(x.dist+1),0);
@@ -2522,7 +2583,7 @@ function applyForgetting(weights,accLog){
   const next={...weights};
   // Collect which algo NAMES contributed to top predictions in recent sessions
   const recentNames=new Set();
-  accLog.slice(-5).forEach(e=>{
+  accLog.slice(-10).forEach(e=>{
     COLS.forEach(col=>{
       // algoDetails stores {algoName: predictedValue} — keys are algo names
       const details=e.algoDetails&&e.algoDetails[col];
@@ -3064,7 +3125,7 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
 
   // ── DEAD-ZONE BIAS CORRECTION ─────────────────────────────────────────
   if(W._accLog&&W._accLog.length>=4){
-    const recentErrs=W._accLog.slice(-6).map(e=>{
+    const recentErrs=W._accLog.slice(-12).map(e=>{
       const pred=e.preds&&e.preds[col];const act=e.actuals&&e.actuals[col];
       if(!ok(pred)||!ok(act))return null;
       let err=act-pred;if(err>50)err-=100;if(err<-50)err+=100;
@@ -3107,6 +3168,12 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
     });
     const boost=1+clamp(bestCluster.mass/(weightedPreds.reduce((s,p)=>s+p.w,0)||1),0.08,0.35);
     votes[bestCluster.center]=(votes[bestCluster.center]||0)*boost+bestCluster.mass*DENSE_CLUSTER_MASS_WEIGHT;
+  }
+  {
+    const maxVote=Math.max(1,...Object.values(votes));
+    Object.keys(votes).forEach(v=>{
+      votes[v]=Math.min(votes[v],maxVote*MAX_VOTE_DOMINANCE_MULT);
+    });
   }
 
   // ── ENSEMBLE VARIANCE → CONFIDENCE DOWNGRADE ─────────────────────────
