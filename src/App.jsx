@@ -76,7 +76,7 @@ const MAX_BT_SERIES=160;
 const ROLLING_WINDOW_ROWS=100; // [UPDATED] strict rolling-window cap (50–100)
 const HEAVY_SAMPLE_POINTS=30;
 const HEAVY_UPDATE_INTERVAL=4;
-const HEAVY_TOPK_EVAL=40; // [UPDATED] evaluate top-K in 30–50 band
+const HEAVY_TOPK_EVAL=50; // [UPDATED] evaluate top-K in 30–50 band
 const HEAVY_TOPK_CUSTOM=20;
 const MAX_GENERATED_ALGOS=150;
 const MUTATION_BUDGET_MAX=8;
@@ -105,14 +105,14 @@ const SOURCE_STABILITY_MIN=0.35;
 const SOURCE_STABILITY_MAX=1.0;
 const CONSENSUS_MIN_AGREEMENT_RATIO=0.35;
 const CONSENSUS_MAX_BOOST=0.25;
-const NEURAL_ALPHA_VOLATILE=0.34;
+const NEURAL_ALPHA_VOLATILE=0.22;
 const NEURAL_ALPHA_FLAT=0.14;
 const NEURAL_ALPHA_DEFAULT=0.22;
 const PRUNE_MIN_NEAR1_RATE=0.001;
 const PATTERN_MUTATION_PROBABILITY=0.65;
 const AUTO_EVOLVE_INTERVAL_ROWS=3;
 // Ensemble adaptation defaults (tuned for fast online convergence without collapse).
-const PERF_ROLLING_WINDOW=12;
+const PERF_ROLLING_WINDOW=18;
 const MIN_PRUNE_EVAL_WINDOW=8;
 const PRUNE_KEEP_TOP_RATIO=0.40;
 const PRUNE_KEEP_RANDOM_RATIO=0.30;
@@ -188,7 +188,7 @@ const CONTROL_MUTATION_MAX=1.75;
 const CONTROL_MUTATION_MIN=0.55;
 const CONTROL_PRUNE_RELAX=0.55;
 const CONTROL_PRUNE_STRICT=1.2;
-const DENSE_CLUSTER_RADIUS=4;
+const DENSE_CLUSTER_RADIUS=3;
 const DENSE_CLUSTER_MASS_WEIGHT=0.12;
 const ENTROPY_BIN_SIZE=10;
 const CONTEXT_SIG_BINS={ // [ADDED]
@@ -231,7 +231,7 @@ function getCategoryContextRole(category){
 }
 function getContextRoleMult(category,context){
   const roles=getCategoryContextRole(category);
-  return roles.has(context)?1.22:context==="MIXED"?1.08:0.92;
+  return roles.has(context)?1.40:context==="MIXED"?1.08:0.92;
 }
 function getAlgoPerfWeight(perf){
   if(!perf)return PERF_WEIGHT_DEFAULT;
@@ -598,7 +598,12 @@ const A={
       return[M.mod(s[n-1]+(-Math.sign(d))*mag)];
     }
     return[s[n-1]];},
-  Sticky:         s=>{const freq={};s.forEach(v=>{freq[v]=(freq[v]||0)+1;});const top=Object.entries(freq).filter(([,c])=>c>=2).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([v])=>parseInt(v));return top.length?top:[s[s.length-1]];},
+  Sticky:         s=>{
+    const freq={};
+    s.forEach((v,i)=>{const age=s.length-1-i;freq[v]=(freq[v]||0)+1+Math.exp(-age*0.06);});
+    const top=Object.entries(freq).filter(([,c])=>c>=2.1).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([v])=>parseInt(v));
+    return top.length?top:[s[s.length-1]];
+  },
   XorHeur:        s=>{if(s.length<2)return[s[0]||0];const l=s[s.length-1],p=s[s.length-2];return[(M.d1(l)^M.d1(p))*10+(M.d2(l)^M.d2(p))];},
   RevLag2:        s=>s.length>=3?[M.rev(s[s.length-3])]:[s[s.length-1]],
 
@@ -913,8 +918,9 @@ const A={
   DeepMarkov4:    s=>{
     if(s.length<5)return[s[s.length-1]];
     const n=s.length;
-    // Try 4-gram first, fall back to 3-gram, then 2-gram
-    for(const depth of[4,3,2]){
+    // Try 2-gram first (most likely to match on Satta-sized series), then deeper
+    const maxDepth=s.length>=60?4:s.length>=30?3:2;
+    for(const depth of(maxDepth>=4?[2,3,4]:maxDepth>=3?[2,3]:[2])){
       if(n<depth+1)continue;
       const tr={};
       for(let i=depth-1;i<n-1;i++){
@@ -938,10 +944,11 @@ const A={
     for(const depth of[2,1]){
       if(gaps.length<depth+1)continue;
       const tr={};
-      for(let i=depth-1;i<gaps.length-1;i++){
+     for(let i=depth-1;i<gaps.length-1;i++){
         const k=gaps.slice(i-depth+1,i+1).join("_");
         if(!tr[k])tr[k]={};
-        tr[k][gaps[i+1]]=(tr[k][gaps[i+1]]||0)+1;
+        const age=gaps.length-2-i;
+        tr[k][gaps[i+1]]=(tr[k][gaps[i+1]]||0)+Math.exp(-age*0.10);
       }
       const k=gaps.slice(-depth).join("_");
       if(tr[k]&&Object.keys(tr[k]).length>0){
@@ -1006,8 +1013,16 @@ const A={
   },
   ValueCluster:   s=>{
     if(s.length<6)return[s[s.length-1]];
-    // k=4 cluster centers: 12,37,62,87
-    const centers=[12,37,62,87];
+    // Fit cluster centers from actual data distribution
+    const recent=s.slice(-Math.min(s.length,40));
+    const sorted=[...recent].sort((a,b)=>a-b);
+    const q=Math.floor(sorted.length/4);
+    const centers=[
+      Math.round(M.mean(sorted.slice(0,q))||12),
+      Math.round(M.mean(sorted.slice(q,q*2))||37),
+      Math.round(M.mean(sorted.slice(q*2,q*3))||62),
+      Math.round(M.mean(sorted.slice(q*3))||87),
+    ];
     const last=s[s.length-1];
     const ci=centers.reduce((bi,c,i)=>M.cd(last,c)<M.cd(last,centers[bi])?i:bi,0);
     // find which cluster follows ci most often
@@ -2001,7 +2016,7 @@ const DATE_SIGNAL_WEIGHTS={
   "YearCycle7":1.1,
   "DxM_Mod":0.9,"DpM_Ds":0.8,"Day_x3_M":0.8,
   "Day_Rev":1.1,"Day_Ds":1.0,"Day_Comp":0.8,"Day_x3Mod":0.8,"Day_x7Mod":0.8,
-  "Anniversary":2.4, // same day+month from past years — empirically the strongest single signal
+  "Anniversary":3.2, // same day+month from past years — empirically the strongest single signal
   // ── PATTERN BANK signals — cross-period long-term memory ──────────────
   "PB_MDExact":3.5,   // exact month×day match across years — very strong
   "PB_MDTight":5.0,   // tight std (<5) month×day — near-deterministic
@@ -2462,11 +2477,11 @@ function btScore(fn,series){
   // Hard cap: 150 rows max — beyond this accuracy gain is negligible, cost grows O(n)
   const s=series.length>150?series.slice(-150):series;
   const n=s.length;if(n<5)return 0.05;
-  // Only backtest last 40 steps (was 31 — slightly wider for better signal)
-  const from=Math.max(3,n-40);let score=0,cnt=0;
+  // Only backtest last 70 steps (was 31 — slightly wider for better signal)
+  const from=Math.max(3,n-70);let score=0,cnt=0;
   const hist=s.slice(0,from);
   const recentStd=n>=8?M.std(s.slice(-8)):15;
-  const nearTol=recentStd>18?3:2;
+  const nearTol=recentStd>20?4:recentStd>12?3:2;
   for(let i=from;i<n;i++){
     try{
       const p=fn(hist),a=s[i];
@@ -2528,7 +2543,7 @@ function buildMetaModel(accLog){
   // Cap to last 80 sessions — older ones hurt EMA accuracy more than they help
   const log=accLog.length>80?accLog.slice(-80):accLog;
   const ema={},count={};
-  const alpha=log.length<10?0.30:log.length<30?0.25:0.18;
+  const alpha=log.length<10?0.30:log.length<30?0.25:0.22;
   log.forEach(entry=>{
     if(!entry.algoDetails)return;
     COLS.forEach(col=>{
@@ -2839,8 +2854,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const cached=algoCache[name]||{bt:0.05,wfBoost:1.0};
       const {bt,wfBoost}=cached;
       const lw=gw[name]!=null?gw[name]:1;
-      const rowW=rw[predRow]?rw[predRow][name]!=null?rw[predRow][name]:1:1;
-      const ranW=rnw[curRange]?rnw[curRange][name]!=null?rnw[curRange][name]:1:1;
+     const rowW=rw[predRow]?rw[predRow][name]!=null?Math.sqrt(rw[predRow][name]):1:1;
+      const ranW=rnw[curRange]?rnw[curRange][name]!=null?Math.sqrt(rnw[curRange][name]):1:1;
       const regW=rgw[name]!=null?rgw[name]:1;
       const nScore=ns[name]!=null?ns[name]:0;
       const lb=W._leaderboard&&W._leaderboard[name]!=null?W._leaderboard[name]:0;
@@ -3548,7 +3563,7 @@ function generateAlgos(data,existing){
     // ── 9. NEW: mod-period shift — s[i] = (s[i-p] + k) mod 100 ──
     if(n>=6){
       let mpb={sc:-1,p:2,k:0};
-      for(let p=2;p<=Math.min(8,n-1);p++)for(let k=0;k<100;k+=2){
+      for(let p=2;p<=Math.min(8,n-1);p++)for(let k=0;k<100;k+=1){
         let sc=0;for(let i=p;i<n;i++)if(M.mod(s[i-p]+k)===s[i])sc++;
         if(sc>mpb.sc)mpb={sc,p,k};
       }
