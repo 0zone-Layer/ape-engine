@@ -4937,6 +4937,20 @@ function AppInner(){
     if(!missing.length){st("All columns already filled","warn");return;}
     st("Predicting missing columns…","busy");
 
+    const _ar2=[];
+    Object.values(S.datasets||{}).forEach(ds=>{
+      (ds.rows||[]).forEach(r=>_ar2.push(r));
+    });
+    _ar2.sort((a,b)=>{
+      if(a.date&&b.date)return a.date<b.date?-1:a.date>b.date?1:0;
+      return a.row-b.row;
+    });
+    const _seen2=new Set();
+    const scopedRows=_ar2.filter(r=>{
+      const k=(r.date||"_")+"|"+r.row;
+      if(_seen2.has(k))return false;_seen2.add(k);return true;
+    });
+
     // Build a temporary dataset that includes a partial row with known values
     // so cross-col algorithms can use known values as hints
     const tempRow={row:S.predRow||0};
