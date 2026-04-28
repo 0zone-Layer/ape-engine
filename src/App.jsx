@@ -3647,20 +3647,37 @@ function buildAdaptiveControl(accLog,prevControl){
 // ── ADAPTIVE ALGO GENERATOR ────────────────────
 function generateAlgos(data,existing){
   const out=[];
+  // Detect current regime to focus generation on relevant formula types
+  const _genRegimes={};
+  COLS.forEach(col=>{
+    const s=getSeries(col,data);
+    if(s.length>=8)_genRegimes[col]=getRegime(s);
+  });
   COLS.forEach(col=>{
     const s=getSeries(col,data),n=s.length;
     if(n<6)return;
+    const _regime=_genRegimes[col]||"normal";
+    // In volatile regime, skip linear/cyclic generators (they overfit noise)
+    const skipLinear=_regime==="volatile";
+    // In trending regime, skip stochastic generators
+    const skipStochastic=_regime==="trending";
+    // In flat/cyclic regime, skip linear generators
+    const skipGap=_regime==="flat";
 
     // ── 1. best linear: a*s[i-1]+b mod 100 ──
+    if(!skipLinear){
     let bl={sc:-1,a:1,b:0};
     for(let a=1;a<10;a++)for(let b=0;b<100;b+=3){
       let sc=0;
       for(let i=1;i<n;i++){if(M.mod(a*s[i-1]+b)===s[i])sc++;}
       if(sc>bl.sc)bl={sc,a,b};
     }
-    if(bl.sc>1){const nm="Lin_"+col+"_"+bl.a+"x"+bl.b;if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod("+bl.a+"*s[s.length-1]+"+bl.b+")]",desc:"Auto linear col "+col,enabled:true,generated:true,createdAt:Date.now()});}
+    // Require at least 3 matches AND >15% hit rate to avoid spurious fits
+    if(bl.sc>=3&&bl.sc/n>0.12){const nm="Lin_"+col+"_"+bl.a+"x"+bl.b;if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod("+bl.a+"*s[s.length-1]+"+bl.b+")]",desc:"Auto linear col "+col,enabled:true,generated:true,createdAt:Date.now()});}
+    }
 
     // ── 2. best cyclic: exact period detection with recency ──
+    if(!skipLinear){
     let bc={sc:-1,p:2};
     for(let p=2;p<=10;p++){
       let sc=0;
@@ -3671,11 +3688,14 @@ function generateAlgos(data,existing){
       if(sc/(n-p)>bc.sc)bc={sc:sc/(n-p),p};
     }
     if(bc.sc>0.35){const nm="Cyc_"+col+"_p"+bc.p;if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>{const n=s.length,p="+bc.p+",b=n%p||p;return[M.mod(s[n-b]||s[n-1])];}",desc:"Auto cyclic p"+bc.p+" col "+col,enabled:true,generated:true,createdAt:Date.now()});}
+    }
 
     // ── 3. avg gap (recent-biased) ──
+    if(!skipGap){
     const gaps=[];for(let i=1;i<n;i++){let g=s[i]-s[i-1];if(g>50)g-=100;if(g<-50)g+=100;gaps.push(g);}
     const avgGap=Math.round(M.mean(gaps.slice(-6)));
     if(avgGap!==0){const nm="Gap_"+col+"_"+(avgGap>0?"+":"")+avgGap;if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(s[s.length-1]+("+avgGap+"))]",desc:"Auto gap "+(avgGap>0?"+":"")+avgGap+" col "+col,enabled:true,generated:true,createdAt:Date.now()});}
+    }
 
     // ── 4. crossover: blend top-2 built-in predictions DYNAMICALLY ──
     const scoredBI=Object.entries(A).map(([nm,fn])=>({nm,sc:btScore(fn,s)})).sort((a,b)=>b.sc-a.sc);
@@ -3697,7 +3717,7 @@ function generateAlgos(data,existing){
         let sc=0;for(let i=1;i<n;i++)if(M.mod(M.ds(s[i-1])*k+c)===s[i])sc++;
         if(sc>dsb.sc)dsb={sc,k,c};
       }
-      if(dsb.sc>=2){const nm="DsChain_"+col+"_k"+dsb.k+"c"+dsb.c;
+      if(dsb.sc>=3&&dsb.sc/n>0.10){const nm="DsChain_"+col+"_k"+dsb.k+"c"+dsb.c;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(M.ds(s[s.length-1])*"+dsb.k+"+"+dsb.c+")]",desc:"Auto digit-sum chain col "+col,enabled:true,generated:true,createdAt:Date.now()});}
     }
 
@@ -3745,13 +3765,14 @@ function generateAlgos(data,existing){
     }
 
     // ── 7. modular step ──
+    if(!skipStochastic){
     if(n>=5){
       let msb={sc:-1,a:1,c:1,m:97};
       for(const a of[2,3,5,7,11])for(const c of[1,3,7,13,17])for(const m of[97,89,83,79]){
         let sc=0;for(let i=1;i<n;i++)if(M.mod((a*s[i-1]+c)%m)===s[i])sc++;
         if(sc>msb.sc)msb={sc,a,c,m};
       }
-      if(msb.sc>=2){const nm="ModStep_"+col+"_a"+msb.a+"m"+msb.m;
+      if(msb.sc>=3&&msb.sc/n>0.10){const nm="ModStep_"+col+"_a"+msb.a+"m"+msb.m;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(("+msb.a+"*s[s.length-1]+"+msb.c+")%"+msb.m+")]",desc:"Auto modular step col "+col,enabled:true,generated:true,createdAt:Date.now()});}
     }
 
@@ -3775,6 +3796,7 @@ function generateAlgos(data,existing){
       }
       if(mpb.sc>=3){const nm="MPShift_"+col+"_p"+mpb.p+"k"+mpb.k;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(s[s.length-"+mpb.p+"]+"+(mpb.k)+")]",desc:"Auto mod-period shift col "+col,enabled:true,generated:true,createdAt:Date.now()});}
+    }
     }
 
     // ── 10. NEW: complement-chain — s[i] = (100 - s[i-1]*a + c) mod 100 ──
@@ -3815,6 +3837,7 @@ function generateAlgos(data,existing){
     }
 
     // ── 12. pseudo-random detector (xorshift-lite / lcg-lite) ──
+    if(!skipStochastic){
     if(n>=7){
       const variants=[
         {name:"xorshift_1_3",code:"(s,M)=>{let x=s[s.length-1]||1;x^=(x<<1)&0x7F;x^=(x>>3)&0x7F;x^=(x<<2)&0x7F;return[M.mod(Math.abs(x))];}"},
@@ -3837,6 +3860,59 @@ function generateAlgos(data,existing){
       if(pb.sc>=3){
         const nm="PRNG_"+col+"_"+pb.name;
         if(!existing.has(nm))out.push({name:nm,code:pb.code,desc:"Auto PRNG detector "+pb.name+" col "+col,enabled:true,generated:true,createdAt:Date.now()});
+      }
+    }
+    }
+
+    // ── 13. DS-add chain — s[i] = s[i-1] + DS(s[i-1]) + k ──
+    if(n>=6){
+      let dsab={sc:-1,k:0};
+      for(let k=-9;k<=9;k++){
+        let sc=0;
+        for(let i=1;i<n;i++)if(M.mod(s[i-1]+M.ds(s[i-1])+k)===s[i])sc++;
+        if(sc>dsab.sc)dsab={sc,k};
+      }
+      if(dsab.sc>=3&&dsab.sc/n>0.10){
+        const nm="DsAdd_"+col+"_k"+(dsab.k>=0?"+":"")+dsab.k;
+        if(!existing.has(nm))out.push({name:nm,
+          code:"(s,M)=>[M.mod(s[s.length-1]+M.ds(s[s.length-1])+"+(dsab.k)+")]",
+          desc:"Auto DS-add chain col "+col,enabled:true,generated:true,createdAt:Date.now()});
+      }
+    }
+
+    // ── 14. ank step — unit digit shifts by k every draw ──
+    if(n>=6){
+      let akb={sc:-1,k:1};
+      for(let k=1;k<=9;k++){
+        let sc=0;
+        for(let i=1;i<n;i++)if((M.d2(s[i-1])+k)%10===M.d2(s[i]))sc++;
+        if(sc>akb.sc)akb={sc,k};
+      }
+      if(akb.sc>=3&&akb.sc/n>0.10){
+        const nm="AnkStep_"+col+"_k"+akb.k;
+        if(!existing.has(nm))out.push({name:nm,
+          code:"(s,M)=>{const v=s[s.length-1];const nAnk=(M.d2(v)+"+akb.k+")%10;return[M.d1(v)*10+nAnk,M.mod((M.d1(v)+1)*10+nAnk)];}",
+          desc:"Auto ank step col "+col,enabled:true,generated:true,createdAt:Date.now()});
+      }
+    }
+
+    // ── 15. triple-value mean shift — s[i] ≈ mean(s[i-1],s[i-2],s[i-3]) + k ──
+    if(n>=8){
+      let tmb={sc:-1,k:0};
+      for(let k=-15;k<=15;k++){
+        let sc=0;
+        for(let i=3;i<n;i++){
+          const pred=M.mod(Math.round((s[i-1]+s[i-2]+s[i-3])/3)+k);
+          if(pred===s[i])sc++;
+          else if(M.cd(pred,s[i])<=1)sc+=0.5;
+        }
+        if(sc>tmb.sc)tmb={sc,k};
+      }
+      if(tmb.sc>=3&&tmb.sc/n>0.10){
+        const nm="TriMean_"+col+"_k"+(tmb.k>=0?"+":"")+tmb.k;
+        if(!existing.has(nm))out.push({name:nm,
+          code:"(s,M)=>{const n=s.length;return[M.mod(Math.round((s[n-1]+s[n-2]+s[n-3])/3)+"+(tmb.k)+")];}",
+          desc:"Auto triple-mean col "+col,enabled:true,generated:true,createdAt:Date.now()});
       }
     }
   });
@@ -3870,11 +3946,33 @@ function filterGeneratedAlgos(candidates,data){
   const scored=candidates.map(ca=>({...ca,class:ca.class||classifyAlgo(ca.name,ca.code),_genScore:scoreGeneratedAlgoCandidate(ca,data)}))
     .filter(ca=>ca._genScore!=null&&Number.isFinite(ca._genScore))
     .sort((a,b)=>b._genScore-a._genScore);
-  const strong=scored.filter(ca=>ca._genScore>=AUTO_GENERATED_MIN_SCORE);
+  // Stability check: pattern must hold in BOTH recent half AND older half
+  // Prevents algos that fit only a recent lucky streak
+  const withStability=scored.map(ca=>{
+    if(!ca._genScore||ca._genScore<AUTO_GENERATED_MIN_SCORE)return{...ca,_stable:false};
+    const fn=makeCustomFn(ca.code);
+    if(!fn)return{...ca,_stable:false};
+    const col=generatedAlgoTargetCol(ca.name);
+    if(!col)return{...ca,_stable:true}; // non-column-specific, skip check
+    const s=getSeries(col,data);
+    if(s.length<12)return{...ca,_stable:true}; // too short to split
+    const mid=Math.floor(s.length/2);
+    const s1=s.slice(0,mid); // older half
+    const s2=s.slice(mid);   // recent half
+    const bt1=btScore(fn,s1);
+    const bt2=btScore(fn,s2);
+    // Stable = both halves show signal, not just one
+    const _stable=bt1>0.08&&bt2>0.08;
+    return{...ca,_stable,_bt1:bt1,_bt2:bt2};
+  });
+  const strong=withStability.filter(ca=>ca._genScore>=AUTO_GENERATED_MIN_SCORE&&ca._stable!==false);
+  // Allow unstable but strong algos through if they beat threshold significantly
+  const unstableStrong=withStability.filter(ca=>!ca._stable&&ca._genScore>=AUTO_GENERATED_MIN_SCORE*1.8);
+  const allStrong=[...strong,...unstableStrong.slice(0,2)]; // max 2 unstable algos allowed through
   const weak=scored.filter(ca=>ca._genScore<AUTO_GENERATED_MIN_SCORE);
   // Keep a weak tail for diversity instead of deleting low/degenerate forms too early.
   const weakKeepCount=Math.min(weak.length,Math.max(WEAK_DIVERSITY_MIN_KEEP,Math.ceil(candidates.length*WEAK_DIVERSITY_RATIO)));
-  const selected=[...strong,...shuffleArray(weak).slice(0,weakKeepCount)];
+  const selected=[...allStrong,...shuffleArray(weak).slice(0,weakKeepCount)];
   const seenCode=new Set();
   const out=[];
   selected.forEach(ca=>{
@@ -3888,20 +3986,76 @@ function filterGeneratedAlgos(candidates,data){
 
 // ── MUTATION: clone top performers with minimal structural changes ──────
 function mutateCode(code,crossCol,parentCode){
-  const seedExpr="s[s.length-1]";
-  const lagTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"s[Math.max(0,s.length-2)]"):code;
-  const lagDropTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"s[Math.max(0,s.length-3)]"):code;
-  // Intentionally uses bitwise XOR/shift to inject lightweight nonlinear behavior.
-  const bitBase="(M.mod(Math.round("+seedExpr+"))&"+MUTATION_BIT_MASK+")";
-  const shiftTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"("+bitBase+"^(("+bitBase+")>>1))"):code;
-  const mul=MUTATION_MUL_BASE+Math.floor(Math.random()*MUTATION_MUL_RANGE);
-  const mulTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"("+seedExpr+"*"+mul+")"):code;
-  const modTerm=code.includes(seedExpr)?code.replaceAll(seedExpr,"(("+seedExpr+"*"+(mul+1)+")+"+(Math.floor(Math.random()*19)+3)+")%100"):code;
-  const crossTerm=crossCol&&code.includes(seedExpr)?code.replaceAll(seedExpr,"M.mod(("+seedExpr+"+s[Math.max(0,s.length-4)]+"+Math.max(1,COLS.indexOf(crossCol)+1)+")/2)"):code;
-  const parentBlend=parentCode&&parentCode!==code?"(s,M)=>{try{const p1=("+code+")(s,M);const p2=("+parentCode+")(s,M);const v1=Array.isArray(p1)?p1[0]:p1;const v2=Array.isArray(p2)?p2[0]:p2;return[M.mod(Math.round((v1+v2)/2))];}catch(e){return("+code+")(s,M);}}":code;
-  const candidates=shuffleArray([...new Set([lagTerm,lagDropTerm,shiftTerm,mulTerm,modTerm,crossTerm,parentBlend])]).filter(v=>v&&v!==code);
-  for(const candidate of candidates){
-    if(makeCustomFn(candidate))return candidate;
+  if(!code)return code;
+  const candidates=[];
+
+  // -- Strategy 1: lag shift (existing, but expanded) --
+  const seed="s[s.length-1]";
+  if(code.includes(seed)){
+    candidates.push(code.replaceAll(seed,"s[Math.max(0,s.length-2)]"));
+    candidates.push(code.replaceAll(seed,"s[Math.max(0,s.length-3)]"));
+    candidates.push(code.replaceAll(seed,"s[Math.max(0,s.length-4)]"));
+  }
+
+  // -- Strategy 2: coefficient hill-climbing --
+  // Find numeric constants in code and nudge them +/-1, +/-2
+  const numRe=/\b([2-9]|[1-9]\d)\b/g;
+  const nums=[];let m;
+  const codeCopy=code;
+  while((m=numRe.exec(codeCopy))!==null){
+    const n=parseInt(m[1]);
+    if(n>=2&&n<=97)nums.push({val:n,idx:m.index,str:m[0]});
+  }
+  // Pick first and last numeric constant (most likely to be meaningful)
+  const numTargets=[nums[0],nums[nums.length-1]].filter(Boolean);
+  numTargets.forEach(target=>{
+    if(!target)return;
+    for(const delta of[-1,1,-2,2,-3,3]){
+      const newVal=target.val+delta;
+      if(newVal<0||newVal>99)continue;
+      const mutated=code.slice(0,target.idx)+String(newVal)+code.slice(target.idx+target.str.length);
+      if(mutated!==code)candidates.push(mutated);
+    }
+  });
+
+  // -- Strategy 3: DS/ank injection --
+  if(code.includes(seed)){
+    candidates.push(code.replaceAll(seed,"("+seed+"+M.ds("+seed+"))"));
+    candidates.push(code.replaceAll(seed,"M.mod("+seed+"+M.d2("+seed+"))"));
+    candidates.push(code.replaceAll(seed,"M.mod(100-"+seed+")"));
+  }
+
+  // -- Strategy 4: parent blend with circular mean --
+  if(parentCode&&parentCode!==code){
+    // Circular mean for [0,99] space
+    const circBlend="(s,M)=>{try{const p1=("+code+")(s,M);const p2=("+parentCode+")(s,M);"+
+      "const v1=Array.isArray(p1)?p1[0]:p1;const v2=Array.isArray(p2)?p2[0]:p2;"+
+      "const diff=M.mod(v2-v1+100);const blend=diff<=50?M.mod(v1+Math.round(diff/2)):M.mod(v1-Math.round((100-diff)/2));"+
+      "return[M.mod(blend)];}catch(e){return("+code+")(s,M);}}";
+    candidates.push(circBlend);
+  }
+
+  // -- Strategy 5: bitwise (existing) --
+  if(code.includes(seed)){
+    const bitBase="(M.mod(Math.round("+seed+"))&"+MUTATION_BIT_MASK+")";
+    candidates.push(code.replaceAll(seed,"("+bitBase+"^(("+bitBase+")>>1))"));
+    const mul=MUTATION_MUL_BASE+Math.floor(Math.random()*MUTATION_MUL_RANGE);
+    candidates.push(code.replaceAll(seed,"(("+seed+"*"+(mul+1)+")+"+(Math.floor(Math.random()*19)+3)+")%100"));
+  }
+
+  // -- Strategy 6: cross-col DS blend --
+  if(crossCol&&code.includes(seed)){
+    const ci=Math.max(1,COLS.indexOf(crossCol)+1);
+    candidates.push(code.replaceAll(seed,
+      "M.mod(("+seed+"+M.ds(s[Math.max(0,s.length-"+ci+")]))*"+Math.floor(Math.random()*3+1)+")"));
+  }
+
+  // Deduplicate and validate
+  const seen=new Set([code]);
+  for(const c of shuffleArray(candidates)){
+    if(!c||seen.has(c))continue;
+    seen.add(c);
+    if(makeCustomFn(c))return c;
   }
   return code;
 }
@@ -4006,7 +4160,10 @@ function scoreAlgo(ca,weights,rows,btCache){
   const fn=makeCustomFn(ca.code);
   if(!fn)return{score:-999,avgNs:-1,avgStreak:-1,avgBt:0,avgWf:0,avgNear1:0,nsCount:0,btCnt:0};
   let totalNs=0,totalStreak=0,nsCount=0,totalBt=0,totalWf=0,totalNear1=0,btCnt=0;
-  COLS.forEach(col=>{
+  // Only score against target column for column-specific algos
+  const targetCol=generatedAlgoTargetCol(ca.name);
+  const evalCols=targetCol?[targetCol]:COLS;
+  evalCols.forEach(col=>{
     const ns=weights[col]&&weights[col].neuralScores?weights[col].neuralScores:{};
     if(ns[ca.name]!=null){totalNs+=ns[ca.name];nsCount++;}
     const sk=ns["_s_"+ca.name];if(sk!=null)totalStreak+=sk;
@@ -4029,9 +4186,17 @@ function scoreAlgo(ca,weights,rows,btCache){
   const avgBt=btCnt?totalBt/btCnt:0.05;
   const avgWf=btCnt?totalWf/btCnt:0.05;
   const avgNear1=btCnt?totalNear1/btCnt:0;
+  // Overfitting penalty: if btScore >> walkFwd, algo memorised history
+  // bt=0.8, wf=0.1 → overfit ratio=8.0 → heavy penalty
+  // bt=0.4, wf=0.3 → overfit ratio=1.3 → no penalty
+  const overfitRatio=avgWf>0.05?avgBt/avgWf:avgBt>0.3?3.0:1.0;
+  const overfitPenalty=overfitRatio>2.5?Math.min(0.6,(overfitRatio-2.5)*0.12):0;
+  // Stability bonus: if both bt AND wf are above threshold, reward consistency
+  const stabilityBonus=avgBt>0.2&&avgWf>0.18?0.15:0;
+  const rawScore=avgNs*SCORE_WEIGHT_NS+avgStreak*SCORE_WEIGHT_STREAK+avgBt*SCORE_WEIGHT_BT+avgWf*SCORE_WEIGHT_WF+avgNear1*SCORE_WEIGHT_NEAR1;
   return{
-    score:avgNs*SCORE_WEIGHT_NS+avgStreak*SCORE_WEIGHT_STREAK+avgBt*SCORE_WEIGHT_BT+avgWf*SCORE_WEIGHT_WF+avgNear1*SCORE_WEIGHT_NEAR1,
-    avgNs,avgStreak,avgBt,avgWf,avgNear1,nsCount,btCnt
+    score:Math.max(0,rawScore-overfitPenalty+stabilityBonus),
+    avgNs,avgStreak,avgBt,avgWf,avgNear1,nsCount,btCnt,overfitRatio:+overfitRatio.toFixed(2)
   };
 }
 
@@ -4081,7 +4246,21 @@ function pruneWeakAlgos(customs,weights,rows,btCache,adaptiveControl){
     const perfErr=perfSummary.err.length?M.mean(perfSummary.err):25;
     const perfEval=perfSummary.eval.length?M.mean(perfSummary.eval):0;
     const perfMult=getAlgoPerfWeight({rollingAccuracy:perfAcc,recentError:perfErr,evalCount:perfEval});
-    return{ca,score:stats.score*Math.max(0.45,perfMult),stats,perfAcc,perfErr,perfEval};
+    // Recent decay: if algo's recent accuracy is < 50% of its rolling accuracy
+    // it is getting worse -> apply decay pressure to accelerate pruning
+    const recentHits=COLS.reduce((acc,col)=>{
+      const perf=weights&&weights[col]&&weights[col].performance?weights[col].performance[ca.name]:null;
+      if(perf&&perf.shortHits&&perf.shortHits.length>=4){
+        acc.push(M.mean(perf.shortHits.slice(-4)));
+      }
+      return acc;
+    },[]);
+    const recentAcc=recentHits.length?M.mean(recentHits):perfAcc;
+    const decayFactor=(perfAcc>0.05&&recentAcc<perfAcc*0.45)?0.60:1.0;
+    // Age pressure: very old algos with mediocre performance get pruning nudge
+    const ageDays=ca.createdAt?(Date.now()-ca.createdAt)/86400000:0;
+    const agePressure=ageDays>90&&perfAcc<0.12?0.75:1.0;
+    return{ca,score:stats.score*Math.max(0.45,perfMult)*decayFactor*agePressure,stats,perfAcc,perfErr,perfEval};
   }).sort((a,b)=>b.score-a.score);
   if(!scored.length)return{pruned:customs,removed:[]};
 
