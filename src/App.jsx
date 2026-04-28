@@ -65,7 +65,7 @@ function isExactLikePrediction(pred,actual,hitCtx){
 }
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
-const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
+const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend","AnkTracker","DigitSumTarget","CUSUMChangePoint","SparseTransitionGraph","BayesianDirichlet","KalmanFilter","RepeatGapCycle","TripleSumCycle"];
 const MIN_CROSS_SIGNAL_WEIGHT=0.25;
 const HEAVY_PRED_THRESHOLD_MS=18;
 const MAX_HEAVY_STREAK=8;
@@ -226,7 +226,7 @@ function getCategoryContextRole(category){
   if(category==="STATISTICAL")return new Set(["TREND","STABLE"]);
   if(category==="SEQUENCE")return new Set(["CYCLIC","MIXED"]);
   if(category==="STOCHASTIC")return new Set(["CHAOTIC"]);
-  if(category==="TRANSFORM")return new Set(["TREND","STABLE","CYCLIC"]);
+  if(category==="TRANSFORM")return new Set(["TREND","STABLE","CYCLIC","CHAOTIC"]);
   return new Set(["MIXED","CHAOTIC"]);
 }
 function getContextRoleMult(category,context){
@@ -1733,6 +1733,155 @@ const A={
     const inDec=s.filter(v=>bkt(v)===bestTo);
     return[inDec.length?M.mod(Math.round(M.mean(inDec))):M.mod(bestTo*10+5)];
   },
+
+  LastMonthSameDay: s=>{
+    // This runs on the merged global series which is date-sorted.
+    // s[s.length-1] = today, s[s.length-32] ~= same day last month.
+    if(s.length<25)return[s[s.length-1]];
+    // Look for the value approximately 28-31 steps back (last month same day).
+    const candidates=[];
+    for(const offset of[28,29,30,31,27]){
+      const idx=s.length-1-offset;
+      if(idx>=0)candidates.push(s[idx]);
+    }
+    if(!candidates.length)return[s[s.length-1]];
+    // Return mode of candidates (handles months with different lengths).
+    const freq={};
+    candidates.forEach(v=>{freq[v]=(freq[v]||0)+1;});
+    return[parseInt(Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0])];
+  },
+
+  WeekdayPersonality: s=>{
+    if(s.length<14)return[s[s.length-1]];
+    // Split series into 3 equal thirds and check if trends differ by position.
+    const n=s.length;
+    const t1=M.mean(s.slice(0,Math.floor(n/3)));
+    const t2=M.mean(s.slice(Math.floor(n/3),Math.floor(2*n/3)));
+    const t3=M.mean(s.slice(Math.floor(2*n/3)));
+    // Detect oscillation between thirds.
+    const oscUp=t3>t2&&t2<t1;
+    const oscDown=t3<t2&&t2>t1;
+    if(oscUp)return[M.mod(Math.round(t1*0.6+t3*0.4))];
+    if(oscDown)return[M.mod(Math.round(t1*0.6+t3*0.4))];
+    // Detect sustained trend across thirds.
+    if(t3>t1+8)return[M.mod(Math.round(t3+(t3-t2)*0.4))];
+    if(t3<t1-8)return[M.mod(Math.round(t3+(t3-t2)*0.4))];
+    return[M.mod(Math.round(M.mean(s.slice(-7))))];
+  },
+
+  MonthHalfSwitch: s=>{
+    if(s.length<12)return[s[s.length-1]];
+    const n=s.length;
+    // Assume series is sorted newest-last and ~30 rows per month.
+    const firstHalf=s.filter((_,i)=>i%30<15);
+    const secHalf=s.filter((_,i)=>i%30>=15);
+    if(!firstHalf.length||!secHalf.length)return[s[n-1]];
+    const fMean=M.mean(firstHalf);
+    const sMean=M.mean(secHalf);
+    const diff=Math.abs(fMean-sMean);
+    if(diff<5)return[s[n-1]]; // no significant half-split
+    // Determine which half we're currently in (based on position in series).
+    const posInMonth=n%30;
+    const inFirstHalf=posInMonth<15;
+    const targetMean=inFirstHalf?fMean:sMean;
+    // Find historical values closest to target half mean with recency weight.
+    const freq={};
+    s.forEach((v,i)=>{
+      const isMatchingHalf=(i%30<15)===inFirstHalf;
+      if(isMatchingHalf){
+        const age=n-1-i;
+        freq[v]=(freq[v]||0)+Math.exp(-age*0.10);
+      }
+    });
+    if(!Object.keys(freq).length)return[M.mod(Math.round(targetMean))];
+    return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([v])=>parseInt(v));
+  },
+
+  PairSumConstant: s=>{
+    if(s.length<8)return[s[s.length-1]];
+    const n=s.length;
+    // Look for a stable step where s[i]+s[i-k] = constant.
+    let best={sc:-1,k:1,target:0};
+    for(const k of[1,2,3,7]){
+      if(n<k+4)continue;
+      const sums=[];
+      for(let i=k;i<n;i++)sums.push(M.mod(s[i]+s[i-k]));
+      const freq={};
+      sums.forEach(v=>{freq[v]=(freq[v]||0)+1;});
+      const top=Object.entries(freq).sort((a,b)=>b[1]-a[1])[0];
+      if(top&&parseInt(top[1])>best.sc){
+        best={sc:parseInt(top[1]),k,target:parseInt(top[0])};
+      }
+    }
+    if(best.sc<3)return[s[n-1]];
+    const predicted=M.mod(best.target-s[n-1]);
+    return[predicted,M.mod(predicted+1),M.mod(predicted-1)];
+  },
+
+  DsRunTracker:   s=>{
+    if(s.length<8)return[s[s.length-1]];
+    const n=s.length;
+    const dsVals=s.map(v=>M.ds(v));
+    const isHigh=v=>M.ds(v)>=9;
+    // Current run length in same DS category
+    const curHigh=isHigh(s[n-1]);
+    let runLen=1;
+    for(let i=n-2;i>=0;i--){
+      if(isHigh(s[i])===curHigh)runLen++;
+      else break;
+    }
+    // Find historical average run length for this category
+    const runs=[];let cur=isHigh(s[0]),len=1;
+    for(let i=1;i<n;i++){
+      if(isHigh(s[i])===cur)len++;
+      else{runs.push({high:cur,len});cur=isHigh(s[i]);len=1;}
+    }
+    const sameRuns=runs.filter(r=>r.high===curHigh).map(r=>r.len);
+    if(!sameRuns.length)return[s[n-1]];
+    const avgRun=M.mean(sameRuns);
+    if(runLen>=Math.round(avgRun*0.9)){
+      // Switch due - predict from opposite DS category
+      const targetHigh=!curHigh;
+      const oppVals=s.filter(v=>isHigh(v)===targetHigh);
+      if(!oppVals.length)return[s[n-1]];
+      const freq={};
+      oppVals.forEach((v,i)=>{freq[v]=(freq[v]||0)+Math.exp(-i*0.08);});
+      return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+    }
+    // Run continuing - stay in same DS category
+    const sameVals=s.filter(v=>isHigh(v)===curHigh);
+    const freq={};
+    sameVals.forEach((v,i)=>{freq[v]=(freq[v]||0)+Math.exp(-i*0.08);});
+    return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+  },
+
+  AnkSumConstraint: s=>{
+    if(s.length<10)return[s[s.length-1]];
+    // Track what unit digits (anks) appear most at each position-in-month
+    const n=s.length;
+    const posFreq={};
+    s.forEach((v,i)=>{
+      const pos=i%10; // position within a 10-draw cycle
+      const ank=M.d2(v);
+      if(!posFreq[pos])posFreq[pos]={};
+      posFreq[pos][ank]=(posFreq[pos][ank]||0)+1;
+    });
+    const curPos=n%10;
+    const ankHist=posFreq[curPos]||{};
+    if(!Object.keys(ankHist).length)return[s[n-1]];
+    // Find top ank for this position
+    const topAnk=parseInt(Object.entries(ankHist).sort((a,b)=>b[1]-a[1])[0][0]);
+    // Find values with this ank, recency weighted
+    const freq={};
+    s.forEach((v,i)=>{
+      if(M.d2(v)===topAnk){
+        const age=n-1-i;
+        freq[v]=(freq[v]||0)+Math.exp(-age*0.10);
+      }
+    });
+    if(!Object.keys(freq).length)return[M.mod(topAnk),M.mod(topAnk+10),M.mod(topAnk+20)];
+    return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+  },
 };
 const ALGO_NAMES=Object.keys(A);
 const ALGO_COUNT_CONST=ALGO_NAMES.length;
@@ -1744,8 +1893,8 @@ console.log("Algo count:",ALGO_COUNT);
 // This prevents a cluster of similar algos from dominating just by sheer count.
 const _FAM={};
 const _FAMS={
-  stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt","RetraceRebound","SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend","KalmanFilter","BayesianDirichlet","CUSUMChangePoint"],
-  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","SparseTransitionGraph"],
+  stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt","RetraceRebound","SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend","KalmanFilter","BayesianDirichlet","CUSUMChangePoint","DsRunTracker","MonthHalfSwitch","WeekdayPersonality"],
+  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","SparseTransitionGraph","LastMonthSameDay","PairSumConstant","AnkSumConstraint"],
   momentum:["WtdMomentum","SecondDiff","LastGap","AutoCorr","Cyclic","AR3","LCGFit","Recurrence2","LogMap","XorChain","ModSearch","BestStep","ArithSeqDetect","StepAccelerate","ZigZag","DFTPeriod","ALFG","CrossLagSelf","FreqMomentum"],
   transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur","RevLag2","SymmetricMirror","BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget"],
   prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong"],
@@ -1755,6 +1904,7 @@ function _getFamily(name){
   if(_FAM[name])return _FAM[name];
   if(name.startsWith("Lin_")||name.startsWith("Gap_")||name.startsWith("Cyc_")||name.startsWith("Rec2_")||name.startsWith("ModStep_"))return"momentum";
   if(name.startsWith("DsChain_")||name.startsWith("DsAdd_")||name.startsWith("AnkStep_")||name.startsWith("Cross_"))return"transform";
+  if(name.startsWith("AnkCyc_"))return"transform";
   if(name.startsWith("Mut_"))return"seq";
   return"other";
 }
