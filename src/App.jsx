@@ -16,8 +16,8 @@ const M={
   median:a=>{const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;},
 };
 const pad2=n=>String(M.mod(n)).padStart(2,"0");
-const COLS=["A","B","C","D","E","F"];
-const COL_NAMES={A:"Desawar",B:"Delhi Bazar",C:"Shri Ganesh",D:"Faridabad",E:"Ghaziabad",F:"Gali"};
+const COLS=["A","B","C","D","E","F","G"];
+const COL_NAMES={A:"Desawar",B:"Delhi Bazar",C:"Shri Ganesh",D:"Faridabad",E:"Shri Krishna",F:"Ghaziabad",G:"Gali"};
 function buildPredictionCopyLines(preds,cols){
   const lines=[];
   (cols||COLS).forEach(col=>{
@@ -66,14 +66,14 @@ function isExactLikePrediction(pred,actual,hitCtx){
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
 const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
-const MIN_CROSS_SIGNAL_WEIGHT=0.25;
+const MIN_CROSS_SIGNAL_WEIGHT=0.35;
 const HEAVY_PRED_THRESHOLD_MS=18;
 const MAX_HEAVY_STREAK=8;
 const LIGHTWEIGHT_TRIGGER_STREAK=2;
 const LIGHTWEIGHT_HISTORY_THRESHOLD=350;
 const MAX_ANALYSIS_ROWS=200;
-const MAX_BT_SERIES=160;
-const ROLLING_WINDOW_ROWS=100; // [UPDATED] strict rolling-window cap (50–100)
+const MAX_BT_SERIES=200;
+const ROLLING_WINDOW_ROWS=150; // [UPDATED] strict rolling-window cap (50–100)
 const HEAVY_SAMPLE_POINTS=30;
 const HEAVY_UPDATE_INTERVAL=4;
 const HEAVY_TOPK_EVAL=50; // [UPDATED] evaluate top-K in 30–50 band
@@ -110,7 +110,7 @@ const NEURAL_ALPHA_FLAT=0.14;
 const NEURAL_ALPHA_DEFAULT=0.22;
 const PRUNE_MIN_NEAR1_RATE=0.001;
 const PATTERN_MUTATION_PROBABILITY=0.65;
-const AUTO_EVOLVE_INTERVAL_ROWS=2;
+const AUTO_EVOLVE_INTERVAL_ROWS=3;
 // Ensemble adaptation defaults (tuned for fast online convergence without collapse).
 const PERF_ROLLING_WINDOW=18;
 const MIN_PRUNE_EVAL_WINDOW=8;
@@ -145,15 +145,15 @@ const CLASS_LINEAR_RE=/lin|mean|trend|reg|lag|arith|step|fit|diff/;
 const CLASS_PERIODIC_RE=/period|cyc|markov|phase|season|repeat|sticky/;
 const SCORE_WEIGHT_NS=0.34;
 const SCORE_WEIGHT_STREAK=0.16;
-const SCORE_WEIGHT_BT=1.5;
-const SCORE_WEIGHT_WF=1.6;
+const SCORE_WEIGHT_BT=1.8;
+const SCORE_WEIGHT_WF=1.1;
 const SCORE_WEIGHT_NEAR1=1.8;
 const REWARD_EXACT=2.6;
 const REWARD_NUMBER_HIT=1.55;
 const REWARD_NEAR1=1.35;
 const REWARD_NEAR_REGIME=0.85;
 const REWARD_CLOSE=0.2;
-const REWARD_MISS=-0.35;
+const REWARD_MISS=-0.55;
 const WEIGHT_MULT_EXACT=1.4;
 const WEIGHT_MULT_NUMBER_HIT=1.18;
 const WEIGHT_MULT_NEAR=1.1;
@@ -173,7 +173,7 @@ const CONTEXT_WINDOW_MAX=100; // [UPDATED] strict context window cap
 const CONTEXTS=["TREND","CYCLIC","STABLE","CHAOTIC","MIXED"];
 const ALGO_CATEGORIES=["TRANSFORM","STATISTICAL","SEQUENCE","STOCHASTIC","HEURISTIC"];
 const ADAPT_ALPHA=0.45;
-const ADAPT_BETA=0.60;
+const ADAPT_BETA=0.95;
 const ADAPT_GAMMA=0.35;
 const ADAPT_LAMBDA=0.55; // [ADDED]
 const ADAPT_DELTA=0.25;
@@ -353,8 +353,8 @@ function getGlobalSeries(col,datasets){
   _TC.gs[ck]=result;
   return result;
 }
-const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#f472b6",F:"#22d3ee"};
-const HASH_WEIGHTS=[3,5,7,11,13,17];
+const CLR={A:"#a78bfa",B:"#34d399",C:"#fbbf24",D:"#f87171",E:"#60a5fa",F:"#f472b6",G:"#22d3ee"};
+const HASH_WEIGHTS=[3,5,7,11,13,17,19];
 const mkColTextDefaults=()=>Object.fromEntries(COLS.map(c=>[c,""]));
 const mkColMapDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{}]));
 const mkColWeightDefaults=()=>Object.fromEntries(COLS.map(c=>[c,{global:{},perRow:{},perRange:{},perRegime:{},perDOW:{},perLunar:{},neuralScores:{},performance:{}}]));
@@ -426,7 +426,7 @@ const A={
   ZScore:         s=>{if(s.length<4)return[s[s.length-1]];const avg=M.mean(s.slice(-8)),std=M.std(s.slice(-8));if(!std)return[s[s.length-1]];return[M.mod(Math.round(avg-(s[s.length-1]-avg)/std*std*0.5))];},
  ExpSmooth:      s=>{if(s.length<2)return[s[0]||0];const q=Math.max(1,Math.floor(s.length/4));const _vol=M.std(s.slice(-8));const _alpha=Math.max(0.15,Math.min(0.55,0.15+_vol/30));let sm=M.mean(s.slice(0,q));s.slice(q).forEach(v=>{sm=_alpha*v+(1-_alpha)*sm;});return[M.mod(Math.round(sm))];},
   DblExp:         s=>{if(s.length<3)return[s[s.length-1]];const _q=Math.max(1,Math.floor(s.length/4));const _init=M.mean(s.slice(0,_q));let lv=_init,tr=(M.mean(s.slice(_q,_q*2))-_init)/(_q||1);for(let i=_q;i<s.length;i++){const pl=lv,pt=tr;lv=0.4*s[i]+0.6*(pl+pt);tr=0.3*(lv-pl)+0.7*pt;}return[M.mod(Math.round(lv+tr))];},
-  KernelSmooth:   s=>{if(s.length<3)return[s[s.length-1]];const n=s.length,h=Math.max(3,Math.min(6,Math.floor(s.length/8)));let ws=0,vs=0;for(let i=0;i<n;i++){const w=Math.exp(-0.5*((n-1-i)/h)**2);ws+=w;vs+=w*s[i];}return[M.mod(Math.round(vs/ws))];},
+  KernelSmooth:   s=>{if(s.length<3)return[s[s.length-1]];const n=s.length,h=3;let ws=0,vs=0;for(let i=0;i<n;i++){const w=Math.exp(-0.5*((n-1-i)/h)**2);ws+=w;vs+=w*s[i];}return[M.mod(Math.round(vs/ws))];},
   MedianFilt:     s=>{if(s.length<3)return[s[s.length-1]];return[M.mod(Math.round(M.median(s.slice(-3))))];},
   LowPass:        s=>{if(s.length<2)return[s[0]||0];let sm=s[0];s.slice(1).forEach(v=>{sm=0.25*v+0.75*sm;});return[M.mod(Math.round(0.25*s[s.length-1]+0.75*sm))];},
   BandPass:       s=>{if(s.length<4)return[s[s.length-1]];const avg=M.mean(s.slice(-8)),std=M.std(s.slice(-8));const filt=s.filter(v=>Math.abs(v-avg)<=std);if(!filt.length)return[s[s.length-1]];return[M.mod(Math.round(M.mean(filt.slice(-4))))];},
@@ -434,7 +434,7 @@ const A={
   AutoCorr:       s=>{if(s.length<6)return[s[s.length-1]];const n=s.length,avg=M.mean(s);
     // Fix: denominator uses same overlapping range as numerator (both i=lag..n)
     let bestLag=1,bestAcf=-2;
-    for(let lag=1;lag<=Math.min(14,n-2);lag++){
+    for(let lag=1;lag<=Math.min(8,n-2);lag++){
       let num=0,den0=0,den1=0;
       for(let i=lag;i<n;i++){num+=(s[i]-avg)*(s[i-lag]-avg);den0+=(s[i]-avg)**2;den1+=(s[i-lag]-avg)**2;}
       const acf=(den0*den1)>0?num/Math.sqrt(den0*den1):0;
@@ -497,7 +497,7 @@ const A={
     const perfect=(n-2)*1.4; // approx max with recency weights
     outer2:for(const a of[1,2,3,-1,-2,5,-3])
       for(const b of[0,1,-1,2,-2,3])
-        for(const c of[0,1,-1,2,-2,3,-3,5,-5,7,-7,9,-9,11,-11,13,-13,18,-18]){
+        for(const c of[0,1,-1,3,-3,7,-7,11,-11,13,-13]){
           let sc=0;
           for(let i=2;i<n;i++){
             const p=M.mod(a*s[i-1]+b*s[i-2]+c);
@@ -531,9 +531,9 @@ const A={
   AR3:            s=>{
     if(s.length<4)return[s[s.length-1]];
     const n=s.length;let best={sc:-1,pred:s[n-1]};
-    outer3:for(const a of[0.2,0.4,0.5,0.6,0.7,0.8,1.0,1.2,-0.3,-0.5])
-      for(const b of[-0.5,-0.4,-0.2,-0.1,0,0.1,0.2,0.4,0.5])
-        for(const c of[-0.4,-0.3,-0.1,0,0.1,0.3,0.4]){
+    outer3:for(const a of[0.2,0.4,0.5,0.6,0.7,0.8,1.0,1.2])
+      for(const b of[-0.4,-0.2,-0.1,0,0.1,0.2,0.4])
+        for(const c of[-0.3,-0.1,0,0.1,0.3]){
           let sc=0;
           for(let i=3;i<n;i++){
             const p=M.mod(Math.round(a*s[i-1]+b*s[i-2]+c*s[i-3]));
@@ -2005,8 +2005,8 @@ function getDateSignals(col,data,targetDateStr){
 // NOTE: Anniversary boosted to 2.4 — same day+month cross-year is DOMINANT in this data
 // (Row02 B: 91,90,96 std=3.2; Row14 B: 82,84,89 std=3.6)
 const DATE_SIGNAL_WEIGHTS={
-  "DOW_Bias":1.4,"DOW_HighDay":1.2,"DOW_LowDay":1.2,"DOW_Seq":1.3,
-  "Month_Avg":1.8,"Month_DsShift":1.1,"Month_Seq":1.5,
+  "DOW_Bias":2.2,"DOW_HighDay":1.8,"DOW_LowDay":1.8,"DOW_Seq":2.0,
+  "Month_Avg":2.8,"Month_DsShift":1.8,"Month_Seq":2.2,
   "Season_Winter":1.2,"Season_Spring":1.2,"Season_Summer":1.2,"Season_Fall":1.2,
   "Lunar_NewMoon":1.0,"Lunar_WaxingQ":1.0,"Lunar_FullMoon":1.1,"Lunar_WaningQ":1.0,
   "DateSum_Mod":1.3,"DateSum_Rev":1.0,"DateSum_Ds":1.0,
@@ -2018,16 +2018,16 @@ const DATE_SIGNAL_WEIGHTS={
   "Day_Rev":1.1,"Day_Ds":1.0,"Day_Comp":0.8,"Day_x3Mod":0.8,"Day_x7Mod":0.8,
   "Anniversary":3.2, // same day+month from past years — empirically the strongest single signal
   // ── PATTERN BANK signals — cross-period long-term memory ──────────────
-  "PB_MDExact":3.5,   // exact month×day match across years — very strong
-  "PB_MDTight":5.0,   // tight std (<5) month×day — near-deterministic
-  "PB_DayTight":4.2,  // tight day-of-month across all months
-  "PB_DaySnug":3.0,   // snug day-of-month (std<10)
-  "PB_DayProfile":2.5,// day-of-month average
-  "PB_MonthProfile":2.0, // monthly average
-  "PB_MonthTight":3.2,   // tight monthly (std<6)
-  "PB_YoY":2.8,       // year-over-year projection
-  "PB_YoYDay":3.2,    // YoY + day correction (most precise temporal projection)
-  "CrossDsSameDay":3.0,  // same day-of-month from a different dataset
+  "PB_MDExact":5.0,   // exact month×day match across years — very strong
+  "PB_MDTight":7.5,   // tight std (<5) month×day — near-deterministic
+  "PB_DayTight":5.5,  // tight day-of-month across all months
+  "PB_DaySnug":4.0,   // snug day-of-month (std<10)
+  "PB_DayProfile":3.2,// day-of-month average
+  "PB_MonthProfile":2.8, // monthly average
+  "PB_MonthTight":4.5,   // tight monthly (std<6)
+  "PB_YoY":3.8,       // year-over-year projection
+  "PB_YoYDay":5.0,    // YoY + day correction (most precise temporal projection)
+  "CrossDsSameDay":4.5,  // same day-of-month from a different dataset
 };
 
 // ── SAME-ROW HISTORY ──────────────────────────
@@ -2343,7 +2343,7 @@ function getTemporalChain(targetCol,data){
   let wSum=0,wVal=0;
   temporalSources.forEach(c=>{
     const gap=tGap(c,targetCol)||300;
-    const w=Math.exp(-gap/350)*srcStability(c);
+    const w=Math.exp(-gap/600)*srcStability(c);
     wSum+=w;wVal+=last[c]*w;
   });
   if(wSum>0)res["TempBlend"]=[M.mod(Math.round(wVal/wSum))];
@@ -2735,10 +2735,10 @@ function getRegime(series){
 }
 // Regime-gated algo pool: FULL exclusion not just multipliers
 const REGIME_POOLS={
-  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","MirrorNumber","KalmanFilter","BayesianDirichlet","CUSUMChangePoint"]),
-  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod","MirrorNumber","MirrorAt50","ComplementPairs","ReverseSeq","BayesianDirichlet","SparseTransitionGraph"]),
-  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG","BestStep","ArithSeqDetect","KalmanFilter","CUSUMChangePoint"]),
-  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5","MirrorNumber","MirrorAt50","ComplementPairs","BayesianDirichlet","SparseTransitionGraph"]),
+  volatile:new Set(["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","FreqDecay","Sticky","FreqMomentum","ValueCluster","SumConstraint","EntropyAdapt","DFTPeriod","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","MirrorNumber"]),
+  flat:new Set(["Markov","Bigram","Trigram","DeepMarkov4","SequenceHash","PatternMemBank","FreqDecay","Sticky","FreqMomentum","GapMarkov","AutoCorr","LagFib","XorChain","ModSearch","KNNWindow","CrossLagSelf","StickyPeriod","MirrorNumber","MirrorAt50","ComplementPairs","ReverseSeq"]),
+  trending:new Set(["WtdMomentum","SecondDiff","LastGap","GapMedian","TheilSen","LinFit","QuadFit","MovReg","DiffSeriesLin","AR3","DblExp","LCGFit","Recurrence2","Cyclic","LogMap","PhaseNN","DFTPeriod","ALFG","BestStep","ArithSeqDetect"]),
+  bimodal:new Set(["BimodalBounce","BimodalBandPredict","DecadeSticky","StickyPeriod","ValTransMatrix","Markov","DeepMarkov4","KNNWindow","PatternMemBank","FreqDecay","Sticky","ValueCluster","PairComplementAlgo","DigSumPairTarget","EntropyAdapt","WtdMean","Mean5","Median5","MirrorNumber","MirrorAt50","ComplementPairs"]),
   normal:null
 };
 function algoAllowed(name,regime){
@@ -2854,7 +2854,8 @@ function predictCol(col,data,W,customs,targetDate,allDatasets,patternBank){
       const cached=algoCache[name]||{bt:0.05,wfBoost:1.0};
       const {bt,wfBoost}=cached;
       const lw=gw[name]!=null?gw[name]:1;
-     const rowW=rw[predRow]?rw[predRow][name]!=null?Math.sqrt(rw[predRow][name]):1:1;
+      const _rowKey=targetDate?(new Date(targetDate+"T12:00:00").getDate()):predRow%31||31;
+      const rowW=rw[_rowKey]?rw[_rowKey][name]!=null?rw[_rowKey][name]:1:1;
       const ranW=rnw[curRange]?rnw[curRange][name]!=null?Math.sqrt(rnw[curRange][name]):1:1;
       const regW=rgw[name]!=null?rgw[name]:1;
       const nScore=ns[name]!=null?ns[name]:0;
@@ -4680,7 +4681,7 @@ function AppInner(){
         const v=preds[0];
         const existing=top.find(p=>p.value===v);
         if(existing)existing.pct=Math.min(99,existing.pct+12);
-        else if(top.length>0&&top.length<5)top.push({value:v,votes:1,pct:12,algos:[name]});
+        else if(top.length>0)top.push({value:v,votes:1,pct:12,algos:[name]});
       });
     });
     // ── MULTI-STEP SUM CONSENSUS ───────────────────
@@ -4703,7 +4704,7 @@ function AppInner(){
             // Inject nudged as a top candidate
             const existing=result[col].top5.find(p=>p.value===nudged);
             if(existing)existing.pct=Math.min(99,existing.pct+10);
-            else if(result[col].top5.length<5)result[col].top5.push({value:nudged,votes:0,pct:10,algos:["SumConsensus"]});
+            else result[col].top5.push({value:nudged,votes:0,pct:10,algos:["SumConsensus"]});
           }
         });
       }
@@ -5547,14 +5548,14 @@ function AppInner(){
               </button>
             </div>
             {showBulk&&<div style={{marginTop:8,background:"#0c0e1a",border:"1px solid #1a1e35",borderRadius:8,padding:12}}>
-              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,02,10,92,XX,45,67\n02,91,10,30,68,12,34"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
+              <textarea value={bulk} onChange={e=>setBulk(e.target.value)} placeholder={"01,02,10,92,XX\n02,91,10,30,68"} style={{width:"100%",height:90,background:"#060709",border:"1px solid #1a1e35",color:"#c8d0e8",padding:8,borderRadius:6,fontSize:11,resize:"vertical",fontFamily:"monospace",outline:"none",boxSizing:"border-box"}}/>
               <div style={{display:"flex",gap:6,marginTop:8}}><PB onClick={doBulk}>Import</PB><GB onClick={()=>setShowBulk(false)}>Cancel</GB></div>
             </div>}
           </div>
           {rows.length>0?<Card>
             <div style={{overflowX:"auto",maxHeight:320,overflowY:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date",...COLS,""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:"#0c0e1a",position:"sticky",top:0}}>{["#","Row","Date","A","B","C","D",""].map((h,i)=><th key={i} style={{padding:"6px 10px",color:i===2?"#a78bfa":"#252840",fontSize:9,letterSpacing:2,textTransform:"uppercase",borderBottom:"1px solid #1a1e35",textAlign:"center"}}>{h}</th>)}</tr></thead>
                 <tbody>{rows.map((r,i)=>{const dp=r.date?parseDate(r.date):null;const DAYS=["Su","Mo","Tu","We","Th","Fr","Sa"];return<tr key={r.row} style={{background:i%2?"rgba(255,255,255,.01)":"transparent",borderBottom:"1px solid rgba(255,255,255,.02)"}}>
                   <td style={{padding:"5px 10px",color:"#252840",textAlign:"center"}}>{i+1}</td>
                   <td style={{padding:"5px 10px",color:"#fbbf24",fontWeight:700,textAlign:"center"}}>{pad2(r.row)}</td>
@@ -6018,7 +6019,6 @@ function ActInput(p){
 function MissingColPred(p){
   const {col,pred,maxV}=p;
   const clr=CLR[col];
-  const [exp,setExp]=useState(false);
   return <div style={{background:"#0c0e1a",border:"1px solid "+clr+"33",borderTop:"2px solid "+clr,borderRadius:8,padding:10}}>
     <div style={{fontSize:12,fontWeight:900,color:clr,marginBottom:6}}>Col {col}</div>
     <div style={{fontSize:9,color:"#2d3158",marginBottom:6}}>Confidence: <span style={{color:pred.confClr,fontWeight:700}}>{pred.conf}</span> · {pred.algoCount} algos</div>
@@ -6029,23 +6029,6 @@ function MissingColPred(p){
       </div>
       <span style={{fontSize:9,color:"#2d3158",minWidth:22,textAlign:"right"}}>{p2.pct}%</span>
     </div>)}
-    <button onClick={()=>setExp(e=>!e)} style={{marginTop:10,width:"100%",background:"transparent",border:"1px solid #1a1e35",color:"#2d3158",borderRadius:6,padding:"4px 0",fontSize:9,cursor:"pointer",fontFamily:"inherit"}}>{exp?"▲ Hide":"▼ All algo votes"}</button>
-    {exp&&pred.details&&<div style={{marginTop:8,maxHeight:260,overflowY:"auto"}}>
-      <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:2,fontSize:9,color:"#2d3158",borderBottom:"1px solid #1a1e35",paddingBottom:3,marginBottom:3}}>
-        <span>Algo</span><span>Pred</span><span>BT%</span><span>Gw</span><span>Rw</span>
-      </div>
-      {Object.entries(pred.details).sort((a,b)=>b[1].w-a[1].w).map(([name,info])=>{
-        const inTop=pred.top5.some(t=>t.value===info.pred&&t.algos.includes(name));
-        const tc=info.type==="date"?"#a78bfa":info.type==="temporal"?"#34d399":info.type==="rowhistory"?"#f59e0b":info.type==="colgap"?"#38bdf8":info.type==="custom"?"#f87171":info.type==="cross"?"#fbbf24":"#4a4e6a";
-        return <div key={name} style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:3,padding:"2px 0",borderBottom:"1px solid rgba(255,255,255,.015)",background:inTop?clr+"08":"transparent",fontSize:9}}>
-          <span style={{color:tc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
-          <span style={{color:inTop?clr:"#4a4e6a",fontWeight:inTop?700:400,textAlign:"center"}}>{pad2(info.pred)}</span>
-          <span style={{color:info.bt===null?"#fbbf24":info.bt>20?"#34d399":info.bt>7?"#fbbf24":"#2d3158",textAlign:"right"}}>{info.bt===null?"⊕":info.bt+"%"}</span>
-          <span style={{color:info.lw>1.5?"#34d399":info.lw<0.5?"#f87171":"#4a4e6a",textAlign:"right"}}>{info.lw}×</span>
-          <span style={{color:info.rw>1.2?"#34d399":info.rw<0.8?"#f87171":"#4a4e6a",textAlign:"right"}}>{info.rw}×</span>
-        </div>;
-      })}
-    </div>}
   </div>;
 }
 function CheckCard(p){
