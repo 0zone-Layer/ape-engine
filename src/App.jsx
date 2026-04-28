@@ -1754,7 +1754,7 @@ Object.entries(_FAMS).forEach(([fam,names])=>names.forEach(n=>{_FAM[n]=fam;}));
 function _getFamily(name){
   if(_FAM[name])return _FAM[name];
   if(name.startsWith("Lin_")||name.startsWith("Gap_")||name.startsWith("Cyc_")||name.startsWith("Rec2_")||name.startsWith("ModStep_"))return"momentum";
-  if(name.startsWith("DsChain_")||name.startsWith("Cross_"))return"transform";
+  if(name.startsWith("DsChain_")||name.startsWith("DsAdd_")||name.startsWith("AnkStep_")||name.startsWith("Cross_"))return"transform";
   if(name.startsWith("Mut_"))return"seq";
   return"other";
 }
@@ -1791,7 +1791,7 @@ function parseDate(dateStr){
   const dateDs=M.ds(d)+M.ds(m)+M.ds(yLast2); // sum of digit-sums
   const dateDr=M.dr(d+m+yLast2);
   return{y,m,d,dow,wom,doy,season,lunarDay,lunarPhase,lunarPct,yLast2,yLast1,dateDs,dateDr,
-    isWeekend:dow===0||dow===6,isMonthStart:d<=7,isMonthEnd:d>=24,
+    isWeekend:dow===0||dow===6,isMonthStart:d<=5,isMonthEnd:d>=26,
     monthHalf:d<=15?0:1, // 0=first half, 1=second half
     dayParity:d%2, // 0=even,1=odd
   };
@@ -2112,7 +2112,12 @@ function getSameRowHistory(col,data,predRow,allDatasets){
     if(M.std(intraVals)<8&&intraVals.length>=3)res["SameRowMed"]=[M.mod(Math.round(M.median(intraVals)))];
     if(intraVals.length>=2)res["SameRowLast"]=[M.mod(intraVals[intraVals.length-1])];
     if(intraVals.length>=3){
-      let ws=0,wv=0;intraVals.forEach((v,i)=>{const w=Math.pow(2,i);ws+=w;wv+=v*w;});
+      let ws=0,wv=0;
+      intraVals.forEach((v,i)=>{
+        const age=intraVals.length-1-i;
+        const w=Math.exp(-age*0.25);
+        ws+=w;wv+=v*w;
+      });
       res["SameRowWtd"]=[M.mod(Math.round(wv/ws))];
     }
     if(intraVals.length>=3){
@@ -3468,7 +3473,7 @@ function updateContextMemory(memory,preds,actuals){
       if(!ok(info.pred))return;
       const hit=isExactOrReversed(info.pred,actual)?1:0;
       const prev=next[context][name]||0;
-      next[context][name]=+((prev*0.92)+(hit*0.08)).toFixed(4);
+      next[context][name]=+((prev*0.88)+(hit*0.12)).toFixed(4);
     });
   });
   return next;
@@ -3545,6 +3550,38 @@ function generateAlgos(data,existing){
       if(dsb.sc>=2){const nm="DsChain_"+col+"_k"+dsb.k+"c"+dsb.c;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(M.ds(s[s.length-1])*"+dsb.k+"+"+dsb.c+")]",desc:"Auto digit-sum chain col "+col,enabled:true,generated:true,createdAt:Date.now()});}
     }
+
+      // ── 5b. DS-add chain — s[i] = s[i-1] + DS(s[i-1]) + k ──
+      if(n>=5){
+        let dsab={sc:-1,k:0};
+        for(let k=-9;k<=9;k++){
+          let sc=0;
+          for(let i=1;i<n;i++)if(M.mod(s[i-1]+M.ds(s[i-1])+k)===s[i])sc++;
+          if(sc>dsab.sc)dsab={sc,k};
+        }
+        if(dsab.sc>=3){
+          const nm="DsAdd_"+col+"_k"+(dsab.k>=0?"+":"")+dsab.k;
+          if(!existing.has(nm))out.push({name:nm,
+            code:"(s,M)=>[M.mod(s[s.length-1]+M.ds(s[s.length-1])+"+(dsab.k)+")]",
+            desc:"Auto DS-add chain col "+col,enabled:true,generated:true,createdAt:Date.now()});
+        }
+      }
+
+      // ── 5c. Ank step — unit digit shifts by k every draw ──
+      if(n>=5){
+        let akb={sc:-1,k:1};
+        for(let k=1;k<=9;k++){
+          let sc=0;
+          for(let i=1;i<n;i++)if((M.d2(s[i-1])+k)%10===M.d2(s[i]))sc++;
+          if(sc>akb.sc)akb={sc,k};
+        }
+        if(akb.sc>=3){
+          const nm="AnkStep_"+col+"_k"+akb.k;
+          if(!existing.has(nm))out.push({name:nm,
+            code:"(s,M)=>{const v=s[s.length-1];const nAnk=(M.d2(v)+"+akb.k+")%10;return[M.d1(v)*10+nAnk,M.mod((M.d1(v)+1)*10+nAnk)];}",
+            desc:"Auto ank step col "+col,enabled:true,generated:true,createdAt:Date.now()});
+        }
+      }
 
     // ── 6. two-step recurrence ──
     if(n>=6){
@@ -3624,40 +3661,6 @@ function generateAlgos(data,existing){
       if(mb.sc>=3){
         const nm="Mirror_"+col+"_"+mb.key;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>["+mb.expr+"]",desc:"Auto mirror "+mb.key+" col "+col,enabled:true,generated:true,createdAt:Date.now()});
-      }
-    }
-
-    // ── 12a. Digit-sum chain — s[i] ≈ s[i-1] + DS(s[i-1]) + k ──
-    if(n>=5){
-      let dsb={sc:-1,k:0};
-      for(let k=-9;k<=9;k++){
-        let sc=0;
-        for(let i=1;i<n;i++){
-          if(M.mod(s[i-1]+M.ds(s[i-1])+k)===s[i])sc++;
-        }
-        if(sc>dsb.sc)dsb={sc,k};
-      }
-      if(dsb.sc>=3){
-        const nm="DsChain_"+col+"_k"+dsb.k;
-        if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(s[s.length-1]+M.ds(s[s.length-1])+"+(dsb.k)+")]",desc:"Auto DS-chain col "+col,enabled:true,generated:true,createdAt:Date.now()});
-      }
-    }
-
-    // ── 12b. Ank (unit digit) cycle — d2(s[i]) = (d2(s[i-1]) + k) mod 10 ──
-    if(n>=5){
-      let akb={sc:-1,k:1};
-      for(let k=1;k<=9;k++){
-        let sc=0;
-        for(let i=1;i<n;i++){
-          if((M.d2(s[i-1])+k)%10===M.d2(s[i]))sc++;
-        }
-        if(sc>akb.sc)akb={sc,k};
-      }
-      if(akb.sc>=3){
-        const nm="AnkCyc_"+col+"_k"+akb.k;
-        if(!existing.has(nm))out.push({name:nm,
-          code:"(s,M)=>{const v=s[s.length-1];const nextAnk=(M.d2(v)+"+akb.k+")%10;const d1=M.d1(v);return[d1*10+nextAnk,M.mod((d1+1)*10+nextAnk)];}",
-          desc:"Auto ank cycle col "+col,enabled:true,generated:true,createdAt:Date.now()});
       }
     }
 
@@ -4906,7 +4909,7 @@ function AppInner(){
       ]));
       const entry={at:new Date().toISOString(),targetRow:prev.predRow,date:prev.predDate||null,dateCtx,
         preds:predsTop1,algoDetails,actuals,results,exactCount,numberHitCount,knownCount};
-      const tentativeLog=[...(prev.accLog||[]).slice(-365),entry];
+      const tentativeLog=[...(prev.accLog||[]).slice(-500),entry];
       const adaptiveControl=buildAdaptiveControl(tentativeLog,prev.adaptiveControl);
       // Auto-prune weak generated algos
       const curRows=prev.datasets&&prev.datasets[prev.active]?prev.datasets[prev.active].rows:[];
@@ -5181,12 +5184,13 @@ function AppInner(){
       });
       tr.contextMemory=updateContextMemory(tr.contextMemory,rowPreds,Object.fromEntries(COLS.map(c=>[c,csvRow[c]??null])));
       tr.adaptiveControl=buildAdaptiveControl(tr.accLog,tr.adaptiveControl);
-      // Rebuild pattern bank every 7 rows during auto-train (not every row — too slow)
-      if(tr.index%7===0&&csvRow.date){
+      // Rebuild pattern bank every 7 rows so date signals improve during training
+      if(csvRow.date&&tr.index>0&&tr.index%7===0){
+        const snapDs={...tr.allDs,[tr.dsKey]:{rows:tr.historyRows}};
         COLS.forEach(c=>{
           if(csvRow[c]!=null){
             tr.patternBank=tr.patternBank||{};
-            tr.patternBank[c]=updatePatternBank(tr.patternBank,c,{...tr.allDs,[tr.dsKey]:{rows:tr.historyRows}},tr.accLog);
+            tr.patternBank[c]=updatePatternBank(tr.patternBank,c,snapDs,tr.accLog);
           }
         });
       }
@@ -5265,13 +5269,11 @@ function AppInner(){
     // walkFwd only when history is long enough to be reliable
     const doWalkFwd=hlen>=25;
     COLS.forEach(col=>{
-      const localRows=getWindowRows(tr.historyRows,ROLLING_WINDOW_ROWS);
-      const localSer=getSeries(col,localRows);
       const globalSer=getGlobalSeries(col,tr.allDs);
       // Cap at 120 hard — beyond this btScore gain is <1% but cost grows linearly
-      const btSer=(globalSer.length>localSer.length?globalSer:localSer).slice(-120);
+      const btSer=globalSer.slice(-120);
       if(btSer.length<4)return;
-      const regime=getRegime(localSer);
+      const regime=getRegime(globalSer);
       const allowedNames=ALGO_NAMES.filter(n=>algoAllowed(n,regime));
       let budget=HEAVY_TOPK_EVAL;
       if(tr.lightweight)budget=10;
