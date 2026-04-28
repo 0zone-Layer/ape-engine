@@ -374,9 +374,10 @@ const _TC={
   sp:{},      // getSharedRowProps: "col_len"
   cg:{},      // getColGapSignals:  "col_len"
   gs:{},      // getGlobalSeries:   "col_totalLen"
+  ctx:{},     // classifyContext:   "col_len_step_ver"
   _ver:0,
   bumpVer(){this._ver=(this._ver+1)%1e9;},
-  clear(){this.tx={};this.sp={};this.cg={};this.gs={};}
+  clear(){this.tx={};this.sp={};this.cg={};this.gs={};this.ctx={};}
 };
 
 // ── BUILT-IN ALGORITHMS (count auto-tracked in ALGO_COUNT) ───────
@@ -551,11 +552,7 @@ const A={
   PhaseNN:        s=>{if(s.length<6)return[s[s.length-1]];const n=s.length;let best={dist:Infinity,next:s[n-1]};for(let i=2;i<n-1;i++){const d=M.cd(s[i],s[n-1])+M.cd(s[i-1],s[n-2])+M.cd(s[i-2],s[n-3]);if(d<best.dist)best={dist:d,next:s[i+1]};}return[best.next];},
   FreqDecay:      s=>{
     const freq={};
-    s.forEach((v,i)=>{
-      // Exponential recency: more recent = much stronger weight
-      freq[v]=(freq[v]||0)+Math.exp(-age*0.12);
-    });
-    
+    s.forEach((v,i)=>{const age=s.length-1-i;freq[v]=(freq[v]||0)+Math.exp(-age*0.12);});
     return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([v])=>parseInt(v));
   },
   Markov:         s=>{
@@ -713,7 +710,8 @@ const A={
     const n=s.length,a=s[n-1]||1,b=n>=2?s[n-2]:1,c=n>=3?s[n-3]:1;
     if(n<4)return[M.mod(Math.floor(((171*a%30269+172*b%30307+170*c%30323)/3%1)*100))];
     let best={sc:-1,ma:171,mb:172,mc:170};
-    for(const ma of[171,172,170])for(const mb of[172,171,170])for(const mc of[170,171,172]){
+    const perms=[[171,172,170],[171,170,172],[172,171,170],[172,170,171],[170,171,172],[170,172,171]];
+    for(const [ma,mb,mc] of perms){
       let sc=0;
       for(let i=3;i<n;i++){
         const ai=s[i-3]||1,bi=s[i-2]||1,ci=s[i-1]||1;
@@ -1106,8 +1104,7 @@ const A={
         if(sc>best.sc)best={sc,k,phase};
       }
     }
-    const lastGap=s[n-1]-s[n-2];
-    return[M.mod(s[n-1]+(lastGap>=0?-best.k:best.k))];
+    return[(n+best.phase)%2===0?M.mod(s[n-2]):M.mod(s[n-1]+(s[n-1]>s[n-2]?-best.k:best.k))];
   },
 
   // SymmetricBounce: detects values bouncing between two walls (lo, hi)
@@ -2154,10 +2151,11 @@ function getSameRowHistory(col,data,predRow,allDatasets){
   const std=M.std(allVals);
 
   if(intraVals.length>=1){
+    const ivStd=M.std(intraVals);
     res["SameRowAvg"]=[M.mod(Math.round(M.mean(intraVals)))];
-    if(M.std(intraVals)<5&&intraVals.length>=3)res["SameRowTight"]=[M.mod(Math.round(M.mean(intraVals)))];
-    if(M.std(intraVals)>=5&&M.std(intraVals)<8&&intraVals.length>=3)res["SameRowSnug"]=[M.mod(Math.round(M.median(intraVals)))];
-    if(M.std(intraVals)<8&&intraVals.length>=3)res["SameRowMed"]=[M.mod(Math.round(M.median(intraVals)))];
+    if(ivStd<5&&intraVals.length>=3)res["SameRowTight"]=[M.mod(Math.round(M.mean(intraVals)))];
+    if(ivStd>=5&&ivStd<8&&intraVals.length>=3)res["SameRowSnug"]=[M.mod(Math.round(M.median(intraVals)))];
+    if(ivStd<8&&intraVals.length>=3)res["SameRowMed"]=[M.mod(Math.round(M.median(intraVals)))];
     if(intraVals.length>=2)res["SameRowLast"]=[M.mod(intraVals[intraVals.length-1])];
     if(intraVals.length>=3){
       let ws=0,wv=0;intraVals.forEach((v,i)=>{const w=Math.pow(2,i);ws+=w;wv+=v*w;});
@@ -2760,7 +2758,6 @@ function buildInfluenceMatrix(data){
   });
   return matrix;
 }
-const _contextCache={};
 function classifyContext(series,data,col){
   const w=Math.max(CONTEXT_WINDOW_MIN,Math.min(CONTEXT_WINDOW_MAX,series.length));
   const recent=series.slice(-w);
@@ -2769,7 +2766,7 @@ function classifyContext(series,data,col){
   }
   const cacheStep=Math.floor((data?.length||0)/HEAVY_UPDATE_INTERVAL);
   const cacheKey=col+"_"+(data?.length||0)+"_"+cacheStep+"_"+_TC._ver;
-  if(_contextCache[cacheKey])return _contextCache[cacheKey];
+  if(_TC.ctx[cacheKey])return _TC.ctx[cacheKey];
   const slope=getSeriesSlope(recent);
   const volatility=M.std(recent);
   const periodicity=getPeriodicityStrength(recent);
@@ -2785,7 +2782,7 @@ function classifyContext(series,data,col){
   else if(volatility<6&&entropy<0.62)context="STABLE";
   else if(volatility>16||entropy>0.86)context="CHAOTIC";
   const result={context,metrics:{slope:+slope.toFixed(3),volatility:+volatility.toFixed(3),periodicity:+periodicity.toFixed(3),entropy:+entropy.toFixed(3),crossCorr:+crossCorr.toFixed(3)},corr,influence};
-  _contextCache[cacheKey]=result;
+  _TC.ctx[cacheKey]=result;
   return result;
 }
 // ── REGIME DETECTION ──────────────────────────
@@ -4523,7 +4520,7 @@ function AppInner(){
     // Next day = max row in dataset + 1 (sequential, not 1-31 cycle)
     setS(cur=>{
       const curRows=cur.datasets&&cur.datasets[cur.active]?cur.datasets[cur.active].rows:[];
-      const maxR=curRows.length?Math.max(...curRows.map(x=>x.row)):r;
+      const maxR=curRows.length?curRows.reduce((m,x)=>x.row>m?x.row:m,r):r;
       setRowIn(String(maxR+1));
       return cur;
     });
@@ -5022,7 +5019,7 @@ function AppInner(){
     st("Learned! "+exactCount+"/"+knownCols.length+" exact · "+numberHitCount+" top5 hits — weights saved ✓");
     const pct=Math.round(exactCount/knownCols.length*100);
     syslog((exactCount===knownCols.length?"🎯":"📊")+" Learn result: "+exactCount+"/"+knownCols.length+" exact ("+pct+"%) · top5 hits "+numberHitCount,"learn");
-    if(exactCount===4)syslog("✨ Perfect prediction! Pattern well-captured — consider exporting weights.","alert");
+    if(exactCount===knownCols.length&&knownCols.length>0)syslog(`✨ Perfect prediction! ${exactCount}/${knownCols.length} columns exact`,"alert");
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -5042,28 +5039,44 @@ function AppInner(){
 
   function parseAutoTrainCSV(text){
     // Accepts: Row,<COLS...>,Date  OR  Row,<COLS...>  (date optional)
-    // First line may be a header — auto-detected and skipped
+    // Supports any subset of columns A-G (e.g. 6-column CSV without G)
     const lines=text.trim().split(/\r?\n/).filter(l=>l.trim());
     const rows=[];
     let skipped=0;
-    lines.forEach((line,idx)=>{
-      // Skip header
-      if(idx===0&&/[a-zA-Z]{2,}/.test(line.split(",")[0]))return;
+    // Detect header and determine active columns
+    let activeCols=null;
+    let dataStart=0;
+    if(lines.length>0){
+      const firstPts=lines[0].split(",").map(p=>p.trim());
+      const firstCell=firstPts[0].toUpperCase();
+      if(/[A-Z]{2,}/.test(firstCell)||firstCell==="ROW"||firstCell==="#"){
+        // Parse header to find which columns are present
+        const parsed=[];
+        firstPts.slice(1).forEach(h=>{
+          const hu=h.toUpperCase().trim();
+          if(hu==="DATE"||hu==="")return;
+          const key=COLS.find(k=>k===hu)||Object.keys(COL_NAMES).find(k=>COL_NAMES[k].toUpperCase()===hu);
+          if(key)parsed.push(key);
+        });
+        if(parsed.length>0){activeCols=parsed;dataStart=1;}
+      }
+    }
+    const useCols=activeCols||COLS;
+    lines.slice(dataStart).forEach((line)=>{
       const pts=line.split(",").map(p=>p.trim());
-      if(pts.length<COLS.length+1||pts.length>COLS.length+2){skipped++;return;}
+      if(pts.length<useCols.length+1||pts.length>useCols.length+2){skipped++;return;}
       const rowNum=parseInt(pts[0]);
       if(isNaN(rowNum)||rowNum<1||rowNum>99999){skipped++;return;}
-      const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
+      const colVals=useCols.map((_,i)=>pts[i+1]).map(p=>{
         if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
         const n=parseInt(p);
         return(isNaN(n)||n<0||n>99)?undefined:n;
       });
       if(colVals.some(v=>v===undefined)){skipped++;return;}
-      // At least one column must be known
       if(colVals.every(v=>v===null)){skipped++;return;}
-      const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:null;
+      const rowDate=pts[useCols.length+1]&&parseDate(pts[useCols.length+1])?pts[useCols.length+1]:null;
       const parsedRow={row:rowNum,date:rowDate};
-      COLS.forEach((col,i)=>{parsedRow[col]=colVals[i];});
+      useCols.forEach((col,i)=>{parsedRow[col]=colVals[i];});
       rows.push(parsedRow);
     });
     return{rows,skipped};
