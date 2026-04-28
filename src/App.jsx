@@ -145,19 +145,19 @@ const CLASS_LINEAR_RE=/lin|mean|trend|reg|lag|arith|step|fit|diff/;
 const CLASS_PERIODIC_RE=/period|cyc|markov|phase|season|repeat|sticky/;
 const SCORE_WEIGHT_NS=0.34;
 const SCORE_WEIGHT_STREAK=0.16;
-const SCORE_WEIGHT_BT=1.8;
-const SCORE_WEIGHT_WF=1.1;
+const SCORE_WEIGHT_BT=1.5;
+const SCORE_WEIGHT_WF=1.6;
 const SCORE_WEIGHT_NEAR1=1.8;
 const REWARD_EXACT=2.6;
 const REWARD_NUMBER_HIT=1.55;
 const REWARD_NEAR1=1.35;
 const REWARD_NEAR_REGIME=0.85;
 const REWARD_CLOSE=0.2;
-const REWARD_MISS=-0.55;
-const WEIGHT_MULT_EXACT=1.4;
-const WEIGHT_MULT_NUMBER_HIT=1.18;
-const WEIGHT_MULT_NEAR=1.1;
-const WEIGHT_MULT_MISS=0.80;
+const REWARD_MISS=-0.35;
+const WEIGHT_MULT_EXACT=1.55;
+const WEIGHT_MULT_NUMBER_HIT=1.22;
+const WEIGHT_MULT_NEAR=1.12;
+const WEIGHT_MULT_MISS=0.86;
 const MAIN_BOOST_CAP=0.45;
 const MAIN_BOOST_PER_COL=0.12;
 const BAD_STREAK_THRESHOLD=-3;
@@ -173,7 +173,7 @@ const CONTEXT_WINDOW_MAX=100; // [UPDATED] strict context window cap
 const CONTEXTS=["TREND","CYCLIC","STABLE","CHAOTIC","MIXED"];
 const ALGO_CATEGORIES=["TRANSFORM","STATISTICAL","SEQUENCE","STOCHASTIC","HEURISTIC"];
 const ADAPT_ALPHA=0.45;
-const ADAPT_BETA=0.95;
+const ADAPT_BETA=0.60;
 const ADAPT_GAMMA=0.35;
 const ADAPT_LAMBDA=0.55; // [ADDED]
 const ADAPT_DELTA=0.25;
@@ -434,7 +434,7 @@ const A={
   AutoCorr:       s=>{if(s.length<6)return[s[s.length-1]];const n=s.length,avg=M.mean(s);
     // Fix: denominator uses same overlapping range as numerator (both i=lag..n)
     let bestLag=1,bestAcf=-2;
-    for(let lag=1;lag<=Math.min(8,n-2);lag++){
+    for(let lag=1;lag<=Math.min(14,n-2);lag++){
       let num=0,den0=0,den1=0;
       for(let i=lag;i<n;i++){num+=(s[i]-avg)*(s[i-lag]-avg);den0+=(s[i]-avg)**2;den1+=(s[i-lag]-avg)**2;}
       const acf=(den0*den1)>0?num/Math.sqrt(den0*den1):0;
@@ -2134,7 +2134,7 @@ function getRowSumSignal(col,data,knownPreds){
   const stdSum=M.std(sums);
   // Only use this signal if sum is reasonably stable
   // Empirical: May has tightest std=39.2; Jan has loosest std=67.5 — relax threshold to 70
-  if(stdSum>70)return res;
+  if(stdSum>90)return res;
   // Known values for this prediction round (other cols already predicted)
   const otherCols=COLS.filter(c=>c!==col);
   const knownSum=otherCols.reduce((acc,c)=>{
@@ -2487,7 +2487,7 @@ function btScore(fn,series){
       const p=fn(hist),a=s[i];
       const pm=p.length===1?1.0:p.length===2?0.8:p.length===3?0.65:0.5;
       const age=n-1-i;
-      const rw=age<4?3.0:age<8?2.0:age<15?1.4:1.0;
+      const rw=age<4?1.8:age<8?1.5:age<15?1.2:1.0;
       if(p.some(v=>isExactOrReversed(v,a)))score+=(1.0*pm)*rw;
       else if(p.some(v=>M.near(v,a,nearTol)))score+=(0.4*pm)*rw;
       if(isExactOrReversed(p[0],a))score+=0.35*rw;
@@ -2650,7 +2650,7 @@ function getPeriodicityStrength(series){
   const sampled=sampleRecentSeries(series);
   const n=sampled.length,avg=M.mean(sampled);
   let best=0;
-  for(let lag=1;lag<=Math.min(10,n-2);lag++){
+  for(let lag=1;lag<=Math.min(14,n-2);lag++){
     let num=0,den0=0,den1=0;
     for(let i=lag;i<n;i++){num+=(sampled[i]-avg)*(sampled[i-lag]-avg);den0+=(sampled[i]-avg)**2;den1+=(sampled[i-lag]-avg)**2;}
     const ac=(den0*den1)>0?num/Math.sqrt(den0*den1):0;
@@ -5079,7 +5079,7 @@ function AppInner(){
       } else {tr.btCacheAge++;}
 
       // ── metaModel refresh every 30 rows ──────────────────────────────
-      if(tr.accLog.length>=3&&(!tr.metaModelAge||tr.metaModelAge>=30)){
+      if(tr.accLog.length>=3&&(!tr.metaModelAge||tr.metaModelAge>=20)){
         tr.cachedMeta=buildMetaModel(tr.accLog);
         tr.metaModelAge=1;
       } else if(tr.metaModelAge){tr.metaModelAge++;}
@@ -5091,7 +5091,7 @@ function AppInner(){
       knownCols.forEach(col=>{
         const W={...tr.weights[col],
           _metaModel:tr.cachedMeta,
-          _accLog:tr.accLog.slice(-6),   // only last 6 for dead-zone correction
+          _accLog:tr.accLog.slice(-12),   // only last 6 for dead-zone correction
           _btCache:tr.btCache,_btCacheCol:col,
           _leaderboard:tr.leaderboard[col]||{},
           _contextMemory:tr.contextMemory||{},
@@ -5152,6 +5152,15 @@ function AppInner(){
       });
       tr.contextMemory=updateContextMemory(tr.contextMemory,rowPreds,Object.fromEntries(COLS.map(c=>[c,csvRow[c]??null])));
       tr.adaptiveControl=buildAdaptiveControl(tr.accLog,tr.adaptiveControl);
+      // Rebuild pattern bank every 7 rows during auto-train (not every row — too slow)
+      if(tr.index%7===0&&csvRow.date){
+        COLS.forEach(c=>{
+          if(csvRow[c]!=null){
+            tr.patternBank=tr.patternBank||{};
+            tr.patternBank[c]=updatePatternBank(tr.patternBank,c,{...tr.allDs,[tr.dsKey]:{rows:tr.historyRows}},tr.accLog);
+          }
+        });
+      }
       if(tr.accLog.length>365)tr.accLog=tr.accLog.slice(-365);
 
       // ── Generate algos every 8 rows ───────────────────────────────────
