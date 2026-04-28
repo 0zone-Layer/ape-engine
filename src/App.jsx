@@ -258,6 +258,24 @@ function normalizeAdaptiveWeights(names,perfMap,currentContext){
   Object.entries(raw).forEach(([name,v])=>{normalized[name]=v/total;});
   return normalized;
 }
+function parseFlexibleCsvRow(pts){
+  const row=parseInt(pts[0]);
+  if(isNaN(row)||row<1||row>99999)return null;
+  const lastToken=pts[pts.length-1];
+  const hasDate=pts.length>1&&!!lastToken&&!!parseDate(lastToken);
+  const valueTokens=pts.slice(1,hasDate?pts.length-1:pts.length);
+  if(valueTokens.length>COLS.length)return null;
+  const colVals=COLS.map((_,i)=>valueTokens[i]).map(p=>{
+    if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
+    const n=parseInt(p);
+    return(isNaN(n)||n<0||n>99)?undefined:n;
+  });
+  if(colVals.some(v=>v===undefined))return null;
+  const parsedRow={row};
+  COLS.forEach((col,i)=>{parsedRow[col]=colVals[i]??null;});
+  if(hasDate)parsedRow.date=lastToken;
+  return parsedRow;
+}
 function mapContextToRegime(context){
   if(context==="TREND")return"trending";
   if(context==="CYCLIC")return"flat";
@@ -1715,72 +1733,6 @@ const A={
     const inDec=s.filter(v=>bkt(v)===bestTo);
     return[inDec.length?M.mod(Math.round(M.mean(inDec))):M.mod(bestTo*10+5)];
   },
-
-  AnkTracker: s=>{
-    if(s.length<6)return[s[s.length-1]];
-    const anks=s.map(v=>M.d2(v));
-    const ankFreq={};
-    anks.forEach((a,i)=>{const age=anks.length-1-i;ankFreq[a]=(ankFreq[a]||0)+Math.exp(-age*0.08);});
-    const recent5=new Set(anks.slice(-5));
-    const overdueAnk=Object.entries(ankFreq).filter(([a])=>!recent5.has(parseInt(a))).sort((a,b)=>b[1]-a[1]);
-    const targetAnk=overdueAnk.length?parseInt(overdueAnk[0][0]):parseInt(Object.entries(ankFreq).sort((a,b)=>b[1]-a[1])[0][0]);
-    const valFreq={};
-    s.forEach((v,i)=>{if(M.d2(v)===targetAnk){const age=s.length-1-i;valFreq[v]=(valFreq[v]||0)+Math.exp(-age*0.10);}});
-    if(!Object.keys(valFreq).length)return[targetAnk,M.mod(targetAnk+10),M.mod(targetAnk+20)];
-    return Object.entries(valFreq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
-  },
-
-  DigitSumTarget: s=>{
-    if(s.length<6)return[s[s.length-1]];
-    const dsFreq={};
-    s.forEach((v,i)=>{const age=s.length-1-i;const ds=M.ds(v);dsFreq[ds]=(dsFreq[ds]||0)+Math.exp(-age*0.08);});
-    const topDs=parseInt(Object.entries(dsFreq).sort((a,b)=>b[1]-a[1])[0][0]);
-    const freq={};
-    s.forEach((v,i)=>{if(M.ds(v)===topDs){const age=s.length-1-i;freq[v]=(freq[v]||0)+Math.exp(-age*0.10);}});
-    if(!Object.keys(freq).length){const cands=[];for(let v=0;v<=99;v++)if(M.ds(v)===topDs)cands.push(v);return cands.slice(0,3);}
-    return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
-  },
-
-  ComplementCycleDetect: s=>{
-    if(s.length<6)return[s[s.length-1]];
-    const n=s.length;
-    let cycleScore=0;
-    for(let i=1;i<Math.min(n,12);i++){if(M.cd(s[n-1-i]+s[n-i],100)<=3)cycleScore+=Math.exp(-i*0.2);}
-    if(cycleScore>0.5)return[M.mod(100-s[n-1]),M.mod(99-s[n-1])];
-    let revScore=0;
-    for(let i=1;i<Math.min(n,10);i++){if(M.rev(s[n-1-i])===s[n-i])revScore+=Math.exp(-i*0.25);}
-    if(revScore>0.4)return[M.rev(s[n-1])];
-    return[s[n-1]];
-  },
-
-  TripleSumCycle: s=>{
-    if(s.length<9)return[s[s.length-1]];
-    const sums=[];
-    for(let i=2;i<s.length;i++)sums.push(s[i]+s[i-1]+s[i-2]);
-    const freq={};
-    sums.forEach((v,i)=>{const age=sums.length-1-i;const k=v%100;freq[k]=(freq[k]||0)+Math.exp(-age*0.10);});
-    const targetSum=parseInt(Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0]);
-    const needed=M.mod(targetSum-s[s.length-1]-s[s.length-2]);
-    return[needed,M.mod(needed+1),M.mod(needed-1)];
-  },
-
-  RepeatGapCycle: s=>{
-    if(s.length<8)return[s[s.length-1]];
-    const n=s.length;
-    const lastSeen={};const gaps={};
-    s.forEach((v,i)=>{if(lastSeen[v]!=null)(gaps[v]=gaps[v]||[]).push(i-lastSeen[v]);lastSeen[v]=i;});
-    const due=[];
-    Object.entries(gaps).forEach(([v,gs])=>{
-      if(gs.length<2)return;
-      const avgGap=M.mean(gs);
-      const stepsSinceLast=n-1-lastSeen[parseInt(v)];
-      if(stepsSinceLast>=avgGap*0.85&&stepsSinceLast<=avgGap*1.5)
-        due.push({v:parseInt(v),score:1/(Math.abs(stepsSinceLast-avgGap)+1)});
-    });
-    if(!due.length)return[s[n-1]];
-    due.sort((a,b)=>b.score-a.score);
-    return due.slice(0,3).map(x=>x.v);
-  },
 };
 const ALGO_NAMES=Object.keys(A);
 const ALGO_COUNT_CONST=ALGO_NAMES.length;
@@ -1793,9 +1745,9 @@ console.log("Algo count:",ALGO_COUNT);
 const _FAM={};
 const _FAMS={
   stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt","RetraceRebound","SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend","KalmanFilter","BayesianDirichlet","CUSUMChangePoint"],
-  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","SparseTransitionGraph","TripleSumCycle","RepeatGapCycle"],
+  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","SparseTransitionGraph"],
   momentum:["WtdMomentum","SecondDiff","LastGap","AutoCorr","Cyclic","AR3","LCGFit","Recurrence2","LogMap","XorChain","ModSearch","BestStep","ArithSeqDetect","StepAccelerate","ZigZag","DFTPeriod","ALFG","CrossLagSelf","FreqMomentum"],
-  transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur","RevLag2","SymmetricMirror","BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget","AnkTracker","DigitSumTarget","ComplementCycleDetect"],
+  transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur","RevLag2","SymmetricMirror","BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget"],
   prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong"],
 };
 Object.entries(_FAMS).forEach(([fam,names])=>names.forEach(n=>{_FAM[n]=fam;}));
@@ -4536,15 +4488,11 @@ function AppInner(){
     const lines=bulk.trim().split("\n").filter(l=>l.trim());let added=0,errs=0;
     const next=[...rows];
     lines.forEach(line=>{
-      const pts=line.split(",").map(p=>p.trim());if(pts.length<COLS.length+1||pts.length>COLS.length+2){errs++;return;}
-      const row=parseInt(pts[0]);if(isNaN(row)||row<1||row>9999){errs++;return;}
-      const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{if(!p||p.toUpperCase()==="XX")return null;const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;});
-      if(colVals.some(v=>v===undefined)){errs++;return;}
-      const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:undefined;
-      const idx=next.findIndex(x=>x.row===row);
-      const newEntry={row};
-      COLS.forEach((col,i)=>{newEntry[col]=colVals[i];});
-      if(rowDate)newEntry.date=rowDate;
+      const pts=line.split(",").map(p=>p.trim());
+      const parsed=parseFlexibleCsvRow(pts);
+      if(!parsed){errs++;return;}
+      const idx=next.findIndex(x=>x.row===parsed.row);
+      const newEntry={...parsed};
       if(idx>=0)next[idx]=newEntry;else next.push(newEntry);
       added++;
     });
@@ -4602,17 +4550,8 @@ function AppInner(){
       const incomingRows=[];
       lines.forEach(line=>{
         const pts=line.split(",").map(p=>p.trim());
-        if(pts.length<COLS.length+1||pts.length>COLS.length+2){errs++;return;}
-        const row=parseInt(pts[0]);
-        if(isNaN(row)||row<1||row>9999){errs++;return;}
-        const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
-          if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
-          const n=parseInt(p);return(isNaN(n)||n<0||n>99)?undefined:n;
-        });
-        if(colVals.some(v=>v===undefined)){errs++;return;}
-        const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:undefined;
-        const parsedRow={row,date:rowDate};
-        COLS.forEach((col,i)=>{parsedRow[col]=colVals[i];});
+        const parsedRow=parseFlexibleCsvRow(pts);
+        if(!parsedRow){errs++;return;}
         incomingRows.push(parsedRow);
       });
       if(!incomingRows.length){st("No valid rows in CSV","warn");e.target.value="";return;}
@@ -5050,20 +4989,10 @@ function AppInner(){
       // Skip header
       if(idx===0&&/[a-zA-Z]{2,}/.test(line.split(",")[0]))return;
       const pts=line.split(",").map(p=>p.trim());
-      if(pts.length<COLS.length+1||pts.length>COLS.length+2){skipped++;return;}
-      const rowNum=parseInt(pts[0]);
-      if(isNaN(rowNum)||rowNum<1||rowNum>99999){skipped++;return;}
-      const colVals=COLS.map((_,i)=>pts[i+1]).map(p=>{
-        if(!p||p.toUpperCase()==="XX"||p==="?"||p==="(PRED)")return null;
-        const n=parseInt(p);
-        return(isNaN(n)||n<0||n>99)?undefined:n;
-      });
-      if(colVals.some(v=>v===undefined)){skipped++;return;}
+      const parsedRow=parseFlexibleCsvRow(pts);
+      if(!parsedRow){skipped++;return;}
       // At least one column must be known
-      if(colVals.every(v=>v===null)){skipped++;return;}
-      const rowDate=pts[COLS.length+1]&&parseDate(pts[COLS.length+1])?pts[COLS.length+1]:null;
-      const parsedRow={row:rowNum,date:rowDate};
-      COLS.forEach((col,i)=>{parsedRow[col]=colVals[i];});
+      if(COLS.every(col=>parsedRow[col]==null)){skipped++;return;}
       rows.push(parsedRow);
     });
     return{rows,skipped};
