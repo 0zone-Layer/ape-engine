@@ -66,7 +66,7 @@ function isExactLikePrediction(pred,actual,hitCtx){
 const getSeries=(col,data)=>data.map(r=>r[col]).filter(v=>ok(v));
 const PERF_NOW=()=>typeof performance!=="undefined"&&performance.now?performance.now():Date.now();
 const CORE_ALGO_PRIORITY=["Markov","DeepMarkov4","PatternMemBank","KNNWindow","Sticky","ValueCluster","FreqDecay","CrossLagSelf","DFTPeriod","EntropyAdapt","LocalModePredict","RecencyGravity","RobustTrend"];
-const MIN_CROSS_SIGNAL_WEIGHT=0.35;
+const MIN_CROSS_SIGNAL_WEIGHT=0.25;
 const HEAVY_PRED_THRESHOLD_MS=18;
 const MAX_HEAVY_STREAK=8;
 const LIGHTWEIGHT_TRIGGER_STREAK=2;
@@ -1715,6 +1715,72 @@ const A={
     const inDec=s.filter(v=>bkt(v)===bestTo);
     return[inDec.length?M.mod(Math.round(M.mean(inDec))):M.mod(bestTo*10+5)];
   },
+
+  AnkTracker: s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const anks=s.map(v=>M.d2(v));
+    const ankFreq={};
+    anks.forEach((a,i)=>{const age=anks.length-1-i;ankFreq[a]=(ankFreq[a]||0)+Math.exp(-age*0.08);});
+    const recent5=new Set(anks.slice(-5));
+    const overdueAnk=Object.entries(ankFreq).filter(([a])=>!recent5.has(parseInt(a))).sort((a,b)=>b[1]-a[1]);
+    const targetAnk=overdueAnk.length?parseInt(overdueAnk[0][0]):parseInt(Object.entries(ankFreq).sort((a,b)=>b[1]-a[1])[0][0]);
+    const valFreq={};
+    s.forEach((v,i)=>{if(M.d2(v)===targetAnk){const age=s.length-1-i;valFreq[v]=(valFreq[v]||0)+Math.exp(-age*0.10);}});
+    if(!Object.keys(valFreq).length)return[targetAnk,M.mod(targetAnk+10),M.mod(targetAnk+20)];
+    return Object.entries(valFreq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+  },
+
+  DigitSumTarget: s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const dsFreq={};
+    s.forEach((v,i)=>{const age=s.length-1-i;const ds=M.ds(v);dsFreq[ds]=(dsFreq[ds]||0)+Math.exp(-age*0.08);});
+    const topDs=parseInt(Object.entries(dsFreq).sort((a,b)=>b[1]-a[1])[0][0]);
+    const freq={};
+    s.forEach((v,i)=>{if(M.ds(v)===topDs){const age=s.length-1-i;freq[v]=(freq[v]||0)+Math.exp(-age*0.10);}});
+    if(!Object.keys(freq).length){const cands=[];for(let v=0;v<=99;v++)if(M.ds(v)===topDs)cands.push(v);return cands.slice(0,3);}
+    return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([v])=>parseInt(v));
+  },
+
+  ComplementCycleDetect: s=>{
+    if(s.length<6)return[s[s.length-1]];
+    const n=s.length;
+    let cycleScore=0;
+    for(let i=1;i<Math.min(n,12);i++){if(M.cd(s[n-1-i]+s[n-i],100)<=3)cycleScore+=Math.exp(-i*0.2);}
+    if(cycleScore>0.5)return[M.mod(100-s[n-1]),M.mod(99-s[n-1])];
+    let revScore=0;
+    for(let i=1;i<Math.min(n,10);i++){if(M.rev(s[n-1-i])===s[n-i])revScore+=Math.exp(-i*0.25);}
+    if(revScore>0.4)return[M.rev(s[n-1])];
+    return[s[n-1]];
+  },
+
+  TripleSumCycle: s=>{
+    if(s.length<9)return[s[s.length-1]];
+    const sums=[];
+    for(let i=2;i<s.length;i++)sums.push(s[i]+s[i-1]+s[i-2]);
+    const freq={};
+    sums.forEach((v,i)=>{const age=sums.length-1-i;const k=v%100;freq[k]=(freq[k]||0)+Math.exp(-age*0.10);});
+    const targetSum=parseInt(Object.entries(freq).sort((a,b)=>b[1]-a[1])[0][0]);
+    const needed=M.mod(targetSum-s[s.length-1]-s[s.length-2]);
+    return[needed,M.mod(needed+1),M.mod(needed-1)];
+  },
+
+  RepeatGapCycle: s=>{
+    if(s.length<8)return[s[s.length-1]];
+    const n=s.length;
+    const lastSeen={};const gaps={};
+    s.forEach((v,i)=>{if(lastSeen[v]!=null)(gaps[v]=gaps[v]||[]).push(i-lastSeen[v]);lastSeen[v]=i;});
+    const due=[];
+    Object.entries(gaps).forEach(([v,gs])=>{
+      if(gs.length<2)return;
+      const avgGap=M.mean(gs);
+      const stepsSinceLast=n-1-lastSeen[parseInt(v)];
+      if(stepsSinceLast>=avgGap*0.85&&stepsSinceLast<=avgGap*1.5)
+        due.push({v:parseInt(v),score:1/(Math.abs(stepsSinceLast-avgGap)+1)});
+    });
+    if(!due.length)return[s[n-1]];
+    due.sort((a,b)=>b.score-a.score);
+    return due.slice(0,3).map(x=>x.v);
+  },
 };
 const ALGO_NAMES=Object.keys(A);
 const ALGO_COUNT_CONST=ALGO_NAMES.length;
@@ -1727,9 +1793,9 @@ console.log("Algo count:",ALGO_COUNT);
 const _FAM={};
 const _FAMS={
   stat:["Mean3","Mean5","WtdMean","Median5","HarmMean","GeoMean","MoveStd","ZScore","ExpSmooth","DblExp","KernelSmooth","MedianFilt","LowPass","BandPass","DiffFilt","LinFit","QuadFit","MovReg","TheilSen","DiffSeriesLin","GapMedian","EntropyAdapt","RetraceRebound","SameRowAvg","SameRowTight","SameRowSnug","SameRowMed","SameRowLast","SameRowWtd","SameRowTrend","KalmanFilter","BayesianDirichlet","CUSUMChangePoint"],
-  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","SparseTransitionGraph"],
+  seq:["Markov","Bigram","Trigram","DeepMarkov4","PatternMemBank","KNNWindow","SequenceHash","PhaseNN","ValTransMatrix","GapMarkov","EpisodicMem","FreqDecay","Sticky","ValueCluster","StickyPeriod","DecadeSticky","BimodalBandPredict","PairComplementAlgo","DigSumPairTarget","SparseTransitionGraph","TripleSumCycle","RepeatGapCycle"],
   momentum:["WtdMomentum","SecondDiff","LastGap","AutoCorr","Cyclic","AR3","LCGFit","Recurrence2","LogMap","XorChain","ModSearch","BestStep","ArithSeqDetect","StepAccelerate","ZigZag","DFTPeriod","ALFG","CrossLagSelf","FreqMomentum"],
-  transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur","RevLag2","SymmetricMirror","BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget"],
+  transform:["Reverse","DigitSum","RevSumTf","MirrorDiff","DigitalRoot","Complement","DigitProduct","RevComplement","SumDoubled","DigSumChain","CubeDigit","DigFact","FibMod","SqrtMod","TriNum","DigSumProd","CollatzStep","XorHeur","RevLag2","SymmetricMirror","BimodalBounce","AlternatingStep","DoubleAlternate","TripleRepeat","PalindromeStep","PairComplementAlgo","DigSumPairTarget","AnkTracker","DigitSumTarget","ComplementCycleDetect"],
   prng:["Xorshift","MiddleSquare","LFSR7","QuadCong","PCGLike","CubicCong","RowSeedLCG","ParkMiller","LagFib","Rule30","WichmannHill","BBS","MersenneMod","ICG","TruncLCG","SWB","PolyCong"],
 };
 Object.entries(_FAMS).forEach(([fam,names])=>names.forEach(n=>{_FAM[n]=fam;}));
@@ -3606,6 +3672,40 @@ function generateAlgos(data,existing){
       if(mb.sc>=3){
         const nm="Mirror_"+col+"_"+mb.key;
         if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>["+mb.expr+"]",desc:"Auto mirror "+mb.key+" col "+col,enabled:true,generated:true,createdAt:Date.now()});
+      }
+    }
+
+    // ── 12a. Digit-sum chain — s[i] ≈ s[i-1] + DS(s[i-1]) + k ──
+    if(n>=5){
+      let dsb={sc:-1,k:0};
+      for(let k=-9;k<=9;k++){
+        let sc=0;
+        for(let i=1;i<n;i++){
+          if(M.mod(s[i-1]+M.ds(s[i-1])+k)===s[i])sc++;
+        }
+        if(sc>dsb.sc)dsb={sc,k};
+      }
+      if(dsb.sc>=3){
+        const nm="DsChain_"+col+"_k"+dsb.k;
+        if(!existing.has(nm))out.push({name:nm,code:"(s,M)=>[M.mod(s[s.length-1]+M.ds(s[s.length-1])+"+(dsb.k)+")]",desc:"Auto DS-chain col "+col,enabled:true,generated:true,createdAt:Date.now()});
+      }
+    }
+
+    // ── 12b. Ank (unit digit) cycle — d2(s[i]) = (d2(s[i-1]) + k) mod 10 ──
+    if(n>=5){
+      let akb={sc:-1,k:1};
+      for(let k=1;k<=9;k++){
+        let sc=0;
+        for(let i=1;i<n;i++){
+          if((M.d2(s[i-1])+k)%10===M.d2(s[i]))sc++;
+        }
+        if(sc>akb.sc)akb={sc,k};
+      }
+      if(akb.sc>=3){
+        const nm="AnkCyc_"+col+"_k"+akb.k;
+        if(!existing.has(nm))out.push({name:nm,
+          code:"(s,M)=>{const v=s[s.length-1];const nextAnk=(M.d2(v)+"+akb.k+")%10;const d1=M.d1(v);return[d1*10+nextAnk,M.mod((d1+1)*10+nextAnk)];}",
+          desc:"Auto ank cycle col "+col,enabled:true,generated:true,createdAt:Date.now()});
       }
     }
 
