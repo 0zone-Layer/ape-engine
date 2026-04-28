@@ -4699,10 +4699,23 @@ function AppInner(){
     const autoDate=latestDated?nextDateISO(latestDated):"";
     const manualTs=dateTs(predDate);
     const tDate=(manualTs!==null&&(!latestDatedInfo||manualTs>latestDatedInfo.ts))?predDate:autoDate;
-    const scopedRows=getWindowRows(rows,ROLLING_WINDOW_ROWS);
+    const _ar2=[];
+    Object.values(S.datasets||{}).forEach(ds=>{
+      (ds.rows||[]).forEach(r=>_ar2.push(r));
+    });
+    _ar2.sort((a,b)=>{
+      if(a.date&&b.date)return a.date<b.date?-1:a.date>b.date?1:0;
+      return a.row-b.row;
+    });
+    const _seen2=new Set();
+    const _merged2=_ar2.filter(r=>{
+      const k=(r.date||"_")+"|"+r.row;
+      if(_seen2.has(k))return false;_seen2.add(k);return true;
+    });
+    const scopedRows=getWindowRows(_merged2,ROLLING_WINDOW_ROWS);
     const result={};
     const _sharedMeta=(S.accLog||[]).length>=3?buildMetaModel(S.accLog):null;
-    const _slimAccLog=(S.accLog||[]).slice(-10);
+    const _slimAccLog=(S.accLog||[]).slice(-20);
     COLS.forEach(col=>{
       const W={...S.weights[col],_metaModel:_sharedMeta,_accLog:_slimAccLog,_leaderboard:(S.algoLeaderboard&&S.algoLeaderboard[col])||{},_contextMemory:S.contextMemory||{}};
       result[col]=predictCol(col,scopedRows,W,S.customs,tDate,S.datasets,S.patternBank);
@@ -4780,7 +4793,7 @@ function AppInner(){
     COLS.forEach(col=>{
       tempRow[col]=known[col]!=null?known[col]:null;
     });
-    const tempDataset=[...getWindowRows(rows,ROLLING_WINDOW_ROWS),tempRow];
+    const tempDataset=[...scopedRows,tempRow];
 
     const newActs={...acts};
     const partialPreds={};
