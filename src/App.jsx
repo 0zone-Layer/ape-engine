@@ -4887,31 +4887,38 @@ function AppInner(){
         incomingRows.push(parsedRow);
       });
       if(!incomingRows.length){st("No valid rows in CSV","warn");e.target.value="";return;}
-
+      // Import CSV as a single continuous dataset named 'def'
       upd(prev=>{
-        const dsKey=prev.active;
-        const existingRows=[...(prev.datasets[dsKey]?.rows||[])];
+        const dsKey="def";
+        // Overwrite any monthly-split datasets: build one continuous rows array
+        const existingRows=[];
+        // Merge incomingRows into a single continuous collection (we'll sort/dedupe below)
         let nw={...prev.weights};
         let nc={...(prev.calibration||mkColMapDefaults())};
         let newCustoms=[...(prev.customs||[])];
         const newAccLog=[...(prev.accLog||[])];
         let newContextMemory={...(prev.contextMemory||{})};
-
         incomingRows.forEach(inc=>{
-          const existIdx=existingRows.findIndex(r=>r.row===inc.row);
-          const exist=existIdx>=0?existingRows[existIdx]:null;
-          const newlyKnownCols=COLS.filter(c=>inc[c]!=null&&(exist?.[c]==null));
-          if(exist===null){
-            const entry={row:inc.row,A:inc.A,B:inc.B,C:inc.C,D:inc.D};
-            if(inc.date)entry.date=inc.date;
-            existingRows.push(entry);added++;
-          } else {
-            const merged={...exist};
-            COLS.forEach(c=>{if(inc[c]!=null)merged[c]=inc[c];});
-            if(inc.date&&!merged.date)merged.date=inc.date;
-            existingRows[existIdx]=merged;
-            if(newlyKnownCols.length>0)updated++;
-          }
+          // insert all incoming rows; dedupe/sort happens after loop
+          existingRows.push(inc);
+        });
+
+        // Sort by date if present, otherwise by row; then dedupe by (date|row)
+        existingRows.sort((a,b)=>{
+          if(a.date&&b.date) return a.date<b.date?-1:a.date>b.date?1:0;
+          return a.row-b.row;
+        });
+        const seen=new Set();
+        const mergedRows=[];
+        existingRows.forEach(r=>{
+          const key=(r.date||'_')+"|"+r.row;
+          if(seen.has(key))return;seen.add(key);mergedRows.push(r);
+        });
+        const finalRows=mergedRows.map(r=>{
+          // Normalize row shape to ensure all COLS present
+          const out={row:r.row};COLS.forEach(c=>out[c]=r[c]!=null?r[c]:null);if(r.date)out.date=r.date;return out;
+        });
+        added=finalRows.length;
           // Auto-learn if this row was the predicted row
           if(newlyKnownCols.length>0&&prev.preds&&prev.predRow===inc.row){
             const actuals={};COLS.forEach(c=>{actuals[c]=inc[c]!=null?inc[c]:null;});
@@ -4948,10 +4955,10 @@ function AppInner(){
             syslog("🤖 Auto-learned row "+pad2(inc.row)+": "+exactCount+"/"+newlyKnownCols.length+" exact","learn");
           }
         });
-        existingRows.sort((a,b)=>a.row-b.row);
-
-        // Rebuild pattern bank with new data
-        const newDs={...prev.datasets,[dsKey]:{...prev.datasets[dsKey],rows:existingRows}};
+        // Build new datasets object that contains a single continuous dataset
+        const newDs={...prev.datasets,[dsKey]:{name:"Imported",rows:finalRows}};
+        // Ensure this single dataset becomes active
+        const newActive=dsKey;
         const newPB={...prev.patternBank||{}};
         COLS.forEach(c=>{newPB[c]=updatePatternBank(prev.patternBank,c,newDs,newAccLog);});
 
@@ -4981,7 +4988,7 @@ function AppInner(){
         syslog("📂 CSV import: "+parts.join(", "),"info");
 
         return{...prev,weights:nw,calibration:nc,customs:newCustoms,datasets:newDs,patternBank:newPB,contextMemory:newContextMemory,adaptiveControl,
-          accLog:newAccLog.slice(-365),genN:(prev.genN||0)+1,lastAutoGenRows:existingRows.length,lastAutoEvolveRows:nextAutoEvolveRows};
+          accLog:newAccLog.slice(-365),genN:(prev.genN||0)+1,lastAutoGenRows:added,lastAutoEvolveRows:nextAutoEvolveRows,active:newActive};
       });
       const parts=[];
       if(added)parts.push(added+" rows added");if(updated)parts.push(updated+" updated");
